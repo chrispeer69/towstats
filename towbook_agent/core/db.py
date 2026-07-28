@@ -8,6 +8,30 @@ filesystem -- tests can point DATABASE_URL somewhere else and call
 A relative SQLite path is resolved against REPO_ROOT rather than the current
 working directory. The scheduler, the CLI and the web server are all started
 from different places; they must all open the same database file.
+
+TWO BACKENDS, ONE SCHEMA
+------------------------
+* **SQLite** -- local development and the whole test suite. Fast, offline, one
+  file, and the pragmas below (WAL, foreign_keys, busy_timeout) are what make it
+  survive a scheduler writing while the dashboard reads.
+* **PostgreSQL** -- every hosted deployment, Railway included. **A Railway
+  container has an ephemeral filesystem: a SQLite file under ``data/`` is wiped
+  on every redeploy, silently, taking all history with it.** See
+  :func:`warn_if_ephemeral_sqlite`, which says so out loud at boot.
+
+Railway hands the database over as ``DATABASE_URL``. Two things about that
+string have to be fixed before SQLAlchemy sees it, and :func:`normalize_database_url`
+is the one place that happens:
+
+1. the legacy ``postgres://`` scheme, which SQLAlchemy 2.0 refuses outright;
+2. the driver. Bare ``postgresql://`` means psycopg2, which is not installed --
+   this project ships ``psycopg[binary]`` (psycopg 3), so the URL is rewritten to
+   ``postgresql+psycopg://``.
+
+Nothing else in the codebase is allowed to know which backend it is talking to.
+The upsert in ``agents/ingestion.py`` picks the dialect-appropriate INSERT from
+the bound session, every pragma below is behind a SQLite check, and every column
+type in ``core/models.py`` is a portable SQLAlchemy type.
 """
 
 from __future__ import annotations
@@ -28,19 +52,37 @@ from .paths import DATA_DIR, ensure_dirs, resolve_under_root
 
 __all__ = [
     "DEFAULT_DATABASE_URL",
+    "DEFAULT_POSTGRES_DRIVER",
+    "normalize_database_url",
     "database_url",
+    "backend_name",
+    "is_sqlite",
+    "is_postgres",
     "get_engine",
     "get_session",
     "SessionLocal",
     "init_db",
+    "upgrade_to_head",
     "reset_engine",
     "dispose_engine",
     "healthcheck",
+    "warn_if_ephemeral_sqlite",
 ]
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL: str = "sqlite:///data/towbook.db"
+
+#: psycopg 3. Shipped as ``psycopg[binary]`` so there is no build toolchain to
+#: install in the container. Override with POSTGRES_DRIVER=psycopg2 if a company
+#: deploying this already standardises on psycopg2.
+DEFAULT_POSTGRES_DRIVER: str = "psycopg"
+
+#: Both spellings Railway / Heroku / Render have used for the same thing.
+#: ``postgres://`` is the legacy one and SQLAlchemy 2.0 raises on it rather than
+#: guessing, which turns a working paste of the provider's own value into a
+#: crash at boot.
+_POSTGRES_SCHEMES: frozenset[str] = frozenset({"postgres", "postgresql"})
 
 _engine: Engine | None = None
 _engine_url: str | None = None
@@ -51,9 +93,61 @@ _engine_url: str | None = None
 # --------------------------------------------------------------------------
 
 
+def normalize_database_url(raw_url: str) -> str:
+    """Make a provider-supplied connection string usable by SQLAlchemy 2.0.
+
+    Two rewrites, both of them for PostgreSQL and both of them things that would
+    otherwise fail at boot on a fresh deployment:
+
+    * ``postgres://...`` -> ``postgresql+psycopg://...``. SQLAlchemy removed the
+      ``postgres`` alias; Railway's dashboard still shows URLs in that form.
+    * ``postgresql://...`` -> ``postgresql+psycopg://...``. The bare scheme means
+      psycopg2, which this project does not install.
+
+    An explicit driver (``postgresql+psycopg2://``, ``postgresql+asyncpg://``) is
+    left exactly as written -- if somebody named a driver, they meant it. Every
+    non-PostgreSQL URL, SQLite included, is returned untouched.
+    """
+    text = (raw_url or "").strip()
+    scheme, separator, rest = text.partition("://")
+    if not separator:
+        return text
+
+    name, _, driver = scheme.partition("+")
+    if name.strip().lower() not in _POSTGRES_SCHEMES:
+        return text
+    if driver:
+        return text
+
+    driver = (os.environ.get("POSTGRES_DRIVER") or "").strip() or DEFAULT_POSTGRES_DRIVER
+    return f"postgresql+{driver}://{rest}"
+
+
 def database_url() -> str:
-    """Return the configured DATABASE_URL, or the default."""
-    return (os.environ.get("DATABASE_URL") or "").strip() or DEFAULT_DATABASE_URL
+    """Return the configured DATABASE_URL, normalised, or the default.
+
+    Every consumer -- the engine, alembic's ``env.py``, the CLI -- goes through
+    here, so the scheme rewrite in :func:`normalize_database_url` happens once
+    and cannot be skipped by one of them.
+    """
+    raw = (os.environ.get("DATABASE_URL") or "").strip() or DEFAULT_DATABASE_URL
+    return normalize_database_url(raw)
+
+
+def backend_name(url: str | None = None) -> str:
+    """The SQLAlchemy backend name -- ``sqlite``, ``postgresql``, ... ."""
+    try:
+        return make_url(url or database_url()).get_backend_name()
+    except Exception:  # pragma: no cover - an unparseable URL is reported later
+        return ""
+
+
+def is_sqlite(url: str | None = None) -> bool:
+    return backend_name(url).startswith("sqlite")
+
+
+def is_postgres(url: str | None = None) -> bool:
+    return backend_name(url).startswith("postgres")
 
 
 def _prepare_url(raw_url: str) -> URL:
@@ -79,6 +173,12 @@ def _sqlite_on_connect(dbapi_connection: Any, connection_record: Any) -> None:
     foreign_keys is off by default in SQLite and has to be enabled per
     connection. busy_timeout stops an hourly job and a dashboard request from
     colliding into an immediate "database is locked".
+
+    **SQLite only.** ``PRAGMA`` is not SQL PostgreSQL understands -- issuing one
+    on a Postgres connection is a syntax error that kills the connection before
+    the first query is ever sent. That is why this listener is registered inside
+    the ``is_sqlite`` branch of :func:`get_engine` and nowhere else; do not
+    promote it to an unconditional ``event.listen``.
     """
     cursor = dbapi_connection.cursor()
     try:
@@ -88,6 +188,55 @@ def _sqlite_on_connect(dbapi_connection: Any, connection_record: Any) -> None:
         cursor.execute("PRAGMA busy_timeout=10000")
     finally:
         cursor.close()
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def warn_if_ephemeral_sqlite() -> str | None:
+    """Say so, loudly, when a container is about to store history on a ramdisk.
+
+    Railway, Render, Fly and every other container host give the process a
+    filesystem that is thrown away on redeploy. ``sqlite:///data/towbook.db`` is
+    the default, so a deployment that simply does not set DATABASE_URL *works* --
+    the dashboard comes up, the scheduler runs, the numbers look right -- and
+    then loses thirty days of offers the next time somebody pushes a commit. The
+    failure is invisible at exactly the moment it happens, which is why this is a
+    CRITICAL log line and a banner on the board rather than a comment in a
+    README.
+
+    Returns the warning text when the situation applies, otherwise None.
+    """
+    if not is_sqlite():
+        return None
+    # Set by Railway on every service. Other hosts set their own; PORT alone is
+    # too weak a signal (a laptop can set it), so the check is provider-specific
+    # and additive -- an unrecognised host simply gets no warning.
+    hosted = any(
+        os.environ.get(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_ENVIRONMENT_NAME",
+            "RAILWAY_PROJECT_ID",
+            "RENDER",
+            "FLY_APP_NAME",
+            "DYNO",
+        )
+    )
+    if not hosted:
+        return None
+    message = (
+        "DATABASE_URL is SQLite on a container host with an EPHEMERAL filesystem. "
+        "Every offer, metric and run record will be DELETED on the next redeploy, "
+        "with no error. Add a PostgreSQL database to this project and set "
+        "DATABASE_URL to its connection string."
+    )
+    logger.critical(message)
+    return message
 
 
 # --------------------------------------------------------------------------
@@ -117,15 +266,28 @@ def get_engine(echo: bool | None = None) -> Engine:
 
     kwargs: dict[str, Any] = {"echo": echo, "future": True, "pool_pre_ping": True}
 
-    is_sqlite = url.get_backend_name().startswith("sqlite")
-    if is_sqlite:
+    backend = url.get_backend_name()
+    sqlite = backend.startswith("sqlite")
+    if sqlite:
         # The scheduler writes from a worker thread while the web app reads
         # from another; SQLAlchemy's pool hands connections across threads.
         kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    else:
+        # A hosted Postgres has a hard connection cap (Railway's starter plan is
+        # low) and one web process now runs both the dashboard and the scheduler,
+        # so the pool is bounded rather than left at SQLAlchemy's default. Recycle
+        # before any sane proxy idle-timeout so a connection that was closed under
+        # us is replaced instead of raising mid-request; pool_pre_ping above is
+        # the second line of defence for the same failure.
+        kwargs["pool_size"] = _int_env("DB_POOL_SIZE", 5)
+        kwargs["max_overflow"] = _int_env("DB_MAX_OVERFLOW", 5)
+        kwargs["pool_recycle"] = _int_env("DB_POOL_RECYCLE", 1800)
+        kwargs["pool_timeout"] = _int_env("DB_POOL_TIMEOUT", 30)
 
     engine = create_engine(url, **kwargs)
 
-    if is_sqlite:
+    if sqlite:
+        # SQLite pragmas only. See _sqlite_on_connect.
         event.listen(engine, "connect", _sqlite_on_connect)
 
     _engine = engine

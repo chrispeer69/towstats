@@ -8,7 +8,15 @@
 # aggregation is plain Python or SQL.
 
 # --- portal automation ---
-playwright>=1.44
+# OPTIONAL. The default acquisition path (--source api) talks to Towbook's JSON
+# endpoint over httpx and needs no browser at all, and every playwright import
+# in acquisition.py is lazy. Railway therefore does not need this, and skipping
+# it removes ~50 MB and a browser download from every build.
+#
+# Install it only if you intend to use --source ui, the Playwright fallback:
+#     pip install "playwright>=1.44" && python -m playwright install chromium
+#
+# playwright>=1.44
 
 # --- spreadsheet I/O ---
 openpyxl>=3.1
@@ -16,6 +24,12 @@ openpyxl>=3.1
 # --- storage ---
 SQLAlchemy>=2.0
 alembic>=1.13
+
+# Postgres driver. REQUIRED on Railway and any other container host: the
+# filesystem there is ephemeral, so a SQLite file is destroyed on every
+# redeploy and the whole history silently resets to empty. SQLite remains the
+# default for local development and for the offline test suite.
+psycopg[binary]>=3.1
 
 # --- dashboard ---
 fastapi>=0.110

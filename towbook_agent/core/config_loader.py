@@ -46,6 +46,7 @@ __all__ = [
     "get_notifications",
     "get_schedule",
     "get_proposed_rules",
+    "get_companies",
     "rules_version",
     "reload_all",
     "config_path",
@@ -66,10 +67,14 @@ _FILES: Final[dict[str, str]] = {
     "notifications": "notifications.yaml",
     "schedule": "schedule.yaml",
     "rules_proposed": "rules.proposed.yaml",
+    "companies": "companies.yaml",
 }
 
-#: Names that may legitimately be missing from disk.
-_OPTIONAL: Final[frozenset[str]] = frozenset({"rules_proposed"})
+#: Names that may legitimately be missing from disk. ``companies`` is optional
+#: because a single-company install needs no roster at all: core/companies.py
+#: falls back to one company whose id is the ``"default"`` that every existing
+#: row already carries.
+_OPTIONAL: Final[frozenset[str]] = frozenset({"rules_proposed", "companies"})
 
 
 @dataclass
@@ -207,6 +212,14 @@ class ConfigLoader:
         """The Analyst's suggested rule changes. Never auto-applied."""
         return self.get("rules_proposed")
 
+    def get_companies(self) -> dict[str, Any]:
+        """The tenant roster. ``{}`` on a single-company install.
+
+        Parsed into :class:`~towbook_agent.core.companies.Company` records by
+        core/companies.py; this only reads the file.
+        """
+        return self.get("companies")
+
     # -- versioning ----------------------------------------------------------
 
     def rules_version(self) -> str:
@@ -288,6 +301,10 @@ def get_schedule() -> dict[str, Any]:
 
 def get_proposed_rules() -> dict[str, Any]:
     return CONFIG.get_proposed_rules()
+
+
+def get_companies() -> dict[str, Any]:
+    return CONFIG.get_companies()
 
 
 def rules_version() -> str:
