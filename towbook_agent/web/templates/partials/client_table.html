@@ -1,0 +1,87 @@
+{% import "macros.html" as m %}
+{#- The sortable client table. Swapped as a whole (hx-swap="outerHTML"), so the
+    root element must keep id="client-table" or the next sort has no target.
+
+    `no_response_rate` is a FIRST-CLASS column, not an extra. It answers a
+    different question from the acceptance rate beside it: "we said no" and
+    "nobody answered" are different failures with different fixes, and only one
+    of them is a decision. It is coloured on the inverted scale (high is bad)
+    and outliers carry a marker glyph as well as the colour. -#}
+
+{% set sort_url = '/partials/clients' ~ (('?account=' ~ account) if account else '') %}
+
+<section class="card" id="client-table">
+  <header>
+    <h2>Acceptance by client</h2>
+    <span class="hint">
+      Click a column heading to sort &middot; sorted by
+      <strong>{{ overview.sort }}</strong>, {{ 'ascending' if overview.direction == 'asc' else 'descending' }}
+    </span>
+  </header>
+
+  {{ m.ranking_note() }}
+
+  {% if not overview.clients %}
+    {{ m.empty_inline('No clients in this window.') }}
+  {% else %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          {{ m.sort_th('Client', 'name', overview.sort, overview.direction, sort_url, '#client-table', classes='') }}
+          {{ m.sort_th('No response', 'miss', overview.sort, overview.direction, sort_url, '#client-table') }}
+          {{ m.sort_th('Unanswered', 'no_response', overview.sort, overview.direction, sort_url, '#client-table') }}
+          {{ m.sort_th('24h rate', 'rate', overview.sort, overview.direction, sort_url, '#client-table') }}
+          <th class="num">7d rate</th>
+          <th class="num">30d rate</th>
+          {{ m.sort_th('Delta 7d vs 30d', 'delta', overview.sort, overview.direction, sort_url, '#client-table') }}
+          {{ m.sort_th('Offers 30d', 'volume', overview.sort, overview.direction, sort_url, '#client-table') }}
+          <th>Volume, last {{ overview.sparkline_days }} days</th>
+          <th>Denial reason mix</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in overview.clients %}
+        <tr class="{{ 'row-flag' if row.no_response_outlier else '' }}">
+          <td>
+            <a href="/clients/{{ row.slug|urlencode }}">{{ row.client_name }}</a>
+            {% if row.no_response_outlier %}
+            <span class="tag tag-bad"
+                  title="Offers from this client go unanswered {{ row.no_response_gap_pp }} points more often than the best client — same trucks, same staff">&#9888; outlier</span>
+            {% elif row.no_response_best %}
+            <span class="tag tag-good" title="The lowest no-response rate of any client with enough volume to judge">&#9733; best</span>
+            {% endif %}
+          </td>
+          <td class="num"
+              title="{% if row.no_response is none %}The missed-work model produced no figure for this client{% else %}{{ row.no_response }} of {{ row.offered }} offers went unanswered{% endif %}">
+            {{ m.miss(row.no_response_rate) }}</td>
+          <td class="num">{{ row.no_response|num }}</td>
+          <td class="num" title="{{ row.offered_24h }} offered in the last 24 hours">{{ m.rate(row.rate_24h) }}</td>
+          <td class="num" title="{{ row.offered_7d }} offered in the last 7 days">{{ m.rate(row.rate_7d) }}</td>
+          <td class="num" title="{{ row.offered_30d }} offered in the last 30 days">{{ m.rate(row.rate_30d) }}</td>
+          <td class="num" title="7-day rate minus 30-day rate">{{ m.delta(row.delta) }}</td>
+          <td class="num">{{ row.offered|num }}</td>
+          <td>{{ m.sparkline(row.sparkline_points, row.sparkline_peak, overview.sparkline_days) }}</td>
+          <td>{{ m.reason_mix(row.denial_mix) }}</td>
+          <td class="num muted small nowrap">{{ row.last_seen|ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>{{ overview.clients|length }} clients</td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num">{{ m.rate(overview.totals.rate) }}</td>
+          <td class="num"></td>
+          <td class="num">{{ overview.totals.offered|num }}</td>
+          <td colspan="3"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+</section>

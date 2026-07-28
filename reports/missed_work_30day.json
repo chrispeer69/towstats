@@ -1,0 +1,5401 @@
+{
+  "report_type": "missed_work",
+  "window": {
+    "period_type": "custom",
+    "timezone": "America/Detroit",
+    "start": "2026-06-29T00:00:00",
+    "end": "2026-07-29T00:00:00",
+    "start_utc": "2026-06-29T04:00:00",
+    "end_utc": "2026-07-29T04:00:00",
+    "hours": 720.0,
+    "days": 30.0
+  },
+  "period_type": "custom",
+  "timezone": "America/Detroit",
+  "rules_version": "2-bac0cd2fd679",
+  "computed_at": "2026-07-28T21:59:51.004135",
+  "totals": {
+    "offers": 2996,
+    "accepted": 1065,
+    "missed": 1920,
+    "recoverable": 1207,
+    "recoverable_excluding_withdrew": 1207,
+    "recoverable_including_withdrew": 1920,
+    "withdrew": 713,
+    "in_flight": 11,
+    "declined": 411,
+    "no_response": 795,
+    "accept_failed": 1,
+    "unknown_status": 0,
+    "acceptance_rate": 0.3554739652870494,
+    "missed_rate": 0.6408544726301736,
+    "recoverable_rate": 0.4028704939919893,
+    "no_response_rate": 0.26535380507343126,
+    "count_client_withdrew_as_recoverable": false,
+    "coverage_default_label": "uncovered",
+    "recoverable_uncovered": 938,
+    "recoverable_covered": 269,
+    "no_response_uncovered": 714,
+    "no_response_covered": 81,
+    "no_response_rate_uncovered": 0.47410358565737054,
+    "no_response_rate_covered": 0.05436241610738255,
+    "estimated_value": 99940.0,
+    "priced_missed": 1500,
+    "unpriced_missed": 420,
+    "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+    "recoverable_estimated_value": 58105.0
+  },
+  "by_bucket": {
+    "won": {
+      "bucket": "won",
+      "count": 1065,
+      "share": 0.3554739652870494,
+      "is_missed": false,
+      "is_recoverable": false
+    },
+    "in_flight": {
+      "bucket": "in_flight",
+      "count": 11,
+      "share": 0.003671562082777036,
+      "is_missed": false,
+      "is_recoverable": false
+    },
+    "declined": {
+      "bucket": "declined",
+      "count": 411,
+      "share": 0.13718291054739654,
+      "is_missed": true,
+      "is_recoverable": true
+    },
+    "no_response": {
+      "bucket": "no_response",
+      "count": 795,
+      "share": 0.26535380507343126,
+      "is_missed": true,
+      "is_recoverable": true
+    },
+    "client_withdrew": {
+      "bucket": "client_withdrew",
+      "count": 713,
+      "share": 0.23798397863818424,
+      "is_missed": true,
+      "is_recoverable": false
+    },
+    "accept_failed": {
+      "bucket": "accept_failed",
+      "count": 1,
+      "share": 0.0003337783711615487,
+      "is_missed": true,
+      "is_recoverable": true
+    },
+    "unknown_status": {
+      "bucket": "unknown_status",
+      "count": 0,
+      "share": 0.0,
+      "is_missed": false,
+      "is_recoverable": false
+    }
+  },
+  "by_cause": {
+    "attention": {
+      "cause": "attention",
+      "remedy": "alerting",
+      "question": "Which hour-of-week window is unmanned? See blind_spot below.",
+      "missed": 795,
+      "share": 0.4140625,
+      "recoverable": 795,
+      "buckets": {
+        "no_response": 795
+      },
+      "service_classes": {
+        "light_service": 155,
+        "tow": 621,
+        "unclassified": 6,
+        "winch_out": 13
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 648,
+          "share": 0.8150943396226416,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "NSD",
+          "missed": 88,
+          "share": 0.11069182389937107,
+          "client_key": "nsd"
+        },
+        {
+          "client": "Allied Dispatch Solutions",
+          "missed": 33,
+          "share": 0.04150943396226415,
+          "client_key": "allied dispatch solutions"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 25,
+          "share": 0.031446540880503145,
+          "client_key": "urgent.ly"
+        },
+        {
+          "client": "Allstate",
+          "missed": 1,
+          "share": 0.0012578616352201257,
+          "client_key": "allstate"
+        }
+      ],
+      "estimated_value": 42570.0,
+      "priced_missed": 634,
+      "unpriced_missed": 161,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "client": {
+      "cause": "client",
+      "remedy": "relationship",
+      "question": "Did the client pull it, or did they give up waiting on us?",
+      "missed": 713,
+      "share": 0.37135416666666665,
+      "recoverable": 0,
+      "buckets": {
+        "client_withdrew": 713
+      },
+      "service_classes": {
+        "light_service": 86,
+        "tow": 622,
+        "winch_out": 5
+      },
+      "top_clients": [
+        {
+          "client": "Allstate",
+          "missed": 346,
+          "share": 0.485273492286115,
+          "client_key": "allstate"
+        },
+        {
+          "client": "Agero (Swoop)",
+          "missed": 267,
+          "share": 0.3744740532959327,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "NSD",
+          "missed": 68,
+          "share": 0.09537166900420757,
+          "client_key": "nsd"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 26,
+          "share": 0.0364656381486676,
+          "client_key": "urgent.ly"
+        },
+        {
+          "client": "Allied Dispatch Solutions",
+          "missed": 6,
+          "share": 0.008415147265077139,
+          "client_key": "allied dispatch solutions"
+        }
+      ],
+      "estimated_value": 41835.0,
+      "priced_missed": 627,
+      "unpriced_missed": 86,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "equipment": {
+      "cause": "equipment",
+      "remedy": "capital",
+      "question": "Which truck class is missing?",
+      "missed": 327,
+      "share": 0.1703125,
+      "recoverable": 327,
+      "buckets": {
+        "declined": 327
+      },
+      "service_classes": {
+        "light_service": 150,
+        "tow": 174,
+        "winch_out": 3
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 239,
+          "share": 0.7308868501529052,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "Allstate",
+          "missed": 88,
+          "share": 0.2691131498470948,
+          "client_key": "allstate"
+        }
+      ],
+      "estimated_value": 11505.0,
+      "priced_missed": 177,
+      "unpriced_missed": 150,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "review": {
+      "cause": "review",
+      "remedy": "review",
+      "question": "Reason not captured -- needs a human to look at these.",
+      "missed": 32,
+      "share": 0.016666666666666666,
+      "recoverable": 32,
+      "buckets": {
+        "declined": 32
+      },
+      "service_classes": {
+        "light_service": 9,
+        "tow": 22,
+        "winch_out": 1
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 25,
+          "share": 0.78125,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 7,
+          "share": 0.21875,
+          "client_key": "urgent.ly"
+        }
+      ],
+      "estimated_value": 1495.0,
+      "priced_missed": 23,
+      "unpriced_missed": 9,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "staffing": {
+      "cause": "staffing",
+      "remedy": "scheduling",
+      "question": "Which hours are uncovered?",
+      "missed": 30,
+      "share": 0.015625,
+      "recoverable": 30,
+      "buckets": {
+        "declined": 30
+      },
+      "service_classes": {
+        "light_service": 11,
+        "tow": 18,
+        "winch_out": 1
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 30,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "estimated_value": 1235.0,
+      "priced_missed": 19,
+      "unpriced_missed": 11,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "coverage": {
+      "cause": "coverage",
+      "remedy": "territory",
+      "question": "Where, and how far out?",
+      "missed": 17,
+      "share": 0.008854166666666666,
+      "recoverable": 17,
+      "buckets": {
+        "declined": 17
+      },
+      "service_classes": {
+        "light_service": 1,
+        "tow": 16
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 17,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "estimated_value": 1040.0,
+      "priced_missed": 16,
+      "unpriced_missed": 1,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "information": {
+      "cause": "information",
+      "remedy": "process",
+      "question": "Cheap fix -- ask the client before declining.",
+      "missed": 5,
+      "share": 0.0026041666666666665,
+      "recoverable": 5,
+      "buckets": {
+        "declined": 5
+      },
+      "service_classes": {
+        "light_service": 2,
+        "tow": 3
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 5,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "estimated_value": 195.0,
+      "priced_missed": 3,
+      "unpriced_missed": 2,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    "technical": {
+      "cause": "technical",
+      "remedy": "engineering",
+      "question": "We tried to accept and the accept failed. Why?",
+      "missed": 1,
+      "share": 0.0005208333333333333,
+      "recoverable": 1,
+      "buckets": {
+        "accept_failed": 1
+      },
+      "service_classes": {
+        "tow": 1
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 1,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "estimated_value": 65.0,
+      "priced_missed": 1,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    }
+  },
+  "inventory": [
+    {
+      "service_class": "tow",
+      "cause": "client",
+      "remedy": "relationship",
+      "question": "Did the client pull it, or did they give up waiting on us?",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 622,
+      "missed_share": 0.32395833333333335,
+      "class_miss_rate": 0.2456556082148499,
+      "recoverable": 0,
+      "buckets": {
+        "client_withdrew": 622
+      },
+      "top_clients": [
+        {
+          "client": "Allstate",
+          "missed": 288,
+          "share": 0.4630225080385852,
+          "client_key": "allstate"
+        },
+        {
+          "client": "Agero (Swoop)",
+          "missed": 258,
+          "share": 0.41479099678456594,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "NSD",
+          "missed": 53,
+          "share": 0.08520900321543408,
+          "client_key": "nsd"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 17,
+          "share": 0.027331189710610933,
+          "client_key": "urgent.ly"
+        },
+        {
+          "client": "Allied Dispatch Solutions",
+          "missed": 6,
+          "share": 0.00964630225080386,
+          "client_key": "allied dispatch solutions"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Light Tow",
+          "missed": 277,
+          "share": 0.4453376205787781
+        },
+        {
+          "service_type_raw": "Tow",
+          "missed": 249,
+          "share": 0.4003215434083601
+        },
+        {
+          "service_type_raw": "Flat Bed Towing",
+          "missed": 38,
+          "share": 0.06109324758842444
+        },
+        {
+          "service_type_raw": "Light Duty Towing",
+          "missed": 10,
+          "share": 0.01607717041800643
+        },
+        {
+          "service_type_raw": "Towing",
+          "missed": 10,
+          "share": 0.01607717041800643
+        }
+      ],
+      "estimated_value": 41490.0,
+      "priced_missed": 622,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "attention",
+      "remedy": "alerting",
+      "question": "Which hour-of-week window is unmanned? See blind_spot below.",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 621,
+      "missed_share": 0.3234375,
+      "class_miss_rate": 0.245260663507109,
+      "recoverable": 621,
+      "buckets": {
+        "no_response": 621
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 512,
+          "share": 0.8244766505636071,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "NSD",
+          "missed": 68,
+          "share": 0.10950080515297907,
+          "client_key": "nsd"
+        },
+        {
+          "client": "Allied Dispatch Solutions",
+          "missed": 22,
+          "share": 0.03542673107890499,
+          "client_key": "allied dispatch solutions"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 18,
+          "share": 0.028985507246376812,
+          "client_key": "urgent.ly"
+        },
+        {
+          "client": "Allstate",
+          "missed": 1,
+          "share": 0.001610305958132045,
+          "client_key": "allstate"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 482,
+          "share": 0.7761674718196457
+        },
+        {
+          "service_type_raw": "Flat Bed Towing",
+          "missed": 42,
+          "share": 0.06763285024154589
+        },
+        {
+          "service_type_raw": "Light Duty Towing",
+          "missed": 23,
+          "share": 0.037037037037037035
+        },
+        {
+          "service_type_raw": "Tow / Flatbed",
+          "missed": 22,
+          "share": 0.03542673107890499
+        },
+        {
+          "service_type_raw": "Accident Tow (P)",
+          "missed": 19,
+          "share": 0.030595813204508857
+        }
+      ],
+      "estimated_value": 41725.0,
+      "priced_missed": 621,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "equipment",
+      "remedy": "capital",
+      "question": "Which truck class is missing?",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 174,
+      "missed_share": 0.090625,
+      "class_miss_rate": 0.06872037914691943,
+      "recoverable": 174,
+      "buckets": {
+        "declined": 174
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 134,
+          "share": 0.7701149425287356,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "Allstate",
+          "missed": 40,
+          "share": 0.22988505747126436,
+          "client_key": "allstate"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 124,
+          "share": 0.7126436781609196
+        },
+        {
+          "service_type_raw": "Light Tow",
+          "missed": 40,
+          "share": 0.22988505747126436
+        },
+        {
+          "service_type_raw": "Accident Tow (P)",
+          "missed": 6,
+          "share": 0.034482758620689655
+        },
+        {
+          "service_type_raw": "Accident Tow",
+          "missed": 4,
+          "share": 0.022988505747126436
+        }
+      ],
+      "estimated_value": 11310.0,
+      "priced_missed": 174,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "review",
+      "remedy": "review",
+      "question": "Reason not captured -- needs a human to look at these.",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 22,
+      "missed_share": 0.011458333333333333,
+      "class_miss_rate": 0.008688783570300158,
+      "recoverable": 22,
+      "buckets": {
+        "declined": 22
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 18,
+          "share": 0.8181818181818182,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 4,
+          "share": 0.18181818181818182,
+          "client_key": "urgent.ly"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 17,
+          "share": 0.7727272727272727
+        },
+        {
+          "service_type_raw": "Towing",
+          "missed": 3,
+          "share": 0.13636363636363635
+        },
+        {
+          "service_type_raw": "Accident Tow (P)",
+          "missed": 1,
+          "share": 0.045454545454545456
+        },
+        {
+          "service_type_raw": "Medium Duty TOW",
+          "missed": 1,
+          "share": 0.045454545454545456
+        }
+      ],
+      "estimated_value": 1430.0,
+      "priced_missed": 22,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "staffing",
+      "remedy": "scheduling",
+      "question": "Which hours are uncovered?",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 18,
+      "missed_share": 0.009375,
+      "class_miss_rate": 0.0071090047393364926,
+      "recoverable": 18,
+      "buckets": {
+        "declined": 18
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 18,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 18,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 1170.0,
+      "priced_missed": 18,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "coverage",
+      "remedy": "territory",
+      "question": "Where, and how far out?",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 16,
+      "missed_share": 0.008333333333333333,
+      "class_miss_rate": 0.00631911532385466,
+      "recoverable": 16,
+      "buckets": {
+        "declined": 16
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 16,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 14,
+          "share": 0.875
+        },
+        {
+          "service_type_raw": "Accident Tow",
+          "missed": 1,
+          "share": 0.0625
+        },
+        {
+          "service_type_raw": "Accident Tow (P)",
+          "missed": 1,
+          "share": 0.0625
+        }
+      ],
+      "estimated_value": 1040.0,
+      "priced_missed": 16,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "winch_out",
+      "cause": "attention",
+      "remedy": "alerting",
+      "question": "Which hour-of-week window is unmanned? See blind_spot below.",
+      "offers": 26,
+      "accepted": 3,
+      "missed": 13,
+      "missed_share": 0.0067708333333333336,
+      "class_miss_rate": 0.5,
+      "recoverable": 13,
+      "buckets": {
+        "no_response": 13
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 13,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Winch Out",
+          "missed": 13,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 845.0,
+      "priced_missed": 13,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "winch_out",
+      "cause": "client",
+      "remedy": "relationship",
+      "question": "Did the client pull it, or did they give up waiting on us?",
+      "offers": 26,
+      "accepted": 3,
+      "missed": 5,
+      "missed_share": 0.0026041666666666665,
+      "class_miss_rate": 0.19230769230769232,
+      "recoverable": 0,
+      "buckets": {
+        "client_withdrew": 5
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 3,
+          "share": 0.6,
+          "client_key": "agero (swoop)"
+        },
+        {
+          "client": "NSD",
+          "missed": 1,
+          "share": 0.2,
+          "client_key": "nsd"
+        },
+        {
+          "client": "Urgent.ly",
+          "missed": 1,
+          "share": 0.2,
+          "client_key": "urgent.ly"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Winch Out",
+          "missed": 3,
+          "share": 0.6
+        },
+        {
+          "service_type_raw": "Winch",
+          "missed": 1,
+          "share": 0.2
+        },
+        {
+          "service_type_raw": "Winching",
+          "missed": 1,
+          "share": 0.2
+        }
+      ],
+      "estimated_value": 345.0,
+      "priced_missed": 5,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "information",
+      "remedy": "process",
+      "question": "Cheap fix -- ask the client before declining.",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 3,
+      "missed_share": 0.0015625,
+      "class_miss_rate": 0.001184834123222749,
+      "recoverable": 3,
+      "buckets": {
+        "declined": 3
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 3,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 3,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 195.0,
+      "priced_missed": 3,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "winch_out",
+      "cause": "equipment",
+      "remedy": "capital",
+      "question": "Which truck class is missing?",
+      "offers": 26,
+      "accepted": 3,
+      "missed": 3,
+      "missed_share": 0.0015625,
+      "class_miss_rate": 0.11538461538461539,
+      "recoverable": 3,
+      "buckets": {
+        "declined": 3
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 3,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Winch Out",
+          "missed": 3,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 195.0,
+      "priced_missed": 3,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "tow",
+      "cause": "technical",
+      "remedy": "engineering",
+      "question": "We tried to accept and the accept failed. Why?",
+      "offers": 2532,
+      "accepted": 1048,
+      "missed": 1,
+      "missed_share": 0.0005208333333333333,
+      "class_miss_rate": 0.00039494470774091627,
+      "recoverable": 1,
+      "buckets": {
+        "accept_failed": 1
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 1,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Tow",
+          "missed": 1,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 65.0,
+      "priced_missed": 1,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "winch_out",
+      "cause": "review",
+      "remedy": "review",
+      "question": "Reason not captured -- needs a human to look at these.",
+      "offers": 26,
+      "accepted": 3,
+      "missed": 1,
+      "missed_share": 0.0005208333333333333,
+      "class_miss_rate": 0.038461538461538464,
+      "recoverable": 1,
+      "buckets": {
+        "declined": 1
+      },
+      "top_clients": [
+        {
+          "client": "Urgent.ly",
+          "missed": 1,
+          "share": 1.0,
+          "client_key": "urgent.ly"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Winch",
+          "missed": 1,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 65.0,
+      "priced_missed": 1,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    },
+    {
+      "service_class": "winch_out",
+      "cause": "staffing",
+      "remedy": "scheduling",
+      "question": "Which hours are uncovered?",
+      "offers": 26,
+      "accepted": 3,
+      "missed": 1,
+      "missed_share": 0.0005208333333333333,
+      "class_miss_rate": 0.038461538461538464,
+      "recoverable": 1,
+      "buckets": {
+        "declined": 1
+      },
+      "top_clients": [
+        {
+          "client": "Agero (Swoop)",
+          "missed": 1,
+          "share": 1.0,
+          "client_key": "agero (swoop)"
+        }
+      ],
+      "top_service_types": [
+        {
+          "service_type_raw": "Winch Out",
+          "missed": 1,
+          "share": 1.0
+        }
+      ],
+      "estimated_value": 65.0,
+      "priced_missed": 1,
+      "unpriced_missed": 0,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin"
+    }
+  ],
+  "inventory_meta": {
+    "restricted_to_should_accept": true,
+    "service_classes": [
+      "tow",
+      "winch_out"
+    ],
+    "rank_by": "job_count",
+    "top_n": 10,
+    "pairs": 13,
+    "missed_in_inventory": 1500,
+    "missed_in_window": 1920
+  },
+  "coverage": {
+    "default_label": "uncovered",
+    "labels": [
+      "covered",
+      "uncovered"
+    ],
+    "windows": [
+      {
+        "label": "covered",
+        "is_covered": true,
+        "definition": {
+          "name": "covered",
+          "days": "frozenset({0, 1, 2, 3, 4})",
+          "day_labels": [
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thu",
+            "Fri"
+          ],
+          "start": "06:00",
+          "end": "18:00",
+          "start_minute": 360,
+          "end_minute": 1080,
+          "overnight": false,
+          "note": "Owner's stated staffed window. Verified against 30 days of real Agero traffic: 5.8% of offers expire inside it, 61.7% outside it.",
+          "hours_per_week": 60.0,
+          "label": "Mon-Fri 06:00-18:00"
+        },
+        "offers": 1490,
+        "accepted": 899,
+        "declined": 187,
+        "no_response": 81,
+        "no_response_rate": 0.05436241610738255,
+        "answered": 1403,
+        "in_flight": 6,
+        "accept_failed": 1,
+        "client_withdrew": 316,
+        "missed": 585,
+        "recoverable": 269,
+        "acceptance_rate": 0.6033557046979866,
+        "share_of_offers": 0.49732977303070763,
+        "share_of_missed": 0.3046875,
+        "answer_rate": 0.9416107382550336,
+        "missed_value": 31320.0,
+        "priced_missed": 468,
+        "unpriced_missed": 117,
+        "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+        "recoverable_value": 11060.0,
+        "no_response_value": 4820.0,
+        "value_available": true
+      },
+      {
+        "label": "uncovered",
+        "is_covered": false,
+        "definition": null,
+        "offers": 1506,
+        "accepted": 166,
+        "declined": 224,
+        "no_response": 714,
+        "no_response_rate": 0.47410358565737054,
+        "answered": 787,
+        "in_flight": 5,
+        "accept_failed": 0,
+        "client_withdrew": 397,
+        "missed": 1335,
+        "recoverable": 938,
+        "acceptance_rate": 0.1102257636122178,
+        "share_of_offers": 0.5026702269692924,
+        "share_of_missed": 0.6953125,
+        "answer_rate": 0.5225763612217795,
+        "missed_value": 68620.0,
+        "priced_missed": 1032,
+        "unpriced_missed": 303,
+        "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+        "recoverable_value": 47045.0,
+        "no_response_value": 37750.0,
+        "value_available": true
+      }
+    ],
+    "by_label": {
+      "covered": {
+        "label": "covered",
+        "is_covered": true,
+        "definition": {
+          "name": "covered",
+          "days": "frozenset({0, 1, 2, 3, 4})",
+          "day_labels": [
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thu",
+            "Fri"
+          ],
+          "start": "06:00",
+          "end": "18:00",
+          "start_minute": 360,
+          "end_minute": 1080,
+          "overnight": false,
+          "note": "Owner's stated staffed window. Verified against 30 days of real Agero traffic: 5.8% of offers expire inside it, 61.7% outside it.",
+          "hours_per_week": 60.0,
+          "label": "Mon-Fri 06:00-18:00"
+        },
+        "offers": 1490,
+        "accepted": 899,
+        "declined": 187,
+        "no_response": 81,
+        "no_response_rate": 0.05436241610738255,
+        "answered": 1403,
+        "in_flight": 6,
+        "accept_failed": 1,
+        "client_withdrew": 316,
+        "missed": 585,
+        "recoverable": 269,
+        "acceptance_rate": 0.6033557046979866,
+        "share_of_offers": 0.49732977303070763,
+        "share_of_missed": 0.3046875,
+        "answer_rate": 0.9416107382550336,
+        "missed_value": 31320.0,
+        "priced_missed": 468,
+        "unpriced_missed": 117,
+        "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+        "recoverable_value": 11060.0,
+        "no_response_value": 4820.0,
+        "value_available": true
+      },
+      "uncovered": {
+        "label": "uncovered",
+        "is_covered": false,
+        "definition": null,
+        "offers": 1506,
+        "accepted": 166,
+        "declined": 224,
+        "no_response": 714,
+        "no_response_rate": 0.47410358565737054,
+        "answered": 787,
+        "in_flight": 5,
+        "accept_failed": 0,
+        "client_withdrew": 397,
+        "missed": 1335,
+        "recoverable": 938,
+        "acceptance_rate": 0.1102257636122178,
+        "share_of_offers": 0.5026702269692924,
+        "share_of_missed": 0.6953125,
+        "answer_rate": 0.5225763612217795,
+        "missed_value": 68620.0,
+        "priced_missed": 1032,
+        "unpriced_missed": 303,
+        "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+        "recoverable_value": 47045.0,
+        "no_response_value": 37750.0,
+        "value_available": true
+      }
+    },
+    "definitions": [
+      {
+        "name": "covered",
+        "days": "frozenset({0, 1, 2, 3, 4})",
+        "day_labels": [
+          "Mon",
+          "Tue",
+          "Wed",
+          "Thu",
+          "Fri"
+        ],
+        "start": "06:00",
+        "end": "18:00",
+        "start_minute": 360,
+        "end_minute": 1080,
+        "overnight": false,
+        "note": "Owner's stated staffed window. Verified against 30 days of real Agero traffic: 5.8% of offers expire inside it, 61.7% outside it.",
+        "hours_per_week": 60.0,
+        "label": "Mon-Fri 06:00-18:00"
+      }
+    ],
+    "headline": {
+      "label": "uncovered",
+      "offers": 1506,
+      "answered": 787,
+      "lost": 714,
+      "no_response_rate": 0.47410358565737054,
+      "missed": 1335,
+      "missed_value": 68620.0,
+      "recoverable": 938,
+      "recoverable_value": 47045.0,
+      "value_available": true
+    },
+    "outside": {
+      "label": "uncovered",
+      "is_covered": false,
+      "definition": null,
+      "offers": 1506,
+      "accepted": 166,
+      "declined": 224,
+      "no_response": 714,
+      "no_response_rate": 0.47410358565737054,
+      "answered": 787,
+      "in_flight": 5,
+      "accept_failed": 0,
+      "client_withdrew": 397,
+      "missed": 1335,
+      "recoverable": 938,
+      "acceptance_rate": 0.1102257636122178,
+      "share_of_offers": 0.5026702269692924,
+      "share_of_missed": 0.6953125,
+      "answer_rate": 0.5225763612217795,
+      "missed_value": 68620.0,
+      "priced_missed": 1032,
+      "unpriced_missed": 303,
+      "value_basis": "gross average job value per client, from missed_work.job_value_by_client -- not margin",
+      "recoverable_value": 47045.0,
+      "no_response_value": 37750.0,
+      "value_available": true
+    },
+    "inside": {
+      "labels": [
+        "covered"
+      ],
+      "offers": 1490,
+      "accepted": 899,
+      "declined": 187,
+      "no_response": 81,
+      "answered": 1403,
+      "missed": 585,
+      "recoverable": 269,
+      "missed_value": 31320.0,
+      "recoverable_value": 11060.0,
+      "no_response_value": 4820.0,
+      "no_response_rate": 0.05436241610738255,
+      "acceptance_rate": 0.6033557046979866,
+      "answer_rate": 0.9416107382550336
+    },
+    "contrast": {
+      "spread_pp": 41.97,
+      "multiple": 8.72,
+      "summary": "714 of 1,506 offers outside uncovered hours went unanswered (47.4%), against 81 of 1,490 inside them (5.4%)."
+    },
+    "finding": "This is a coverage problem, not a truck problem. The same trucks were idle in both windows and 99.1% of accepted offers carry a named human responder, so an offer that arrives when nobody is rostered is lost by default. The fix is a person on the queue in the uncovered window, not another truck.",
+    "note": "Windows come from rules.yaml -> missed_work.coverage: the owner's stated staffed hours, verified against real traffic. Adding a Saturday shift is an edit to that block.",
+    "ranking_basis": "job_count"
+  },
+  "blind_spots": {
+    "rows": 7,
+    "cols": 24,
+    "weekdays": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+      "Sat",
+      "Sun"
+    ],
+    "hours": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ],
+    "offers": [
+      [
+        7,
+        4,
+        5,
+        5,
+        5,
+        27,
+        47,
+        28,
+        37,
+        33,
+        39,
+        39,
+        30,
+        42,
+        33,
+        32,
+        33,
+        25,
+        30,
+        22,
+        23,
+        16,
+        14,
+        13
+      ],
+      [
+        11,
+        2,
+        1,
+        3,
+        5,
+        18,
+        36,
+        29,
+        25,
+        23,
+        30,
+        27,
+        26,
+        32,
+        30,
+        19,
+        18,
+        13,
+        29,
+        22,
+        18,
+        26,
+        17,
+        12
+      ],
+      [
+        10,
+        5,
+        5,
+        3,
+        6,
+        11,
+        24,
+        9,
+        15,
+        15,
+        27,
+        17,
+        25,
+        24,
+        22,
+        22,
+        26,
+        30,
+        25,
+        28,
+        11,
+        23,
+        13,
+        10
+      ],
+      [
+        10,
+        4,
+        3,
+        6,
+        5,
+        10,
+        25,
+        30,
+        12,
+        26,
+        17,
+        21,
+        14,
+        27,
+        26,
+        23,
+        21,
+        32,
+        24,
+        19,
+        20,
+        20,
+        11,
+        13
+      ],
+      [
+        16,
+        15,
+        1,
+        3,
+        3,
+        13,
+        17,
+        10,
+        14,
+        20,
+        15,
+        23,
+        21,
+        19,
+        26,
+        20,
+        19,
+        30,
+        24,
+        12,
+        25,
+        16,
+        14,
+        16
+      ],
+      [
+        5,
+        14,
+        10,
+        5,
+        4,
+        8,
+        14,
+        11,
+        10,
+        20,
+        14,
+        17,
+        26,
+        20,
+        22,
+        16,
+        20,
+        23,
+        27,
+        14,
+        10,
+        10,
+        12,
+        7
+      ],
+      [
+        8,
+        10,
+        8,
+        2,
+        9,
+        8,
+        8,
+        7,
+        11,
+        8,
+        17,
+        26,
+        19,
+        14,
+        21,
+        31,
+        27,
+        24,
+        26,
+        25,
+        19,
+        19,
+        23,
+        9
+      ]
+    ],
+    "accepted": [
+      [
+        0,
+        0,
+        0,
+        0,
+        1,
+        13,
+        25,
+        15,
+        30,
+        26,
+        26,
+        23,
+        17,
+        22,
+        19,
+        16,
+        16,
+        8,
+        8,
+        4,
+        6,
+        1,
+        1,
+        5
+      ],
+      [
+        3,
+        0,
+        0,
+        0,
+        0,
+        10,
+        26,
+        18,
+        12,
+        19,
+        24,
+        19,
+        21,
+        24,
+        23,
+        11,
+        10,
+        3,
+        10,
+        0,
+        3,
+        0,
+        1,
+        5
+      ],
+      [
+        4,
+        1,
+        1,
+        0,
+        2,
+        6,
+        14,
+        4,
+        9,
+        15,
+        17,
+        14,
+        17,
+        19,
+        15,
+        15,
+        9,
+        4,
+        4,
+        3,
+        0,
+        4,
+        0,
+        1
+      ],
+      [
+        3,
+        0,
+        0,
+        0,
+        1,
+        3,
+        19,
+        17,
+        8,
+        22,
+        14,
+        18,
+        9,
+        20,
+        13,
+        11,
+        7,
+        3,
+        5,
+        0,
+        4,
+        0,
+        0,
+        3
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        7,
+        12,
+        10,
+        9,
+        18,
+        11,
+        15,
+        14,
+        11,
+        14,
+        7,
+        4,
+        8,
+        2,
+        0,
+        4,
+        3,
+        4,
+        1
+      ],
+      [
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        1,
+        4,
+        1,
+        1,
+        1,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4,
+        2,
+        0,
+        1,
+        2,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0
+      ]
+    ],
+    "no_response": [
+      [
+        2,
+        4,
+        5,
+        5,
+        3,
+        1,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        9,
+        8,
+        6,
+        13,
+        11,
+        4,
+        3
+      ],
+      [
+        4,
+        1,
+        0,
+        1,
+        3,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        7,
+        12,
+        6,
+        10,
+        16,
+        7,
+        1
+      ],
+      [
+        0,
+        1,
+        0,
+        3,
+        0,
+        2,
+        3,
+        2,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        12,
+        11,
+        8,
+        5,
+        5,
+        3,
+        3
+      ],
+      [
+        1,
+        3,
+        2,
+        0,
+        1,
+        0,
+        0,
+        4,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        10,
+        9,
+        9,
+        8,
+        11,
+        5,
+        3
+      ],
+      [
+        5,
+        9,
+        1,
+        2,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        6,
+        3,
+        9,
+        8,
+        5,
+        12,
+        8,
+        4,
+        5
+      ],
+      [
+        1,
+        3,
+        6,
+        4,
+        3,
+        4,
+        11,
+        5,
+        2,
+        11,
+        7,
+        8,
+        10,
+        13,
+        17,
+        13,
+        16,
+        18,
+        17,
+        9,
+        8,
+        5,
+        7,
+        6
+      ],
+      [
+        3,
+        4,
+        4,
+        1,
+        6,
+        4,
+        3,
+        3,
+        6,
+        5,
+        12,
+        16,
+        13,
+        14,
+        17,
+        18,
+        17,
+        15,
+        20,
+        12,
+        12,
+        14,
+        2,
+        6
+      ]
+    ],
+    "no_response_rate": [
+      [
+        0.2857142857142857,
+        1.0,
+        1.0,
+        1.0,
+        0.6,
+        0.037037037037037035,
+        0.0425531914893617,
+        0.03571428571428571,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333333333333,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.36,
+        0.26666666666666666,
+        0.2727272727272727,
+        0.5652173913043478,
+        0.6875,
+        0.2857142857142857,
+        0.23076923076923078
+      ],
+      [
+        0.36363636363636365,
+        0.5,
+        0.0,
+        0.3333333333333333,
+        0.6,
+        0.05555555555555555,
+        0.027777777777777776,
+        0.034482758620689655,
+        0.04,
+        0.043478260869565216,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.05263157894736842,
+        0.05555555555555555,
+        0.5384615384615384,
+        0.41379310344827586,
+        0.2727272727272727,
+        0.5555555555555556,
+        0.6153846153846154,
+        0.4117647058823529,
+        0.08333333333333333
+      ],
+      [
+        0.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.18181818181818182,
+        0.125,
+        0.2222222222222222,
+        0.06666666666666667,
+        0.0,
+        0.0,
+        0.058823529411764705,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.4,
+        0.44,
+        0.2857142857142857,
+        0.45454545454545453,
+        0.21739130434782608,
+        0.23076923076923078,
+        0.3
+      ],
+      [
+        0.1,
+        0.75,
+        0.6666666666666666,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.13333333333333333,
+        0.08333333333333333,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3125,
+        0.375,
+        0.47368421052631576,
+        0.4,
+        0.55,
+        0.45454545454545453,
+        0.23076923076923078
+      ],
+      [
+        0.3125,
+        0.6,
+        1.0,
+        0.6666666666666666,
+        0.6666666666666666,
+        0.15384615384615385,
+        0.058823529411764705,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.07692307692307693,
+        0.3,
+        0.15789473684210525,
+        0.3,
+        0.3333333333333333,
+        0.4166666666666667,
+        0.48,
+        0.5,
+        0.2857142857142857,
+        0.3125
+      ],
+      [
+        0.2,
+        0.21428571428571427,
+        0.6,
+        0.8,
+        0.75,
+        0.5,
+        0.7857142857142857,
+        0.45454545454545453,
+        0.2,
+        0.55,
+        0.5,
+        0.47058823529411764,
+        0.38461538461538464,
+        0.65,
+        0.7727272727272727,
+        0.8125,
+        0.8,
+        0.782608695652174,
+        0.6296296296296297,
+        0.6428571428571429,
+        0.8,
+        0.5,
+        0.5833333333333334,
+        0.8571428571428571
+      ],
+      [
+        0.375,
+        0.4,
+        0.5,
+        0.5,
+        0.6666666666666666,
+        0.5,
+        0.375,
+        0.42857142857142855,
+        0.5454545454545454,
+        0.625,
+        0.7058823529411765,
+        0.6153846153846154,
+        0.6842105263157895,
+        1.0,
+        0.8095238095238095,
+        0.5806451612903226,
+        0.6296296296296297,
+        0.625,
+        0.7692307692307693,
+        0.48,
+        0.631578947368421,
+        0.7368421052631579,
+        0.08695652173913043,
+        0.6666666666666666
+      ]
+    ],
+    "cells": [
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 0,
+        "label": "Mon 00:00",
+        "offers": 7,
+        "accepted": 0,
+        "no_response": 2,
+        "no_response_rate": 0.2857142857142857,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 1,
+        "label": "Mon 01:00",
+        "offers": 4,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 1.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 2,
+        "label": "Mon 02:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 3,
+        "label": "Mon 03:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 4,
+        "label": "Mon 04:00",
+        "offers": 5,
+        "accepted": 1,
+        "no_response": 3,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 5,
+        "label": "Mon 05:00",
+        "offers": 27,
+        "accepted": 13,
+        "no_response": 1,
+        "no_response_rate": 0.037037037037037035,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 6,
+        "label": "Mon 06:00",
+        "offers": 47,
+        "accepted": 25,
+        "no_response": 2,
+        "no_response_rate": 0.0425531914893617,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 7,
+        "label": "Mon 07:00",
+        "offers": 28,
+        "accepted": 15,
+        "no_response": 1,
+        "no_response_rate": 0.03571428571428571,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 8,
+        "label": "Mon 08:00",
+        "offers": 37,
+        "accepted": 30,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 9,
+        "label": "Mon 09:00",
+        "offers": 33,
+        "accepted": 26,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 10,
+        "label": "Mon 10:00",
+        "offers": 39,
+        "accepted": 26,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 11,
+        "label": "Mon 11:00",
+        "offers": 39,
+        "accepted": 23,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 12,
+        "label": "Mon 12:00",
+        "offers": 30,
+        "accepted": 17,
+        "no_response": 1,
+        "no_response_rate": 0.03333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 13,
+        "label": "Mon 13:00",
+        "offers": 42,
+        "accepted": 22,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 14,
+        "label": "Mon 14:00",
+        "offers": 33,
+        "accepted": 19,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 15,
+        "label": "Mon 15:00",
+        "offers": 32,
+        "accepted": 16,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 16,
+        "label": "Mon 16:00",
+        "offers": 33,
+        "accepted": 16,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 17,
+        "label": "Mon 17:00",
+        "offers": 25,
+        "accepted": 8,
+        "no_response": 9,
+        "no_response_rate": 0.36,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 18,
+        "label": "Mon 18:00",
+        "offers": 30,
+        "accepted": 8,
+        "no_response": 8,
+        "no_response_rate": 0.26666666666666666,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 19,
+        "label": "Mon 19:00",
+        "offers": 22,
+        "accepted": 4,
+        "no_response": 6,
+        "no_response_rate": 0.2727272727272727,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 20,
+        "label": "Mon 20:00",
+        "offers": 23,
+        "accepted": 6,
+        "no_response": 13,
+        "no_response_rate": 0.5652173913043478,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 21,
+        "label": "Mon 21:00",
+        "offers": 16,
+        "accepted": 1,
+        "no_response": 11,
+        "no_response_rate": 0.6875,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 22,
+        "label": "Mon 22:00",
+        "offers": 14,
+        "accepted": 1,
+        "no_response": 4,
+        "no_response_rate": 0.2857142857142857,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 23,
+        "label": "Mon 23:00",
+        "offers": 13,
+        "accepted": 5,
+        "no_response": 3,
+        "no_response_rate": 0.23076923076923078,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 0,
+        "label": "Tue 00:00",
+        "offers": 11,
+        "accepted": 3,
+        "no_response": 4,
+        "no_response_rate": 0.36363636363636365,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 1,
+        "label": "Tue 01:00",
+        "offers": 2,
+        "accepted": 0,
+        "no_response": 1,
+        "no_response_rate": 0.5,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 2,
+        "label": "Tue 02:00",
+        "offers": 1,
+        "accepted": 0,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 3,
+        "label": "Tue 03:00",
+        "offers": 3,
+        "accepted": 0,
+        "no_response": 1,
+        "no_response_rate": 0.3333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 4,
+        "label": "Tue 04:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 5,
+        "label": "Tue 05:00",
+        "offers": 18,
+        "accepted": 10,
+        "no_response": 1,
+        "no_response_rate": 0.05555555555555555,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 6,
+        "label": "Tue 06:00",
+        "offers": 36,
+        "accepted": 26,
+        "no_response": 1,
+        "no_response_rate": 0.027777777777777776,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 7,
+        "label": "Tue 07:00",
+        "offers": 29,
+        "accepted": 18,
+        "no_response": 1,
+        "no_response_rate": 0.034482758620689655,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 8,
+        "label": "Tue 08:00",
+        "offers": 25,
+        "accepted": 12,
+        "no_response": 1,
+        "no_response_rate": 0.04,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 9,
+        "label": "Tue 09:00",
+        "offers": 23,
+        "accepted": 19,
+        "no_response": 1,
+        "no_response_rate": 0.043478260869565216,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 10,
+        "label": "Tue 10:00",
+        "offers": 30,
+        "accepted": 24,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 11,
+        "label": "Tue 11:00",
+        "offers": 27,
+        "accepted": 19,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 12,
+        "label": "Tue 12:00",
+        "offers": 26,
+        "accepted": 21,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 13,
+        "label": "Tue 13:00",
+        "offers": 32,
+        "accepted": 24,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 14,
+        "label": "Tue 14:00",
+        "offers": 30,
+        "accepted": 23,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 15,
+        "label": "Tue 15:00",
+        "offers": 19,
+        "accepted": 11,
+        "no_response": 1,
+        "no_response_rate": 0.05263157894736842,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 16,
+        "label": "Tue 16:00",
+        "offers": 18,
+        "accepted": 10,
+        "no_response": 1,
+        "no_response_rate": 0.05555555555555555,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 17,
+        "label": "Tue 17:00",
+        "offers": 13,
+        "accepted": 3,
+        "no_response": 7,
+        "no_response_rate": 0.5384615384615384,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 18,
+        "label": "Tue 18:00",
+        "offers": 29,
+        "accepted": 10,
+        "no_response": 12,
+        "no_response_rate": 0.41379310344827586,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 19,
+        "label": "Tue 19:00",
+        "offers": 22,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.2727272727272727,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 20,
+        "label": "Tue 20:00",
+        "offers": 18,
+        "accepted": 3,
+        "no_response": 10,
+        "no_response_rate": 0.5555555555555556,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 21,
+        "label": "Tue 21:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.6153846153846154,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 22,
+        "label": "Tue 22:00",
+        "offers": 17,
+        "accepted": 1,
+        "no_response": 7,
+        "no_response_rate": 0.4117647058823529,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 23,
+        "label": "Tue 23:00",
+        "offers": 12,
+        "accepted": 5,
+        "no_response": 1,
+        "no_response_rate": 0.08333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 0,
+        "label": "Wed 00:00",
+        "offers": 10,
+        "accepted": 4,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 1,
+        "label": "Wed 01:00",
+        "offers": 5,
+        "accepted": 1,
+        "no_response": 1,
+        "no_response_rate": 0.2,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 2,
+        "label": "Wed 02:00",
+        "offers": 5,
+        "accepted": 1,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 3,
+        "label": "Wed 03:00",
+        "offers": 3,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 1.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 4,
+        "label": "Wed 04:00",
+        "offers": 6,
+        "accepted": 2,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 5,
+        "label": "Wed 05:00",
+        "offers": 11,
+        "accepted": 6,
+        "no_response": 2,
+        "no_response_rate": 0.18181818181818182,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 6,
+        "label": "Wed 06:00",
+        "offers": 24,
+        "accepted": 14,
+        "no_response": 3,
+        "no_response_rate": 0.125,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 7,
+        "label": "Wed 07:00",
+        "offers": 9,
+        "accepted": 4,
+        "no_response": 2,
+        "no_response_rate": 0.2222222222222222,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 8,
+        "label": "Wed 08:00",
+        "offers": 15,
+        "accepted": 9,
+        "no_response": 1,
+        "no_response_rate": 0.06666666666666667,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 9,
+        "label": "Wed 09:00",
+        "offers": 15,
+        "accepted": 15,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 10,
+        "label": "Wed 10:00",
+        "offers": 27,
+        "accepted": 17,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 11,
+        "label": "Wed 11:00",
+        "offers": 17,
+        "accepted": 14,
+        "no_response": 1,
+        "no_response_rate": 0.058823529411764705,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 12,
+        "label": "Wed 12:00",
+        "offers": 25,
+        "accepted": 17,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 13,
+        "label": "Wed 13:00",
+        "offers": 24,
+        "accepted": 19,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 14,
+        "label": "Wed 14:00",
+        "offers": 22,
+        "accepted": 15,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 15,
+        "label": "Wed 15:00",
+        "offers": 22,
+        "accepted": 15,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 16,
+        "label": "Wed 16:00",
+        "offers": 26,
+        "accepted": 9,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 17,
+        "label": "Wed 17:00",
+        "offers": 30,
+        "accepted": 4,
+        "no_response": 12,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 18,
+        "label": "Wed 18:00",
+        "offers": 25,
+        "accepted": 4,
+        "no_response": 11,
+        "no_response_rate": 0.44,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 19,
+        "label": "Wed 19:00",
+        "offers": 28,
+        "accepted": 3,
+        "no_response": 8,
+        "no_response_rate": 0.2857142857142857,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 20,
+        "label": "Wed 20:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 21,
+        "label": "Wed 21:00",
+        "offers": 23,
+        "accepted": 4,
+        "no_response": 5,
+        "no_response_rate": 0.21739130434782608,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 22,
+        "label": "Wed 22:00",
+        "offers": 13,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.23076923076923078,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 23,
+        "label": "Wed 23:00",
+        "offers": 10,
+        "accepted": 1,
+        "no_response": 3,
+        "no_response_rate": 0.3,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 0,
+        "label": "Thu 00:00",
+        "offers": 10,
+        "accepted": 3,
+        "no_response": 1,
+        "no_response_rate": 0.1,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 1,
+        "label": "Thu 01:00",
+        "offers": 4,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.75,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 2,
+        "label": "Thu 02:00",
+        "offers": 3,
+        "accepted": 0,
+        "no_response": 2,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 3,
+        "label": "Thu 03:00",
+        "offers": 6,
+        "accepted": 0,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 4,
+        "label": "Thu 04:00",
+        "offers": 5,
+        "accepted": 1,
+        "no_response": 1,
+        "no_response_rate": 0.2,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 5,
+        "label": "Thu 05:00",
+        "offers": 10,
+        "accepted": 3,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 6,
+        "label": "Thu 06:00",
+        "offers": 25,
+        "accepted": 19,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 7,
+        "label": "Thu 07:00",
+        "offers": 30,
+        "accepted": 17,
+        "no_response": 4,
+        "no_response_rate": 0.13333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 8,
+        "label": "Thu 08:00",
+        "offers": 12,
+        "accepted": 8,
+        "no_response": 1,
+        "no_response_rate": 0.08333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 9,
+        "label": "Thu 09:00",
+        "offers": 26,
+        "accepted": 22,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 10,
+        "label": "Thu 10:00",
+        "offers": 17,
+        "accepted": 14,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 11,
+        "label": "Thu 11:00",
+        "offers": 21,
+        "accepted": 18,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 12,
+        "label": "Thu 12:00",
+        "offers": 14,
+        "accepted": 9,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 13,
+        "label": "Thu 13:00",
+        "offers": 27,
+        "accepted": 20,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 14,
+        "label": "Thu 14:00",
+        "offers": 26,
+        "accepted": 13,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 15,
+        "label": "Thu 15:00",
+        "offers": 23,
+        "accepted": 11,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 16,
+        "label": "Thu 16:00",
+        "offers": 21,
+        "accepted": 7,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 17,
+        "label": "Thu 17:00",
+        "offers": 32,
+        "accepted": 3,
+        "no_response": 10,
+        "no_response_rate": 0.3125,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 18,
+        "label": "Thu 18:00",
+        "offers": 24,
+        "accepted": 5,
+        "no_response": 9,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 19,
+        "label": "Thu 19:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 9,
+        "no_response_rate": 0.47368421052631576,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 20,
+        "label": "Thu 20:00",
+        "offers": 20,
+        "accepted": 4,
+        "no_response": 8,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 21,
+        "label": "Thu 21:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 11,
+        "no_response_rate": 0.55,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 22,
+        "label": "Thu 22:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 23,
+        "label": "Thu 23:00",
+        "offers": 13,
+        "accepted": 3,
+        "no_response": 3,
+        "no_response_rate": 0.23076923076923078,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 0,
+        "label": "Fri 00:00",
+        "offers": 16,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.3125,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 1,
+        "label": "Fri 01:00",
+        "offers": 15,
+        "accepted": 1,
+        "no_response": 9,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 2,
+        "label": "Fri 02:00",
+        "offers": 1,
+        "accepted": 0,
+        "no_response": 1,
+        "no_response_rate": 1.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 3,
+        "label": "Fri 03:00",
+        "offers": 3,
+        "accepted": 0,
+        "no_response": 2,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 4,
+        "label": "Fri 04:00",
+        "offers": 3,
+        "accepted": 0,
+        "no_response": 2,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 5,
+        "label": "Fri 05:00",
+        "offers": 13,
+        "accepted": 7,
+        "no_response": 2,
+        "no_response_rate": 0.15384615384615385,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 6,
+        "label": "Fri 06:00",
+        "offers": 17,
+        "accepted": 12,
+        "no_response": 1,
+        "no_response_rate": 0.058823529411764705,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 7,
+        "label": "Fri 07:00",
+        "offers": 10,
+        "accepted": 10,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 8,
+        "label": "Fri 08:00",
+        "offers": 14,
+        "accepted": 9,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 9,
+        "label": "Fri 09:00",
+        "offers": 20,
+        "accepted": 18,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 10,
+        "label": "Fri 10:00",
+        "offers": 15,
+        "accepted": 11,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 11,
+        "label": "Fri 11:00",
+        "offers": 23,
+        "accepted": 15,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 12,
+        "label": "Fri 12:00",
+        "offers": 21,
+        "accepted": 14,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 13,
+        "label": "Fri 13:00",
+        "offers": 19,
+        "accepted": 11,
+        "no_response": 0,
+        "no_response_rate": 0.0,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 14,
+        "label": "Fri 14:00",
+        "offers": 26,
+        "accepted": 14,
+        "no_response": 2,
+        "no_response_rate": 0.07692307692307693,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 15,
+        "label": "Fri 15:00",
+        "offers": 20,
+        "accepted": 7,
+        "no_response": 6,
+        "no_response_rate": 0.3,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 16,
+        "label": "Fri 16:00",
+        "offers": 19,
+        "accepted": 4,
+        "no_response": 3,
+        "no_response_rate": 0.15789473684210525,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 17,
+        "label": "Fri 17:00",
+        "offers": 30,
+        "accepted": 8,
+        "no_response": 9,
+        "no_response_rate": 0.3,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 18,
+        "label": "Fri 18:00",
+        "offers": 24,
+        "accepted": 2,
+        "no_response": 8,
+        "no_response_rate": 0.3333333333333333,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 19,
+        "label": "Fri 19:00",
+        "offers": 12,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.4166666666666667,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 20,
+        "label": "Fri 20:00",
+        "offers": 25,
+        "accepted": 4,
+        "no_response": 12,
+        "no_response_rate": 0.48,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 21,
+        "label": "Fri 21:00",
+        "offers": 16,
+        "accepted": 3,
+        "no_response": 8,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 22,
+        "label": "Fri 22:00",
+        "offers": 14,
+        "accepted": 4,
+        "no_response": 4,
+        "no_response_rate": 0.2857142857142857,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 23,
+        "label": "Fri 23:00",
+        "offers": 16,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.3125,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 0,
+        "label": "Sat 00:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 1,
+        "no_response_rate": 0.2,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 1,
+        "label": "Sat 01:00",
+        "offers": 14,
+        "accepted": 2,
+        "no_response": 3,
+        "no_response_rate": 0.21428571428571427,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 2,
+        "label": "Sat 02:00",
+        "offers": 10,
+        "accepted": 2,
+        "no_response": 6,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 3,
+        "label": "Sat 03:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 4,
+        "label": "Sat 04:00",
+        "offers": 4,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.75,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 5,
+        "label": "Sat 05:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 6,
+        "label": "Sat 06:00",
+        "offers": 14,
+        "accepted": 0,
+        "no_response": 11,
+        "no_response_rate": 0.7857142857142857,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 7,
+        "label": "Sat 07:00",
+        "offers": 11,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 8,
+        "label": "Sat 08:00",
+        "offers": 10,
+        "accepted": 4,
+        "no_response": 2,
+        "no_response_rate": 0.2,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 9,
+        "label": "Sat 09:00",
+        "offers": 20,
+        "accepted": 1,
+        "no_response": 11,
+        "no_response_rate": 0.55,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 10,
+        "label": "Sat 10:00",
+        "offers": 14,
+        "accepted": 1,
+        "no_response": 7,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 11,
+        "label": "Sat 11:00",
+        "offers": 17,
+        "accepted": 1,
+        "no_response": 8,
+        "no_response_rate": 0.47058823529411764,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 12,
+        "label": "Sat 12:00",
+        "offers": 26,
+        "accepted": 3,
+        "no_response": 10,
+        "no_response_rate": 0.38461538461538464,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 13,
+        "label": "Sat 13:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.65,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 14,
+        "label": "Sat 14:00",
+        "offers": 22,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.7727272727272727,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 15,
+        "label": "Sat 15:00",
+        "offers": 16,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.8125,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 16,
+        "label": "Sat 16:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 17,
+        "label": "Sat 17:00",
+        "offers": 23,
+        "accepted": 0,
+        "no_response": 18,
+        "no_response_rate": 0.782608695652174,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 18,
+        "label": "Sat 18:00",
+        "offers": 27,
+        "accepted": 4,
+        "no_response": 17,
+        "no_response_rate": 0.6296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 19,
+        "label": "Sat 19:00",
+        "offers": 14,
+        "accepted": 2,
+        "no_response": 9,
+        "no_response_rate": 0.6428571428571429,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 20,
+        "label": "Sat 20:00",
+        "offers": 10,
+        "accepted": 0,
+        "no_response": 8,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 21,
+        "label": "Sat 21:00",
+        "offers": 10,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 22,
+        "label": "Sat 22:00",
+        "offers": 12,
+        "accepted": 2,
+        "no_response": 7,
+        "no_response_rate": 0.5833333333333334,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 23,
+        "label": "Sat 23:00",
+        "offers": 7,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.8571428571428571,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 0,
+        "label": "Sun 00:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 1,
+        "label": "Sun 01:00",
+        "offers": 10,
+        "accepted": 1,
+        "no_response": 4,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 2,
+        "label": "Sun 02:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 3,
+        "label": "Sun 03:00",
+        "offers": 2,
+        "accepted": 0,
+        "no_response": 1,
+        "no_response_rate": 0.5,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 4,
+        "label": "Sun 04:00",
+        "offers": 9,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 5,
+        "label": "Sun 05:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 6,
+        "label": "Sun 06:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 7,
+        "label": "Sun 07:00",
+        "offers": 7,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.42857142857142855,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 8,
+        "label": "Sun 08:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.5454545454545454,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 9,
+        "label": "Sun 09:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.625,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 10,
+        "label": "Sun 10:00",
+        "offers": 17,
+        "accepted": 0,
+        "no_response": 12,
+        "no_response_rate": 0.7058823529411765,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 11,
+        "label": "Sun 11:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.6153846153846154,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 12,
+        "label": "Sun 12:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.6842105263157895,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 13,
+        "label": "Sun 13:00",
+        "offers": 14,
+        "accepted": 0,
+        "no_response": 14,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 14,
+        "label": "Sun 14:00",
+        "offers": 21,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.8095238095238095,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 15,
+        "label": "Sun 15:00",
+        "offers": 31,
+        "accepted": 0,
+        "no_response": 18,
+        "no_response_rate": 0.5806451612903226,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 16,
+        "label": "Sun 16:00",
+        "offers": 27,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.6296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 17,
+        "label": "Sun 17:00",
+        "offers": 24,
+        "accepted": 0,
+        "no_response": 15,
+        "no_response_rate": 0.625,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 18,
+        "label": "Sun 18:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 20,
+        "no_response_rate": 0.7692307692307693,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 19,
+        "label": "Sun 19:00",
+        "offers": 25,
+        "accepted": 1,
+        "no_response": 12,
+        "no_response_rate": 0.48,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 20,
+        "label": "Sun 20:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 12,
+        "no_response_rate": 0.631578947368421,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 21,
+        "label": "Sun 21:00",
+        "offers": 19,
+        "accepted": 1,
+        "no_response": 14,
+        "no_response_rate": 0.7368421052631579,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 22,
+        "label": "Sun 22:00",
+        "offers": 23,
+        "accepted": 0,
+        "no_response": 2,
+        "no_response_rate": 0.08695652173913043,
+        "is_blind_spot": false
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 23,
+        "label": "Sun 23:00",
+        "offers": 9,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": true
+      }
+    ],
+    "blind_spots": [
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 18,
+        "label": "Sun 18:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 20,
+        "no_response_rate": 0.7692307692307693,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 17,
+        "label": "Sat 17:00",
+        "offers": 23,
+        "accepted": 0,
+        "no_response": 18,
+        "no_response_rate": 0.782608695652174,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 15,
+        "label": "Sun 15:00",
+        "offers": 31,
+        "accepted": 0,
+        "no_response": 18,
+        "no_response_rate": 0.5806451612903226,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 14,
+        "label": "Sun 14:00",
+        "offers": 21,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.8095238095238095,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 14,
+        "label": "Sat 14:00",
+        "offers": 22,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.7727272727272727,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 18,
+        "label": "Sat 18:00",
+        "offers": 27,
+        "accepted": 4,
+        "no_response": 17,
+        "no_response_rate": 0.6296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 16,
+        "label": "Sun 16:00",
+        "offers": 27,
+        "accepted": 0,
+        "no_response": 17,
+        "no_response_rate": 0.6296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 16,
+        "label": "Sat 16:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 21,
+        "label": "Tue 21:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.6153846153846154,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 11,
+        "label": "Sun 11:00",
+        "offers": 26,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.6153846153846154,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 17,
+        "label": "Sun 17:00",
+        "offers": 24,
+        "accepted": 0,
+        "no_response": 15,
+        "no_response_rate": 0.625,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 13,
+        "label": "Sun 13:00",
+        "offers": 14,
+        "accepted": 0,
+        "no_response": 14,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 21,
+        "label": "Sun 21:00",
+        "offers": 19,
+        "accepted": 1,
+        "no_response": 14,
+        "no_response_rate": 0.7368421052631579,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 15,
+        "label": "Sat 15:00",
+        "offers": 16,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.8125,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 12,
+        "label": "Sun 12:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.6842105263157895,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 13,
+        "label": "Sat 13:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 13,
+        "no_response_rate": 0.65,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 20,
+        "label": "Mon 20:00",
+        "offers": 23,
+        "accepted": 6,
+        "no_response": 13,
+        "no_response_rate": 0.5652173913043478,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 10,
+        "label": "Sun 10:00",
+        "offers": 17,
+        "accepted": 0,
+        "no_response": 12,
+        "no_response_rate": 0.7058823529411765,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 20,
+        "label": "Sun 20:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 12,
+        "no_response_rate": 0.631578947368421,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 20,
+        "label": "Fri 20:00",
+        "offers": 25,
+        "accepted": 4,
+        "no_response": 12,
+        "no_response_rate": 0.48,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 19,
+        "label": "Sun 19:00",
+        "offers": 25,
+        "accepted": 1,
+        "no_response": 12,
+        "no_response_rate": 0.48,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 18,
+        "label": "Tue 18:00",
+        "offers": 29,
+        "accepted": 10,
+        "no_response": 12,
+        "no_response_rate": 0.41379310344827586,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 17,
+        "label": "Wed 17:00",
+        "offers": 30,
+        "accepted": 4,
+        "no_response": 12,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 6,
+        "label": "Sat 06:00",
+        "offers": 14,
+        "accepted": 0,
+        "no_response": 11,
+        "no_response_rate": 0.7857142857142857,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 21,
+        "label": "Mon 21:00",
+        "offers": 16,
+        "accepted": 1,
+        "no_response": 11,
+        "no_response_rate": 0.6875,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 21,
+        "label": "Thu 21:00",
+        "offers": 20,
+        "accepted": 0,
+        "no_response": 11,
+        "no_response_rate": 0.55,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 9,
+        "label": "Sat 09:00",
+        "offers": 20,
+        "accepted": 1,
+        "no_response": 11,
+        "no_response_rate": 0.55,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 18,
+        "label": "Wed 18:00",
+        "offers": 25,
+        "accepted": 4,
+        "no_response": 11,
+        "no_response_rate": 0.44,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 20,
+        "label": "Tue 20:00",
+        "offers": 18,
+        "accepted": 3,
+        "no_response": 10,
+        "no_response_rate": 0.5555555555555556,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 12,
+        "label": "Sat 12:00",
+        "offers": 26,
+        "accepted": 3,
+        "no_response": 10,
+        "no_response_rate": 0.38461538461538464,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 19,
+        "label": "Sat 19:00",
+        "offers": 14,
+        "accepted": 2,
+        "no_response": 9,
+        "no_response_rate": 0.6428571428571429,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 1,
+        "label": "Fri 01:00",
+        "offers": 15,
+        "accepted": 1,
+        "no_response": 9,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 19,
+        "label": "Thu 19:00",
+        "offers": 19,
+        "accepted": 0,
+        "no_response": 9,
+        "no_response_rate": 0.47368421052631576,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 18,
+        "label": "Thu 18:00",
+        "offers": 24,
+        "accepted": 5,
+        "no_response": 9,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 17,
+        "label": "Mon 17:00",
+        "offers": 25,
+        "accepted": 8,
+        "no_response": 9,
+        "no_response_rate": 0.36,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 20,
+        "label": "Sat 20:00",
+        "offers": 10,
+        "accepted": 0,
+        "no_response": 8,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 21,
+        "label": "Fri 21:00",
+        "offers": 16,
+        "accepted": 3,
+        "no_response": 8,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 11,
+        "label": "Sat 11:00",
+        "offers": 17,
+        "accepted": 1,
+        "no_response": 8,
+        "no_response_rate": 0.47058823529411764,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 20,
+        "label": "Thu 20:00",
+        "offers": 20,
+        "accepted": 4,
+        "no_response": 8,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 22,
+        "label": "Sat 22:00",
+        "offers": 12,
+        "accepted": 2,
+        "no_response": 7,
+        "no_response_rate": 0.5833333333333334,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 17,
+        "label": "Tue 17:00",
+        "offers": 13,
+        "accepted": 3,
+        "no_response": 7,
+        "no_response_rate": 0.5384615384615384,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 10,
+        "label": "Sat 10:00",
+        "offers": 14,
+        "accepted": 1,
+        "no_response": 7,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 22,
+        "label": "Tue 22:00",
+        "offers": 17,
+        "accepted": 1,
+        "no_response": 7,
+        "no_response_rate": 0.4117647058823529,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 23,
+        "label": "Sat 23:00",
+        "offers": 7,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.8571428571428571,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 4,
+        "label": "Sun 04:00",
+        "offers": 9,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 23,
+        "label": "Sun 23:00",
+        "offers": 9,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.6666666666666666,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 2,
+        "label": "Sat 02:00",
+        "offers": 10,
+        "accepted": 2,
+        "no_response": 6,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 8,
+        "label": "Sun 08:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 6,
+        "no_response_rate": 0.5454545454545454,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 2,
+        "label": "Mon 02:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 3,
+        "label": "Mon 03:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 1.0,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 9,
+        "label": "Sun 09:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.625,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 21,
+        "label": "Sat 21:00",
+        "offers": 10,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 2,
+        "weekday": "Wed",
+        "hour": 20,
+        "label": "Wed 20:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 3,
+        "weekday": "Thu",
+        "hour": 22,
+        "label": "Thu 22:00",
+        "offers": 11,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 7,
+        "label": "Sat 07:00",
+        "offers": 11,
+        "accepted": 1,
+        "no_response": 5,
+        "no_response_rate": 0.45454545454545453,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 4,
+        "weekday": "Fri",
+        "hour": 19,
+        "label": "Fri 19:00",
+        "offers": 12,
+        "accepted": 0,
+        "no_response": 5,
+        "no_response_rate": 0.4166666666666667,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 3,
+        "label": "Sat 03:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.8,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 5,
+        "weekday": "Sat",
+        "hour": 5,
+        "label": "Sat 05:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 2,
+        "label": "Sun 02:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 5,
+        "label": "Sun 05:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 4,
+        "no_response_rate": 0.5,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 1,
+        "label": "Sun 01:00",
+        "offers": 10,
+        "accepted": 1,
+        "no_response": 4,
+        "no_response_rate": 0.4,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 0,
+        "label": "Tue 00:00",
+        "offers": 11,
+        "accepted": 3,
+        "no_response": 4,
+        "no_response_rate": 0.36363636363636365,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 0,
+        "weekday": "Mon",
+        "hour": 4,
+        "label": "Mon 04:00",
+        "offers": 5,
+        "accepted": 1,
+        "no_response": 3,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 1,
+        "weekday": "Tue",
+        "hour": 4,
+        "label": "Tue 04:00",
+        "offers": 5,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.6,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 7,
+        "label": "Sun 07:00",
+        "offers": 7,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.42857142857142855,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 0,
+        "label": "Sun 00:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      },
+      {
+        "weekday_index": 6,
+        "weekday": "Sun",
+        "hour": 6,
+        "label": "Sun 06:00",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 3,
+        "no_response_rate": 0.375,
+        "is_blind_spot": true
+      }
+    ],
+    "blind_spot_count": 67,
+    "blind_spot_offers": 1086,
+    "blind_spot_no_response": 628,
+    "by_hour": [
+      {
+        "hour": 0,
+        "label": "00:00",
+        "offers": 67,
+        "accepted": 11,
+        "no_response": 16,
+        "no_response_rate": 0.23880597014925373,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 1,
+        "label": "01:00",
+        "offers": 54,
+        "accepted": 5,
+        "no_response": 25,
+        "no_response_rate": 0.46296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 2,
+        "label": "02:00",
+        "offers": 33,
+        "accepted": 3,
+        "no_response": 18,
+        "no_response_rate": 0.5454545454545454,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 3,
+        "label": "03:00",
+        "offers": 27,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.5925925925925926,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 4,
+        "label": "04:00",
+        "offers": 37,
+        "accepted": 4,
+        "no_response": 18,
+        "no_response_rate": 0.4864864864864865,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 5,
+        "label": "05:00",
+        "offers": 95,
+        "accepted": 39,
+        "no_response": 14,
+        "no_response_rate": 0.14736842105263157,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 6,
+        "label": "06:00",
+        "offers": 171,
+        "accepted": 96,
+        "no_response": 21,
+        "no_response_rate": 0.12280701754385964,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 7,
+        "label": "07:00",
+        "offers": 124,
+        "accepted": 65,
+        "no_response": 16,
+        "no_response_rate": 0.12903225806451613,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 8,
+        "label": "08:00",
+        "offers": 124,
+        "accepted": 72,
+        "no_response": 11,
+        "no_response_rate": 0.08870967741935484,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 9,
+        "label": "09:00",
+        "offers": 145,
+        "accepted": 101,
+        "no_response": 17,
+        "no_response_rate": 0.11724137931034483,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 10,
+        "label": "10:00",
+        "offers": 159,
+        "accepted": 93,
+        "no_response": 19,
+        "no_response_rate": 0.11949685534591195,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 11,
+        "label": "11:00",
+        "offers": 170,
+        "accepted": 90,
+        "no_response": 25,
+        "no_response_rate": 0.14705882352941177,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 12,
+        "label": "12:00",
+        "offers": 161,
+        "accepted": 81,
+        "no_response": 24,
+        "no_response_rate": 0.14906832298136646,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 13,
+        "label": "13:00",
+        "offers": 178,
+        "accepted": 96,
+        "no_response": 27,
+        "no_response_rate": 0.15168539325842698,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 14,
+        "label": "14:00",
+        "offers": 180,
+        "accepted": 84,
+        "no_response": 36,
+        "no_response_rate": 0.2,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 15,
+        "label": "15:00",
+        "offers": 163,
+        "accepted": 60,
+        "no_response": 38,
+        "no_response_rate": 0.2331288343558282,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 16,
+        "label": "16:00",
+        "offers": 164,
+        "accepted": 46,
+        "no_response": 37,
+        "no_response_rate": 0.22560975609756098,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 17,
+        "label": "17:00",
+        "offers": 177,
+        "accepted": 26,
+        "no_response": 80,
+        "no_response_rate": 0.4519774011299435,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 18,
+        "label": "18:00",
+        "offers": 185,
+        "accepted": 33,
+        "no_response": 85,
+        "no_response_rate": 0.4594594594594595,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 19,
+        "label": "19:00",
+        "offers": 142,
+        "accepted": 10,
+        "no_response": 55,
+        "no_response_rate": 0.3873239436619718,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 20,
+        "label": "20:00",
+        "offers": 126,
+        "accepted": 17,
+        "no_response": 68,
+        "no_response_rate": 0.5396825396825397,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 21,
+        "label": "21:00",
+        "offers": 130,
+        "accepted": 10,
+        "no_response": 70,
+        "no_response_rate": 0.5384615384615384,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 22,
+        "label": "22:00",
+        "offers": 104,
+        "accepted": 8,
+        "no_response": 32,
+        "no_response_rate": 0.3076923076923077,
+        "is_blind_spot": false
+      },
+      {
+        "hour": 23,
+        "label": "23:00",
+        "offers": 80,
+        "accepted": 15,
+        "no_response": 27,
+        "no_response_rate": 0.3375,
+        "is_blind_spot": false
+      }
+    ],
+    "worst_hours": [
+      {
+        "hour": 1,
+        "label": "01:00",
+        "offers": 54,
+        "accepted": 5,
+        "no_response": 25,
+        "no_response_rate": 0.46296296296296297,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 2,
+        "label": "02:00",
+        "offers": 33,
+        "accepted": 3,
+        "no_response": 18,
+        "no_response_rate": 0.5454545454545454,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 3,
+        "label": "03:00",
+        "offers": 27,
+        "accepted": 0,
+        "no_response": 16,
+        "no_response_rate": 0.5925925925925926,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 4,
+        "label": "04:00",
+        "offers": 37,
+        "accepted": 4,
+        "no_response": 18,
+        "no_response_rate": 0.4864864864864865,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 17,
+        "label": "17:00",
+        "offers": 177,
+        "accepted": 26,
+        "no_response": 80,
+        "no_response_rate": 0.4519774011299435,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 18,
+        "label": "18:00",
+        "offers": 185,
+        "accepted": 33,
+        "no_response": 85,
+        "no_response_rate": 0.4594594594594595,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 19,
+        "label": "19:00",
+        "offers": 142,
+        "accepted": 10,
+        "no_response": 55,
+        "no_response_rate": 0.3873239436619718,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 20,
+        "label": "20:00",
+        "offers": 126,
+        "accepted": 17,
+        "no_response": 68,
+        "no_response_rate": 0.5396825396825397,
+        "is_blind_spot": true
+      },
+      {
+        "hour": 21,
+        "label": "21:00",
+        "offers": 130,
+        "accepted": 10,
+        "no_response": 70,
+        "no_response_rate": 0.5384615384615384,
+        "is_blind_spot": true
+      }
+    ],
+    "totals": {
+      "offers": 2996,
+      "no_response": 795,
+      "no_response_rate": 0.26535380507343126
+    },
+    "thresholds": {
+      "min_offers": 5,
+      "threshold": 0.35
+    },
+    "response_window_note": "The median response window Towbook allows is 3 minutes. A missed notification is a lost job almost immediately."
+  },
+  "closeoff_candidates": {
+    "thresholds": {
+      "min_offers": 5,
+      "max_rate": 0.1,
+      "exclude_wanted_classes": true
+    },
+    "excluded_service_classes": [
+      "tow",
+      "winch_out"
+    ],
+    "clients": [
+      {
+        "client": "Agero (Swoop)",
+        "client_key": "agero (swoop)",
+        "client_offers": 1942,
+        "candidate_offers": 259,
+        "candidate_accepted": 7,
+        "candidate_rate": 0.02702702702702703,
+        "candidate_share_of_client_offers": 0.1333676622039135,
+        "service_types": [
+          {
+            "service_type_raw": "Tire Change",
+            "service_class": "light_service",
+            "offers": 110,
+            "accepted": 0,
+            "no_response": 57,
+            "rate": 0.0,
+            "share_of_client_offers": 0.05664263645726056
+          },
+          {
+            "service_type_raw": "Battery Jump",
+            "service_class": "light_service",
+            "offers": 73,
+            "accepted": 3,
+            "no_response": 33,
+            "rate": 0.0410958904109589,
+            "share_of_client_offers": 0.03759011328527292
+          },
+          {
+            "service_type_raw": "Lock Out",
+            "service_class": "light_service",
+            "offers": 58,
+            "accepted": 4,
+            "no_response": 28,
+            "rate": 0.06896551724137931,
+            "share_of_client_offers": 0.029866117404737384
+          },
+          {
+            "service_type_raw": "Fuel Delivery",
+            "service_class": "light_service",
+            "offers": 18,
+            "accepted": 0,
+            "no_response": 5,
+            "rate": 0.0,
+            "share_of_client_offers": 0.009268795056642637
+          }
+        ]
+      },
+      {
+        "client": "Allstate",
+        "client_key": "allstate",
+        "client_offers": 666,
+        "candidate_offers": 110,
+        "candidate_accepted": 4,
+        "candidate_rate": 0.03636363636363636,
+        "candidate_share_of_client_offers": 0.16516516516516516,
+        "service_types": [
+          {
+            "service_type_raw": "Light Tire Change",
+            "service_class": "light_service",
+            "offers": 59,
+            "accepted": 1,
+            "no_response": 0,
+            "rate": 0.01694915254237288,
+            "share_of_client_offers": 0.08858858858858859
+          },
+          {
+            "service_type_raw": "Light Lock-out",
+            "service_class": "light_service",
+            "offers": 25,
+            "accepted": 1,
+            "no_response": 0,
+            "rate": 0.04,
+            "share_of_client_offers": 0.03753753753753754
+          },
+          {
+            "service_type_raw": "Light Start",
+            "service_class": "light_service",
+            "offers": 20,
+            "accepted": 2,
+            "no_response": 0,
+            "rate": 0.1,
+            "share_of_client_offers": 0.03003003003003003
+          },
+          {
+            "service_type_raw": "Light Fuel Delivery",
+            "service_class": "light_service",
+            "offers": 6,
+            "accepted": 0,
+            "no_response": 0,
+            "rate": 0.0,
+            "share_of_client_offers": 0.009009009009009009
+          }
+        ]
+      },
+      {
+        "client": "NSD",
+        "client_key": "nsd",
+        "client_offers": 226,
+        "candidate_offers": 32,
+        "candidate_accepted": 1,
+        "candidate_rate": 0.03125,
+        "candidate_share_of_client_offers": 0.1415929203539823,
+        "service_types": [
+          {
+            "service_type_raw": "Tire Change",
+            "service_class": "light_service",
+            "offers": 17,
+            "accepted": 0,
+            "no_response": 12,
+            "rate": 0.0,
+            "share_of_client_offers": 0.0752212389380531
+          },
+          {
+            "service_type_raw": "Jump Start",
+            "service_class": "light_service",
+            "offers": 9,
+            "accepted": 1,
+            "no_response": 4,
+            "rate": 0.1111111111111111,
+            "share_of_client_offers": 0.03982300884955752
+          },
+          {
+            "service_type_raw": "Lockout",
+            "service_class": "light_service",
+            "offers": 6,
+            "accepted": 0,
+            "no_response": 4,
+            "rate": 0.0,
+            "share_of_client_offers": 0.02654867256637168
+          }
+        ]
+      },
+      {
+        "client": "Allied Dispatch Solutions",
+        "client_key": "allied dispatch solutions",
+        "client_offers": 78,
+        "candidate_offers": 15,
+        "candidate_accepted": 0,
+        "candidate_rate": 0.0,
+        "candidate_share_of_client_offers": 0.19230769230769232,
+        "service_types": [
+          {
+            "service_type_raw": "Tire Change",
+            "service_class": "light_service",
+            "offers": 7,
+            "accepted": 0,
+            "no_response": 3,
+            "rate": 0.0,
+            "share_of_client_offers": 0.08974358974358974
+          },
+          {
+            "service_type_raw": "Start",
+            "service_class": "unclassified",
+            "offers": 6,
+            "accepted": 0,
+            "no_response": 6,
+            "rate": 0.0,
+            "share_of_client_offers": 0.07692307692307693
+          },
+          {
+            "service_type_raw": "Lock Out",
+            "service_class": "light_service",
+            "offers": 2,
+            "accepted": 0,
+            "no_response": 2,
+            "rate": 0.0,
+            "share_of_client_offers": 0.02564102564102564
+          }
+        ]
+      },
+      {
+        "client": "Urgent.ly",
+        "client_key": "urgent.ly",
+        "client_offers": 84,
+        "candidate_offers": 13,
+        "candidate_accepted": 0,
+        "candidate_rate": 0.0,
+        "candidate_share_of_client_offers": 0.15476190476190477,
+        "service_types": [
+          {
+            "service_type_raw": "Flat Tire",
+            "service_class": "light_service",
+            "offers": 8,
+            "accepted": 0,
+            "no_response": 3,
+            "rate": 0.0,
+            "share_of_client_offers": 0.09523809523809523
+          },
+          {
+            "service_type_raw": "Jump Start",
+            "service_class": "light_service",
+            "offers": 5,
+            "accepted": 0,
+            "no_response": 3,
+            "rate": 0.0,
+            "share_of_client_offers": 0.05952380952380952
+          }
+        ]
+      }
+    ],
+    "by_service_type": [
+      {
+        "service_type_raw": "Tire Change",
+        "service_class": "light_service",
+        "offers": 134,
+        "accepted": 0,
+        "no_response": 72,
+        "rate": 0.0
+      },
+      {
+        "service_type_raw": "Battery Jump",
+        "service_class": "light_service",
+        "offers": 73,
+        "accepted": 3,
+        "no_response": 33,
+        "rate": 0.0410958904109589
+      },
+      {
+        "service_type_raw": "Lock Out",
+        "service_class": "light_service",
+        "offers": 60,
+        "accepted": 4,
+        "no_response": 30,
+        "rate": 0.06666666666666667
+      },
+      {
+        "service_type_raw": "Light Tire Change",
+        "service_class": "light_service",
+        "offers": 59,
+        "accepted": 1,
+        "no_response": 0,
+        "rate": 0.01694915254237288
+      },
+      {
+        "service_type_raw": "Light Lock-out",
+        "service_class": "light_service",
+        "offers": 25,
+        "accepted": 1,
+        "no_response": 0,
+        "rate": 0.04
+      },
+      {
+        "service_type_raw": "Light Start",
+        "service_class": "light_service",
+        "offers": 20,
+        "accepted": 2,
+        "no_response": 0,
+        "rate": 0.1
+      },
+      {
+        "service_type_raw": "Fuel Delivery",
+        "service_class": "light_service",
+        "offers": 18,
+        "accepted": 0,
+        "no_response": 5,
+        "rate": 0.0
+      },
+      {
+        "service_type_raw": "Jump Start",
+        "service_class": "light_service",
+        "offers": 14,
+        "accepted": 1,
+        "no_response": 7,
+        "rate": 0.07142857142857142
+      },
+      {
+        "service_type_raw": "Flat Tire",
+        "service_class": "light_service",
+        "offers": 8,
+        "accepted": 0,
+        "no_response": 3,
+        "rate": 0.0
+      },
+      {
+        "service_type_raw": "Light Fuel Delivery",
+        "service_class": "light_service",
+        "offers": 6,
+        "accepted": 0,
+        "no_response": 0,
+        "rate": 0.0
+      },
+      {
+        "service_type_raw": "Lockout",
+        "service_class": "light_service",
+        "offers": 6,
+        "accepted": 0,
+        "no_response": 4,
+        "rate": 0.0
+      },
+      {
+        "service_type_raw": "Start",
+        "service_class": "unclassified",
+        "offers": 6,
+        "accepted": 0,
+        "no_response": 6,
+        "rate": 0.0
+      }
+    ],
+    "totals": {
+      "offers": 429,
+      "accepted": 12,
+      "rate": 0.027972027972027972,
+      "service_types": 12,
+      "clients": 5
+    },
+    "wanted_baseline": {
+      "service_classes": [
+        "tow",
+        "winch_out"
+      ],
+      "offers": 2558,
+      "no_response": 634,
+      "no_response_rate": 0.24784988272087569
+    },
+    "rationale": "These service types are refused almost every time they are offered, yet they still consume attention inside the same 3-minute decision window the tow offers are competing for. Closing them off is not only noise reduction: it is expected to improve the response rate on work we do want. wanted_baseline records that rate now so the next period can show whether it held.",
+    "ranking_basis": "job_count"
+  },
+  "client_comparison": {
+    "clients": [
+      {
+        "client": "Agero (Swoop)",
+        "client_key": "agero (swoop)",
+        "offers": 1942,
+        "accepted": 710,
+        "rate": 0.36560247167868176,
+        "declined": 316,
+        "no_response": 648,
+        "withdrew": 267,
+        "in_flight": 0,
+        "accept_failed": 1,
+        "missed": 1232,
+        "recoverable": 965,
+        "no_response_rate": 0.3336766220391349,
+        "decline_rate": 0.1627188465499485,
+        "missed_rate": 0.6343975283213182
+      },
+      {
+        "client": "Allstate",
+        "client_key": "allstate",
+        "offers": 666,
+        "accepted": 231,
+        "rate": 0.34684684684684686,
+        "declined": 88,
+        "no_response": 1,
+        "withdrew": 346,
+        "in_flight": 0,
+        "accept_failed": 0,
+        "missed": 435,
+        "recoverable": 89,
+        "no_response_rate": 0.0015015015015015015,
+        "decline_rate": 0.13213213213213212,
+        "missed_rate": 0.6531531531531531
+      },
+      {
+        "client": "NSD",
+        "client_key": "nsd",
+        "offers": 226,
+        "accepted": 70,
+        "rate": 0.30973451327433627,
+        "declined": 0,
+        "no_response": 88,
+        "withdrew": 68,
+        "in_flight": 0,
+        "accept_failed": 0,
+        "missed": 156,
+        "recoverable": 88,
+        "no_response_rate": 0.3893805309734513,
+        "decline_rate": 0.0,
+        "missed_rate": 0.6902654867256637
+      },
+      {
+        "client": "Urgent.ly",
+        "client_key": "urgent.ly",
+        "offers": 84,
+        "accepted": 26,
+        "rate": 0.30952380952380953,
+        "declined": 7,
+        "no_response": 25,
+        "withdrew": 26,
+        "in_flight": 0,
+        "accept_failed": 0,
+        "missed": 58,
+        "recoverable": 32,
+        "no_response_rate": 0.2976190476190476,
+        "decline_rate": 0.08333333333333333,
+        "missed_rate": 0.6904761904761905
+      },
+      {
+        "client": "Allied Dispatch Solutions",
+        "client_key": "allied dispatch solutions",
+        "offers": 78,
+        "accepted": 28,
+        "rate": 0.358974358974359,
+        "declined": 0,
+        "no_response": 33,
+        "withdrew": 6,
+        "in_flight": 11,
+        "accept_failed": 0,
+        "missed": 39,
+        "recoverable": 33,
+        "no_response_rate": 0.4230769230769231,
+        "decline_rate": 0.0,
+        "missed_rate": 0.5
+      }
+    ],
+    "findings": [
+      {
+        "kind": "no_response_gap",
+        "severity": "high",
+        "ranked_by": "jobs lost",
+        "spread_pp": 33.22,
+        "worst": {
+          "client": "Agero (Swoop)",
+          "client_key": "agero (swoop)",
+          "offers": 1942,
+          "no_response": 648,
+          "no_response_rate": 0.3336766220391349
+        },
+        "best": {
+          "client": "Allstate",
+          "client_key": "allstate",
+          "offers": 666,
+          "no_response": 1,
+          "no_response_rate": 0.0015015015015015015
+        },
+        "summary": "Agero (Swoop) offers go unanswered 33.4% of the time (648 of 1942) while Allstate offers go unanswered 0.2% (1 of 666). Same trucks, same staff, same three-minute window. A gap that large is a process or integration difference, not a capacity one."
+      },
+      {
+        "kind": "no_response_rate_outlier",
+        "severity": "medium",
+        "ranked_by": "miss rate",
+        "spread_pp": 42.16,
+        "worst": {
+          "client": "Allied Dispatch Solutions",
+          "client_key": "allied dispatch solutions",
+          "offers": 78,
+          "no_response": 33,
+          "no_response_rate": 0.4230769230769231
+        },
+        "best": {
+          "client": "Allstate",
+          "client_key": "allstate",
+          "offers": 666,
+          "no_response": 1,
+          "no_response_rate": 0.0015015015015015015
+        },
+        "summary": "Allied Dispatch Solutions offers go unanswered 42.3% of the time (33 of 78) while Allstate offers go unanswered 0.2% (1 of 666). Same trucks, same staff, same three-minute window. A gap that large is a process or integration difference, not a capacity one."
+      }
+    ],
+    "thresholds": {
+      "min_offers": 20,
+      "gap_pp": 20.0
+    },
+    "ranking_basis": "job_count"
+  },
+  "ranking_basis": "job_count",
+  "revenue_available": true,
+  "revenue_note": "estimated_value uses the per-client average job values in missed_work.job_value_by_client -- GROSS, not margin, and not from the feed, which carries no amounts at all. It is applied only to tow, winch_out (missed_work.job_value_applies_to). Rows outside that set, and clients with no configured value, contribute nothing and are counted in unpriced_missed. Ranking is still by job count.",
+  "priced_service_classes": [
+    "tow",
+    "winch_out"
+  ],
+  "bucket_sources": {
+    "status_code": 2932,
+    "status_name": 64
+  },
+  "unknown_statuses": [],
+  "counts": {
+    "requests": 2996,
+    "clients": 5
+  }
+}

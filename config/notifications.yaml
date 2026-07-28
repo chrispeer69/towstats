@@ -1,0 +1,239 @@
+# ==========================================================================
+# notifications.yaml -- who gets told what, through which channel, and when.
+#
+# Hard constraint #2: adding a route or changing a recipient is a config edit,
+# not a code change.
+#
+# ROUTE MATCHING
+#   * A route with `report:` fires when that scheduled report completes.
+#   * A route with `event:` fires on an emitted event ("alert" or
+#     "pipeline_failure"). An optional `severity:` narrows it.
+#   * ALL matching routes fire. Daily deliberately matches two routes: a short
+#     SMS and a full email.
+#
+# SUPPRESSION -- read this before editing quiet_hours
+#   * pipeline_failure is NON-SUPPRESSIBLE. It ignores quiet hours entirely
+#     and it ignores the rate limit. A missing report must be louder than a
+#     bad one, and silence is never treated as success.
+#   * quiet_hours suppresses only the severities listed in
+#     suppress_severities. `high` is absent from that list on purpose.
+# ==========================================================================
+
+version: 2
+
+routes:
+  - report: hourly
+    channel: sms
+    to: [owner]
+    template: hourly_short
+  - report: daily
+    channel: sms
+    to: [owner]
+    template: daily_summary
+  - report: daily
+    channel: email
+    to: [owner, ops_manager]
+    template: daily_full
+  - report: weekly
+    channel: email
+    to: [owner, ops_manager]
+    template: weekly_full
+  # Monthly is EMAIL ONLY, deliberately. A month of trend does not fit in 320
+  # characters and does not need to be read within three minutes; the SMS
+  # channel is reserved for things that need a response now.
+  - report: monthly
+    channel: email
+    to: [owner, ops_manager]
+    template: monthly_full
+  - event: alert
+    severity: high
+    channel: sms
+    to: [owner]
+    immediate: true
+  - event: pipeline_failure
+    channel: sms
+    to: [owner]
+    immediate: true
+
+quiet_hours:
+  start: "21:00"
+  end: "06:00"
+  suppress_severities: [low, medium]
+
+rate_limit:
+  same_alert_same_entity: 4h
+
+# --------------------------------------------------------------------------
+# recipients -- maps a role to the ENVIRONMENT VARIABLE NAMES that hold the
+# contact details. The values themselves are never stored in this file and
+# never committed. Hard constraint #1.
+# --------------------------------------------------------------------------
+recipients:
+  owner:
+    phone_env: OWNER_PHONE
+    email_env: OWNER_EMAIL
+  ops_manager:
+    phone_env: OPS_MANAGER_PHONE
+    email_env: OPS_MANAGER_EMAIL
+
+# --------------------------------------------------------------------------
+# Events that can never be suppressed, whatever quiet_hours or rate_limit say.
+# --------------------------------------------------------------------------
+non_suppressible_events:
+  - pipeline_failure
+
+# --------------------------------------------------------------------------
+# templates -- message bodies as data.
+#
+# Placeholders are `{name}` and are filled by the notifier from the metrics
+# dict. A placeholder with no value renders as "?" rather than crashing the
+# send: a slightly wrong text still beats no text. A body containing `{{` or
+# `{%` is treated as full Jinja2 instead, which is what the two SMS templates
+# below need in order to drop a line entirely rather than print a zero.
+#
+# EVERY REPORT LEADS WITH MISSED WORK (MISSED_WORK_MODEL.md section 7). The
+# deliverable is the inventory of work we did NOT get, attributed to a cause,
+# with an action attached. Acceptance rate is supporting context and comes
+# last.
+#
+# EVERY RANKED LIST IS RANKED BY JOB COUNT. offerAmount is empty on 100% of
+# the records this account produces, so there is no dollar figure to show and
+# none may be implied. Say so in the message, do not assume the reader knows.
+#
+# THE HOURLY SMS SHAPE IS EXACT. It replaces a human texting these numbers,
+# and its first two lines must read identically to what was sent by hand:
+#
+#     14:00-14:59 | Offered 12 / Accepted 9 (75%)
+#     Day: 84 / 61 (73%)
+#
+# A THIRD LINE IS APPENDED ONLY WHEN THERE IS SOMETHING TO ACT ON:
+#
+#     !! 3 tows unanswered this hour
+#
+# It counts offers for work the owner says he wants (rules.yaml ->
+# acceptance_policy.should_accept) that landed in the `no_response` bucket --
+# nobody answered inside Towbook's median 3-minute window. The `{% if %}` keeps
+# the newline INSIDE the conditional, so a quiet hour sends exactly the two
+# lines it always sent: no trailing blank line, and never "!! 0 tows
+# unanswered", which is noise dressed up as a warning.
+#
+# Percentages are whole numbers, rounded half-up, with no decimal point and
+# no space before the % sign. Times are local (TZ, default America/Detroit)
+# in 24-hour form.
+# --------------------------------------------------------------------------
+templates:
+  hourly_short:
+    channel: sms
+    body: |-
+      {{ hour_start }}-{{ hour_end }} | Offered {{ offered }} / Accepted {{ accepted }} ({{ rate_pct }}%)
+      Day: {{ day_offered }} / {{ day_accepted }} ({{ day_rate_pct }}%){% if missed_alert_line %}
+      {{ missed_alert_line }}{% endif %}
+
+  # Leads with the missed count and how much of it is recoverable, then the
+  # cause, then the two actions (staff a window / close a service type off),
+  # and only then the acceptance rate. Optional lines carry their own newline
+  # so an absent section leaves no blank line behind.
+  #
+  # `missed_available` is false when the missed-work model did not run for this
+  # window -- an older stored blob, or a computation that failed and was caught.
+  # The text then falls back to the acceptance figures AND SAYS SO, rather than
+  # texting "MISSED ? of ?", which reads like the business had a bad day when
+  # in fact the report did.
+  daily_summary:
+    channel: sms
+    body: |-
+      {% if missed_available %}{{ date }} | MISSED {{ missed | num }} of {{ missed_offers | num }} ({{ recoverable | num }} recoverable)
+      Unanswered {{ no_response | num }} | Declined {{ declined | num }} | Withdrawn {{ withdrew | num }}
+      {% if top_cause %}Top cause {{ top_cause }} {{ top_cause_missed | num }} -> {{ top_cause_remedy }}
+      {% endif %}{% if blind_spot_labels %}Blind spots {{ blind_spot_labels }}
+      {% endif %}{% if closeoff_summary %}Close off {{ closeoff_summary }}
+      {% endif %}Accepted {{ accepted | num }}/{{ offered | num }} ({{ rate_pct }}%) - job counts, no ${% else %}{{ date }} | Offered {{ offered | num }} / Accepted {{ accepted | num }} ({{ rate_pct }}%)
+      Missed-work breakdown unavailable for this window - check the agent log.{% endif %}
+
+  # The subject is what gets read on a locked screen, so it carries the
+  # missed-work headline; the acceptance rate rides along in brackets.
+  daily_full:
+    channel: email
+    subject: "{% if missed_available %}Towbook daily - {{ date }} - {{ missed | num }} missed, {{ recoverable | num }} recoverable ({{ accepted | num }}/{{ offered | num }} accepted){% else %}Towbook daily - {{ date }} - {{ accepted | num }}/{{ offered | num }} accepted ({{ rate_pct }}%){% endif %}"
+    body_template: daily_full.html.j2
+
+  weekly_full:
+    channel: email
+    subject: "{% if missed_available %}Towbook weekly - week of {{ week_start }} - {{ missed | num }} missed, {{ recoverable | num }} recoverable ({{ rate_pct }}% accepted){% else %}Towbook weekly - week of {{ week_start }} - {{ rate_pct }}% acceptance{% endif %}"
+    body_template: weekly_full.html.j2
+
+  # The monthly subject carries the DIRECTION, not the level. "412 missed" is
+  # the weekly's job; the month's question is whether that is more or less than
+  # last month, and the answer belongs on the lock screen.
+  monthly_full:
+    channel: email
+    subject: "{% if missed_available %}Towbook monthly - {{ month_name }} - {{ missed | num }} missed vs {{ missed_prior | num }} in {{ prior_month_name }} ({{ rate_pct }}% accepted){% else %}Towbook monthly - {{ month_name }} - {{ rate_pct }}% acceptance{% endif %}"
+    body_template: monthly_full.html.j2
+
+  alert_sms:
+    channel: sms
+    body: |-
+      ALERT [{severity}] {alert_id}
+      {entity}
+      {detail}
+
+  pipeline_failure_sms:
+    channel: sms
+    body: |-
+      TOWBOOK PIPELINE FAILURE
+      {stage}: {error}
+      Window {window_start} - {window_end}
+      No data was collected. Check the agent.
+
+formatting:
+  # Applies to every {*_pct} placeholder.
+  percent_decimals: 0
+  percent_rounding: half_up
+  # A window with zero offers renders as 0%, never as a division error.
+  zero_offers_rate_pct: 0
+  time_format: "%H:%M"
+  date_format: "%Y-%m-%d"
+  # SMS bodies longer than this are truncated with an ellipsis rather than
+  # silently split into several billed messages by the carrier.
+  sms_max_length: 320
+
+  # ------------------------------------------------------------------------
+  # How the missed-work line reads. Service class names are DATA
+  # (rules.yaml -> service_classes), so what to call one in a sentence is data
+  # too: without this a text would read "3 light_service unanswered this hour",
+  # which reads like a database error rather than a message from a colleague.
+  #
+  # Singular form only. The notifier pluralises by appending "s" unless the
+  # value already ends in one, so `tow` -> `tows` and `winch-out` ->
+  # `winch-outs`. Rename a class in rules.yaml and add its label here.
+  # ------------------------------------------------------------------------
+  service_class_labels:
+    tow: tow
+    winch_out: winch-out
+    light_service: light-service job
+    unclassified: unclassified job
+
+  # Used when more than one wanted class went unanswered. The classes are NOT
+  # listed in that case -- an SMS that grows a clause per class stops being the
+  # thing it replaced.
+  mixed_class_label: wanted jobs
+
+  # The marker that opens the actionable line. Two characters on purpose: it
+  # has to be visible in a lock-screen preview without costing real length.
+  missed_work_prefix: "!!"
+
+  # How each report names the window it is talking about.
+  window_phrases:
+    hourly: this hour
+    daily: today
+    weekly: this week
+    monthly: this month
+
+delivery:
+  # Retries apply to a transport failure (Twilio 5xx, SMTP timeout), not to a
+  # rejection (invalid number), which is permanent and alerts instead.
+  max_retries: 3
+  retry_backoff_seconds: [5, 30, 120]
+  # A send that fails every retry emits a pipeline_failure of its own, so a
+  # broken notifier cannot hide behind its own silence.
+  escalate_failed_send: true

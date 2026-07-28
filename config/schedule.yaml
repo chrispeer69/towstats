@@ -1,0 +1,106 @@
+# ==========================================================================
+# schedule.yaml -- the APScheduler job table, as data.
+#
+# Adding or retiming a job is an edit here, never a code change.
+#
+# name       identifies the job and selects the report type.
+# cron       standard 5-field cron, evaluated in the TZ timezone
+#            (default America/Detroit).
+# range      which window to acquire and compute:
+#              previous_full_hour     -- the hour that just closed
+#              previous_calendar_day  -- yesterday, local midnight to midnight
+#              trailing_7_days        -- the 7 days ending yesterday
+#              previous_calendar_week -- last Monday to this Monday
+#              previous_calendar_month-- the month that just closed, 1st to 1st
+#              trailing_24_hours      -- the 24 hours ending on the hour
+# source     WHICH ACQUISITION PATH FEEDS THE JOB. Defaults to `api`.
+#
+#              api  -- agents/acquisition_api.py, the JSON endpoint
+#                      /api/digitaldispatch/callrequests. No browser, ~1.5 s
+#                      per 1,000 rows, immune to DOM and header changes.
+#                      Crucially it returns callRequestId -- VERIFIED unique
+#                      across 3,079 rows -- so every offer carries a real
+#                      primary key. The UI export carries none: its only
+#                      id-shaped column ("Call #") is blank on exactly the
+#                      unaccepted offers that the acceptance rate and the
+#                      missed-work inventory are measured against, so that path
+#                      has to synthesise a fingerprint from five columns and
+#                      trust that all five are stable. The API path is
+#                      therefore both more robust AND more correct.
+#
+#              ui   -- agents/acquisition.py, Playwright + "Export to Excel".
+#                      The escape hatch for the day Towbook changes or revokes
+#                      the endpoint, and still the only way to run
+#                      discover-selectors / bootstrap-session.
+#
+#            Switching a job is a one-word edit and nothing downstream changes:
+#            both acquirers archive under raw/ and ingestion dispatches on the
+#            archived file's own format. Set `defaults: {source: ui}` to move
+#            every job at once. Override for one run with `--source`.
+#
+# page_size  rows per page requested from the Request Log before export.
+#            USED BY THE `ui` SOURCE ONLY -- the api source caps its own page
+#            size at 1000 in code, because pageSize=2000 does not clamp, it
+#            returns HTTP 500 after a ~30 s server-side timeout.
+#
+#            VERIFIED 2026-07-28, and the reason every job below asks for 1000:
+#            the Request Log filters by DATE ONLY -- there is no time-of-day
+#            filter -- and its Export button writes only the CURRENT PAGE.
+#            So even the hourly job pulls the whole day, and a page_size of 50
+#            silently truncated a real 100-request day to 50 rows. page_size
+#            must therefore exceed the busiest expected DAY, not the busiest
+#            hour. The portal offers 25/50/75/100/1000/1500/2000/2500/5000/
+#            10000; raise this if daily volume ever approaches 1000.
+#            Acquisition detects truncation and fires pipeline_failure, so this
+#            can never fail quietly -- but it should not be allowed to happen.
+#
+# Every job is idempotent (hard constraint #4): re-running the same window
+# upserts on request_id and on the metrics window key, so a catch-up run after
+# an outage produces the same numbers as the original would have, not doubles.
+#
+# A job that fails emits pipeline_failure, which is non-suppressible.
+# ==========================================================================
+
+defaults:
+  # The JSON API is the primary source for every job. Change this one line to
+  # `ui` to put the whole schedule back on the Playwright export.
+  source: api
+
+jobs:
+  - name: hourly
+    cron: "0 * * * *"
+    range: previous_full_hour
+    source: api
+    # Was 50. Raised to 1000 because the portal filters by date, not by hour,
+    # so the hourly job still exports the whole day. See the note above.
+    # Applies to the `ui` source only.
+    page_size: 1000
+  - name: daily
+    cron: "0 6 * * *"
+    range: previous_calendar_day
+    source: api
+    page_size: 1000
+  - name: weekly
+    cron: "0 6 * * 1"
+    range: trailing_7_days
+    source: api
+    page_size: 1000
+  # The third cadence. DAILY reviews, WEEKLY recommends, MONTHLY steers.
+  #
+  # 06:00 on the 1st, over the month that just closed -- previous_calendar_month
+  # rather than trailing_30_days, because "did June beat May" is a question the
+  # owner can act on and "the last 30 days" is not. The window is a real
+  # calendar month, 28 to 31 days, so the report states offers PER DAY alongside
+  # the totals; a 30-day month against a 31-day one is a 3% swing before
+  # anything real has happened.
+  #
+  # The monthly job is where the coverage argument gets made. Verified over 30
+  # days: Agero offers inside Mon-Fri 06:00-18:00 expire 5.8% of the time
+  # (57 of 989); outside those hours, 61.7% (627 of 1,017). Same trucks, same
+  # staff. One month of that, hour by hour against the month before, is what a
+  # staffing decision needs and what a day or a week cannot show.
+  - name: monthly
+    cron: "0 6 1 * *"
+    range: previous_calendar_month
+    source: api
+    page_size: 1000

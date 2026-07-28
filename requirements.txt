@@ -1,0 +1,54 @@
+# Towbook Job Acceptance Intelligence System
+#
+#   python -m pip install -r requirements.txt
+#   python -m playwright install chromium
+#
+# DELIBERATELY ABSENT: pandas, numpy. Wheel availability on Python 3.14 is a
+# real risk and neither is needed. XLSX goes through openpyxl; every
+# aggregation is plain Python or SQL.
+
+# --- portal automation ---
+playwright>=1.44
+
+# --- spreadsheet I/O ---
+openpyxl>=3.1
+
+# --- storage ---
+SQLAlchemy>=2.0
+alembic>=1.13
+
+# --- dashboard ---
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+python-multipart>=0.0.9
+
+# --- scheduling ---
+apscheduler>=3.10
+
+# --- notifications ---
+twilio>=9.0
+
+# --- configuration ---
+python-dotenv>=1.0
+PyYAML>=6.0
+
+# --- timezones ---
+# Windows ships no IANA tz database, so zoneinfo.ZoneInfo("America/Detroit")
+# raises without this. Ingestion localises every exported timestamp before
+# converting it to UTC, so a missing tz database would shift every number.
+tzdata>=2024.1; platform_system == "Windows"
+
+# --- http ---
+httpx>=0.27
+
+# --- the single LLM component: the Analyst ---
+anthropic>=0.34
+
+# --- tests ---
+# pytest-asyncio is deliberately absent: nothing in the suite is async, and it
+# is not on the project's allowed dependency list.
+pytest>=8.0
+
+# Chart.js and HTMX are NOT listed here. They are vendored as local files in
+# towbook_agent/web/static/ so the dashboard needs no CDN and no build step.

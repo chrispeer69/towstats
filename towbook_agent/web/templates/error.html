@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ status_code }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ title }}</h1>
+    <div class="sub">HTTP {{ status_code }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="notice notice-error" style="margin-bottom: 16px">
+    <span class="ico">&#9888;</span>
+    <span class="mono-sm">{{ detail }}</span>
+  </div>
+  <p class="small muted" style="margin: 0">
+    The message above has been passed through the secret redactor, so any credential it
+    contained reads as <code>***REDACTED***</code>. The full traceback is in the log file
+    under <code>state/logs/</code>.
+  </p>
+  <div class="controls" style="margin-top: 16px">
+    {% for key, label, href in NAV %}
+    <a class="btn btn-sm" href="{{ href }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

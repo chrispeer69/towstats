@@ -1,0 +1,168 @@
+{% import "macros.html" as m %}
+{#- Body of the Live view. Rendered inline on first load and swapped in by the
+    60-second HTMX poll, so it must be self-contained: no <script> tags (they
+    would not execute after an innerHTML swap), all chart data on the canvas. -#}
+
+<div class="stats">
+  {{ m.stat('Offered today', live.totals.offered|num, sub='Every request in the log, all statuses') }}
+  <div class="stat">
+    <div class="label">Accepted today</div>
+    <div class="value">{{ live.totals.accepted|num }}</div>
+    <div class="sub"><span class="dim">{{ live.totals.denied|num }} denied &middot; {{ live.totals.expired|num }} expired</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Acceptance rate</div>
+    <div class="value hero band band-{{ live.totals.band }}">{{ live.totals.rate|pct }}</div>
+    <div class="sub">
+      {% if live.totals.pending %}<span class="dim">{{ live.totals.pending|num }} still pending</span>{% else %}<span class="dim">Accepted &divide; offered</span>{% endif %}
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">vs 7-day average</div>
+    <div class="value">{{ m.delta(live.delta_7d) }}</div>
+    <div class="sub"><span class="dim">7-day rate</span> {{ m.rate(live.baseline_7d.rate) }}
+      <span class="dim">on {{ live.baseline_7d.offered|num }} offers</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">vs 30-day average</div>
+    <div class="value">{{ m.delta(live.delta_30d) }}</div>
+    <div class="sub"><span class="dim">30-day rate</span> {{ m.rate(live.baseline_30d.rate) }}
+      <span class="dim">on {{ live.baseline_30d.offered|num }} offers</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Yesterday</div>
+    <div class="value">{% if live.yesterday %}{{ m.rate(live.yesterday.rate) }}{% else %}<span class="band band-none">{{ DASH }}</span>{% endif %}</div>
+    <div class="sub"><span class="dim">{% if live.yesterday %}{{ live.yesterday.accepted|num }} of {{ live.yesterday.offered|num }}{% else %}No requests yesterday{% endif %}</span></div>
+  </div>
+</div>
+
+{% if not live.has_today %}
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>No requests have been offered yet today. The baselines below are still live.</span>
+</div>
+{% endif %}
+
+<div class="grid two">
+  <section class="card">
+    <header>
+      <h2>Offers by hour</h2>
+      <span class="hint">Counts, local time</span>
+    </header>
+    <div class="chart-wrap chart-h-240">
+      <canvas data-chart="live-hours"
+              data-chart-data='{{ {"hours": live.hours}|tojson }}'
+              role="img"
+              aria-label="Bar chart of requests offered and accepted for each hour of today"></canvas>
+    </div>
+    <div class="chart-legend">
+      <span class="key"><span class="swatch" style="background: var(--series-1)"></span>Offered</span>
+      <span class="key"><span class="swatch" style="background: var(--good)"></span>Accepted</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Running rate vs average</h2>
+      <span class="hint">Percentages &mdash; separate chart, one unit per axis</span>
+    </header>
+    <div class="chart-wrap chart-h-240">
+      <canvas data-chart="live-rate"
+              data-chart-data='{{ {"hours": live.hours, "baseline_7d": live.baseline_7d, "baseline_30d": live.baseline_30d}|tojson }}'
+              role="img"
+              aria-label="Line chart of today's running acceptance rate against the 7-day and 30-day averages"></canvas>
+    </div>
+    <div class="chart-legend">
+      <span class="key" style="color: var(--series-1)"><span class="swatch line"></span><span style="color: var(--text-2)">Today, running</span></span>
+      <span class="key" style="color: var(--series-2)"><span class="swatch line dashed"></span><span style="color: var(--text-2)">7-day average</span></span>
+      <span class="key" style="color: var(--muted)"><span class="swatch line dashed"></span><span style="color: var(--text-2)">30-day average</span></span>
+    </div>
+  </section>
+</div>
+
+<div class="grid side">
+  <section class="card">
+    <header>
+      <h2>Clients today</h2>
+      <span class="hint">Highest volume first</span>
+    </header>
+    {% if live.top_clients %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th class="num">Offered</th>
+            <th class="num">Accepted</th>
+            <th class="num">Denied</th>
+            <th class="num">Expired</th>
+            <th class="num">Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in live.top_clients %}
+          <tr>
+            <td><a href="/clients/{{ row.slug|urlencode }}">{{ row.client_name }}</a></td>
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ row.denied|num }}</td>
+            <td class="num">{{ row.expired|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ m.empty_inline('No clients have sent a request today.') }}
+    {% endif %}
+  </section>
+
+  <div class="stack">
+    <section class="card">
+      <header><h2>Status mix today</h2></header>
+      {% if live.totals.offered %}
+      <table class="data">
+        <tbody>
+          {% for entry in live.status_mix %}
+          <tr>
+            <td>{{ m.status_pill(entry.status) }}</td>
+            <td class="num">{{ entry.count|num }}</td>
+            <td style="width: 46%">{{ m.meter(entry.count / live.totals.offered if live.totals.offered else none,
+                                              'good' if entry.status == 'accepted' else ('bad' if entry.status == 'denied' else '')) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty_inline('Nothing offered yet today.') }}
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>Recent alerts</h2>
+        <span class="hint">Newest first</span>
+      </header>
+      {% if live.alerts %}
+      <table class="data">
+        <tbody>
+          {% for alert in live.alerts %}
+          <tr>
+            <td><span class="pill pill-{{ alert.severity or 'low' }}">{{ alert.severity or 'low' }}</span></td>
+            <td class="wrap-text">
+              <span class="mono-sm">{{ alert.alert_id }}</span>
+              {% if alert.entity %}<span class="muted"> &middot; {{ alert.entity|midtrunc(30) }}</span>{% endif %}
+              {% if alert.suppressed_reason %}<span class="muted small"> (held: {{ alert.suppressed_reason }})</span>{% endif %}
+            </td>
+            <td class="num muted small nowrap">{{ alert.fired_at|ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty_inline('No alerts have fired.') }}
+      {% endif %}
+    </section>
+  </div>
+</div>

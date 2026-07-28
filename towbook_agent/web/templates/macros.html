@@ -1,0 +1,179 @@
+{# ==========================================================================
+   Shared display macros.
+
+   The rules that matter and are applied here rather than at each call site:
+
+     * a rate of None renders as an em-dash, NEVER as 0%;
+     * every rate carries a shape glyph as well as a colour (see .band in
+       app.css), so good / warn / bad survives colourblindness and greyscale;
+     * a delta is in percentage points and always signed.
+   ========================================================================== #}
+
+{% macro rate(value) -%}
+<span class="band band-{{ band_for(value) }}">{{ value|pct }}</span>
+{%- endmacro %}
+
+{% macro rate1(value) -%}
+<span class="band band-{{ band_for(value) }}">{{ value|pct(1) }}</span>
+{%- endmacro %}
+
+{#- A MISS rate: the same colours, inverted, because high is bad here. A 40%
+    acceptance rate and a 40% no-response rate are opposite news and one macro
+    cannot mean both. None is still an em-dash, never 0%. -#}
+{% macro miss(value, threshold=0.35) -%}
+<span class="band band-{{ miss_band_for(value, threshold) }}">{{ value|pct }}</span>
+{%- endmacro %}
+
+{% macro miss1(value, threshold=0.35) -%}
+<span class="band band-{{ miss_band_for(value, threshold) }}">{{ value|pct(1) }}</span>
+{%- endmacro %}
+
+{#- THE DISCLAIMER. Mandatory on every ranked list in the app.
+
+    offerAmount is empty on 100% of the records this account produces, so there
+    is no dollar figure anywhere in this system and no ranking that could be one.
+    Saying it once in a README would not stop somebody reading a table of counts
+    as a table of money, so it is said on the table. -#}
+{% macro ranking_note(extra='') -%}
+<p class="rank-note">
+  <span class="ico">&#8505;</span>
+  {{ RANKING_NOTE }}{% if extra %} {{ extra }}{% endif %}
+</p>
+{%- endmacro %}
+
+{#- A block of plain text the owner is meant to select and paste elsewhere.
+    `user-select: all` makes one click select the whole thing, so the copy
+    button is an accelerator and never the only way to get the text out. -#}
+{% macro copyblock(text, dom_id, label='Copy') -%}
+<div class="copyblock">
+  <div class="copyblock-head">
+    <span class="muted small">Paste-ready &mdash; click the text to select all of it</span>
+    <button type="button" class="btn btn-sm" data-copy="#{{ dom_id }}">{{ label }}</button>
+  </div>
+  <pre id="{{ dom_id }}">{{ text }}</pre>
+</div>
+{%- endmacro %}
+
+{% macro delta(value, invert=false) -%}
+  {%- if value is none -%}
+    <span class="delta delta-flat">{{ DASH }}</span>
+  {%- else -%}
+    {%- set up = value > 0.005 -%}
+    {%- set down = value < -0.005 -%}
+    <span class="delta {{ 'delta-up' if (up and not invert) or (down and invert) else ('delta-down' if (down and not invert) or (up and invert) else 'delta-flat') }}">{{ value|points }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro status_pill(status) -%}
+<span class="pill pill-{{ status }}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro meter(value, band='') -%}
+  {%- if value is none -%}
+    <span class="muted">{{ DASH }}</span>
+  {%- else -%}
+    <span class="meter {{ band }}" role="img" aria-label="{{ (value * 100)|round|int }} percent"><span style="width: {{ (value * 100)|round(1) }}%"></span></span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro stat(label, value, sub='', hero=false, unit='') -%}
+<div class="stat">
+  <div class="label">{{ label }}</div>
+  <div class="value{{ ' hero' if hero }}">{{ value }}{% if unit %}<span class="unit">{{ unit }}</span>{% endif %}</div>
+  {% if sub %}<div class="sub">{{ sub }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro empty_state(title='No data yet', what='') -%}
+<div class="empty">
+  <h2>{{ title }}</h2>
+  <p>
+    {% if what %}{{ what }}{% else %}Nothing has been ingested into the datastore yet, so there is
+    nothing to report on.{% endif %}
+    Load the bundled fixture data end to end &mdash; no portal login required &mdash; with:
+  </p>
+  <pre>{{ SEED_COMMAND }}</pre>
+  <div class="note">
+    Then reload this page. To pull the real thing instead, run
+    <code>python -m towbook_agent login-check</code> followed by
+    <code>python -m towbook_agent run --report daily</code>.
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro empty_inline(message='Nothing in this window.') -%}
+<div class="empty-inline">{{ message }}</div>
+{%- endmacro %}
+
+{#- Shown when agents/missed_work.py could not be imported or raised. The
+    missed-work model is the newest code in the system and the most valuable
+    thing on the screen; a failure in it degrades these pages and must never
+    take the dashboard down. -#}
+{% macro model_unavailable(error) -%}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>The missed-work model could not be computed.</strong>
+    {{ error|default('No reason was recorded.', true) }}
+    Every other view on this dashboard is unaffected &mdash; they do not depend on it.
+    Check <a href="/health">Health</a>, then <code>config/rules.yaml &rarr; missed_work</code>.
+  </span>
+</div>
+{%- endmacro %}
+
+{#- The window selector shared by the three missed-work views. -#}
+{% macro window_picker(base, current, options, account) -%}
+<span class="seg">
+  {% for option in options %}
+  <a href="{{ base }}{{ qs(days=option, account=account) }}"
+     {% if current == option %}aria-current="true"{% endif %}>{{ option }}d</a>
+  {% endfor %}
+</span>
+{%- endmacro %}
+
+{% macro reason_mix(mix) -%}
+  {%- if mix -%}
+  <span class="reason-mix">
+    {%- for entry in mix %}
+    <span class="reason" title="{{ entry.reason }} — {{ entry.count }} of the denials">
+      {{ entry.reason|midtrunc(28) }} <b>{{ entry.count }}</b>
+    </span>
+    {%- endfor %}
+  </span>
+  {%- else -%}
+  <span class="muted">{{ DASH }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro sparkline(points, peak, days) -%}
+  {%- if points -%}
+  <span class="spark-cell">
+    <svg class="spark" width="112" height="26" viewBox="0 0 112 26" role="img"
+         aria-label="Offer volume over the last {{ days }} days, peak {{ peak }} in a day">
+      <line class="spark-base" x1="0" y1="25" x2="112" y2="25"></line>
+      <polyline points="{{ points }}"></polyline>
+    </svg>
+    <span class="spark-peak">{{ peak }}</span>
+  </span>
+  {%- else -%}
+  <span class="muted">{{ DASH }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro sort_th(label, column, sort, direction, url, target, classes='num', swap='outerHTML') -%}
+<th class="{{ classes }} sortable"
+    {% if sort == column %}aria-sort="{{ 'descending' if direction == 'desc' else 'ascending' }}"{% endif %}
+    hx-get="{{ url }}{{ '&' if '?' in url else '?' }}sort={{ column }}&dir={{ next_dir(sort, direction, column) }}"
+    hx-target="{{ target }}"
+    hx-swap="{{ swap }}"
+    title="Sort by {{ label|lower }}">{{ label }}<span class="caret">{% if sort == column and direction == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span></th>
+{%- endmacro %}
+
+{% macro band_legend(thresholds) -%}
+<span class="legend-bands">
+  <span class="band band-good">&ge; {{ thresholds.good|pct }} good</span>
+  <span class="band band-warn">&ge; {{ thresholds.warn|pct }} watch</span>
+  <span class="band band-bad">&lt; {{ thresholds.warn|pct }} low</span>
+  <span class="band band-none">no offers</span>
+</span>
+{%- endmacro %}

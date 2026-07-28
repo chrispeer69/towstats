@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Live{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Live &mdash; {{ live.date|day("%A, %B %d") }}</h1>
+    <div class="sub">
+      Today so far, refreshed automatically every 60 seconds.
+      Baselines exclude today, so the line you are measured against does not move as the day fills up.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not live.has_data %}
+  {{ m.empty_state('Nothing to show yet', 'No requests have been ingested for today or the previous 30 days.') }}
+{% else %}
+<div id="live-body"
+     hx-get="/partials/live{{ qs(account=account) }}"
+     hx-trigger="every 60s"
+     hx-target="this"
+     hx-swap="innerHTML">
+  {% include "partials/live_body.html" %}
+</div>
+{% endif %}
+{% endblock %}

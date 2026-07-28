@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Rules{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Rules</h1>
+    <div class="sub">
+      The business logic lives in <code>config/rules.yaml</code> as data, not code.
+      Editing it changes classification, policy and alerting on the next job &mdash; no redeploy.
+    </div>
+  </div>
+  <div class="controls">
+    <span class="muted small">Rules version</span>
+    <span class="chip">{{ rules.rules_version or DASH }}</span>
+  </div>
+</div>
+
+{% if rules.rules_error %}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span><strong>config/rules.yaml could not be read.</strong> {{ rules.rules_error }}</span>
+</div>
+{% endif %}
+
+<div class="stats">
+  {{ m.stat('Service classes', rules.service_classes|length|num, sub='First match wins, file order is evaluation order') }}
+  {{ m.stat('Alerts', rules.alerts|length|num, sub='Evaluated in the sandboxed AST evaluator') }}
+  <div class="stat">
+    <div class="label">Pending proposals</div>
+    <div class="value" style="color: {{ 'var(--warning)' if rules.proposal_counts.pending else 'var(--text)' }}">{{ rules.proposal_counts.pending|num }}</div>
+    <div class="sub"><span class="dim">{{ rules.proposal_counts.accepted }} accepted &middot; {{ rules.proposal_counts.rejected }} rejected</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Unclassified types</div>
+    <div class="value" style="color: {{ 'var(--warning)' if rules.unclassified else 'var(--text)' }}">{{ rules.unclassified|length|num }}</div>
+    <div class="sub"><span class="dim">distinct strings awaiting a mapping</span></div>
+  </div>
+</div>
+
+<!-- ==================================================================== -->
+<section class="card">
+  <header>
+    <h2>Proposed rule changes</h2>
+    <span class="hint">
+      Written by the Analyst into <code>config/rules.proposed.yaml</code>.
+      Nothing here affects anything until a human accepts it.
+    </span>
+  </header>
+
+  {% if rules.proposals_error %}
+    <div class="notice notice-error" style="margin: 0">
+      <span class="ico">&#9888;</span><span>{{ rules.proposals_error }}</span>
+    </div>
+  {% elif not rules.proposals %}
+    {{ m.empty_inline('No proposals. The Analyst writes one when it sees something the rules do not cover — an unclassified service type that keeps recurring, or a client that warrants its own threshold.') }}
+  {% else %}
+    <div class="notice notice-info" style="margin-bottom: 14px">
+      <span class="ico">&#8505;</span>
+      <span>
+        <strong>Accepting splices the fragment into <code>config/rules.yaml</code>.</strong>
+        A timestamped backup is taken first, the patched file is validated before it replaces
+        the original, and a patch that would redefine an existing block or reorder
+        <code>service_classes</code> is refused. Sections a proposal may touch:
+        {% for target in rules.allowed_targets %}<span class="chip">{{ target }}</span> {% endfor %}
+      </span>
+    </div>
+
+    {% for p in rules.proposals %}
+    <article class="proposal{{ ' done' if p.status != 'pending' }}" id="proposal-{{ p.id }}">
+      <header>
+        <span class="pid">{{ p.id or '(no id)' }}</span>
+        <span class="pill pill-{{ 'pending' if p.status == 'pending' else ('accepted' if p.status == 'accepted' else 'denied') }}">{{ p.status }}</span>
+        {% if p.target %}<span class="chip">{{ p.target }}</span>{% endif %}
+        {% if p.source_report %}<span class="muted small">from the {{ p.source_report }} report</span>{% endif %}
+        {% if p.proposed_at %}<span class="muted small">&middot; proposed {{ p.proposed_at }}</span>{% endif %}
+        {% if p.reviewed_by %}<span class="muted small">&middot; reviewed by {{ p.reviewed_by }} {{ p.reviewed_at }}</span>{% endif %}
+      </header>
+
+      {% if p.rationale %}<p class="rationale">{{ p.rationale }}</p>{% endif %}
+
+      {% if p.evidence %}
+      <div class="evidence">
+        {% for key, value in p.evidence.items() %}
+          <div><strong>{{ key|nice }}:</strong>
+            {% if value is string or value is number %}{{ value }}
+            {% elif value is sequence %}{% for item in value %}<span class="chip">{{ item }}</span> {% endfor %}
+            {% else %}{{ value }}{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <pre class="yaml short">{{ p.patch_yaml }}</pre>
+
+      {% if p.status == 'pending' %}
+      <div class="actions">
+        <form method="post" action="/rules/proposals/{{ p.id|urlencode }}/accept"
+              data-confirm="Accept '{{ p.id }}'? This writes the fragment into config/rules.yaml. A backup is taken first.">
+          <input type="hidden" name="reviewer" value="dashboard">
+          <button class="btn btn-accept" type="submit">&#10003; Accept &mdash; write to rules.yaml</button>
+        </form>
+        <form method="post" action="/rules/proposals/{{ p.id|urlencode }}/reject"
+              data-confirm="Reject '{{ p.id }}'? rules.yaml is not touched.">
+          <input type="hidden" name="reviewer" value="dashboard">
+          <button class="btn btn-reject" type="submit">&#10007; Reject</button>
+        </form>
+        <span class="muted small">
+          After accepting, run <code>python -m towbook_agent backfill</code> to reclassify stored requests.
+        </span>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% endif %}
+</section>
+
+<!-- ==================================================================== -->
+<section class="card">
+  <header>
+    <h2>Unclassified service types</h2>
+    <span class="hint">
+      Verbatim strings from the last 60 days that no <code>match_any</code> entry caught.
+      This is the mapping backlog.
+    </span>
+  </header>
+
+  {% if rules.unclassified %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr><th class="wrap-text">Verbatim service type (never modified)</th><th class="num">Requests</th><th class="num">Last seen</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rules.unclassified %}
+        <tr>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw }}</td>
+          <td class="num">{{ row.count|num }}</td>
+          <td class="num muted small nowrap">{{ row.last_seen|ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin: 12px 0 0">
+    To map one: add its distinguishing substring to a <code>match_any</code> list in
+    <code>config/rules.yaml</code>, then run <code>python -m towbook_agent backfill</code>.
+    The raw string is immutable, so reclassification is always reversible.
+  </p>
+  {% else %}
+    {{ m.empty_inline('Every service type in the last 60 days matched a rule.') }}
+  {% endif %}
+</section>
+
+<!-- ==================================================================== -->
+<div class="grid side">
+  <section class="card">
+    <header>
+      <h2>Current rules.yaml</h2>
+      <span class="hint">{{ rules.rules_path }}</span>
+    </header>
+    <pre class="yaml">{{ rules.rules_text }}</pre>
+  </section>
+
+  <div class="stack">
+    <section class="card">
+      <header><h2>Service classes</h2><span class="hint">In evaluation order</span></header>
+      <div class="table-scroll">
+        <table class="data">
+          <thead><tr><th>Class</th><th>Policy</th><th class="wrap-text">Matches</th></tr></thead>
+          <tbody>
+            {% for row in rules.service_classes %}
+            <tr>
+              <td class="nowrap">{{ loop.index }}. {{ row.name }}</td>
+              <td>{% if row.policy %}<span class="pill pill-{{ row.policy }}">{{ row.policy }}</span>{% else %}<span class="muted">{{ DASH }}</span>{% endif %}</td>
+              <td class="wrap-text"><span class="chips">{% for term in row.match_any %}<span class="chip">{{ term }}</span>{% endfor %}</span></td>
+            </tr>
+            {% endfor %}
+            <tr>
+              <td class="nowrap muted">fallback</td>
+              <td><span class="muted">{{ DASH }}</span></td>
+              <td class="muted">everything else &rarr; <span class="chip">{{ rules.default_class }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <header><h2>Alerts</h2></header>
+      <div class="table-scroll">
+        <table class="data">
+          <thead><tr><th>Id</th><th>Severity</th><th class="wrap-text">Condition</th></tr></thead>
+          <tbody>
+            {% for alert in rules.alerts %}
+            <tr>
+              <td class="mono-sm">{{ alert.id }}</td>
+              <td><span class="pill pill-{{ alert.severity or 'low' }}">{{ alert.severity }}</span></td>
+              <td class="wrap-text mono-sm">{{ alert.when }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <header><h2>Config fingerprints</h2><span class="hint">sha256, first 12 hex</span></header>
+      <dl class="kv">
+        {% for name, digest in rules.config_digests.items() %}
+        <dt>{{ name }}</dt><dd class="mono-sm">{{ digest }}</dd>
+        {% endfor %}
+      </dl>
+    </section>
+
+    <section class="card">
+      <header><h2>Backups</h2><span class="hint">state/rules_backups/</span></header>
+      {% if rules.backups %}
+      <table class="data">
+        <tbody>
+          {% for backup in rules.backups %}
+          <tr>
+            <td class="mono-sm">{{ backup.name }}</td>
+            <td class="num muted small nowrap">{{ backup.size|num }} B</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty_inline('No backups yet — rules.yaml has never been written from the dashboard.') }}
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Health{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Health</h1>
+    <div class="sub">
+      The first place to look when a number seems wrong: what ran, what it pulled,
+      and whether the stored reports still agree with the raw rows.
+    </div>
+  </div>
+  <div class="controls">
+    <span class="muted small">Rules version</span><span class="chip">{{ health.rules_version or DASH }}</span>
+    <span class="muted small">Timezone</span><span class="chip">{{ health.timezone }}</span>
+  </div>
+</div>
+
+{% if health.error %}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span><strong>Could not read the run history.</strong> {{ health.error }}</span>
+</div>
+{% endif %}
+
+<div class="stats">
+  <div class="stat">
+    <div class="label">Database</div>
+    <div class="value" style="color: {{ 'var(--good)' if health.database.ok else 'var(--critical)' }}">
+      {{ 'OK' if health.database.ok else 'DOWN' }}
+    </div>
+    <div class="sub"><span class="dim">{{ health.database.tables|length if health.database.tables else 0 }} tables{% if health.database.error %} &middot; {{ health.database.error|midtrunc(60) }}{% endif %}</span></div>
+  </div>
+  {{ m.stat('Requests stored', health.counts.requests|default(0)|num, sub='Rows in the requests table') }}
+  <div class="stat">
+    <div class="label">Failed runs</div>
+    <div class="value" style="color: {{ 'var(--critical)' if health.failures else 'var(--text)' }}">{{ health.failures|length|num }}</div>
+    <div class="sub"><span class="dim">in the last {{ health.runs|length }} runs</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Unclassified</div>
+    <div class="value" style="color: {{ 'var(--warning)' if health.counts.requests_unclassified else 'var(--text)' }}">{{ health.counts.requests_unclassified|default(0)|num }}</div>
+    <div class="sub"><span class="dim">requests with no service class</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Data span</div>
+    <div class="value" style="font-size: 17px">
+      {% if health.earliest_request %}{{ health.earliest_request|day("%b %d") }} &ndash; {{ health.latest_request|day("%b %d") }}{% else %}{{ DASH }}{% endif %}
+    </div>
+    <div class="sub"><span class="dim">earliest to latest offered_at</span></div>
+  </div>
+</div>
+
+{% if not health.has_data %}
+  {{ m.empty_state('The datastore is empty') }}
+{% endif %}
+
+<!-- ==================================================================== -->
+<section class="card">
+  <header>
+    <h2>Last successful pull per report type</h2>
+    <span class="hint">Silence is never success &mdash; a report type with no recent success is a problem</span>
+  </header>
+  {% if health.last_success %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Report type</th><th>Last success</th><th class="num">Age</th>
+          <th class="num">Rows</th><th>Last attempt</th><th>Rules version</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for report_type, entry in health.last_success.items() %}
+        <tr>
+          <td>{{ report_type|nice }}</td>
+          <td class="nowrap">
+            {% if entry.run %}{{ entry.run.started_at|dt }}{% else %}<span class="band band-bad">never succeeded</span>{% endif %}
+          </td>
+          <td class="num nowrap {{ 'muted' if entry.age_hours is none }}">
+            {% if entry.age_hours is not none %}{{ '%.1f'|format(entry.age_hours) }}h{% else %}{{ DASH }}{% endif %}
+          </td>
+          <td class="num">{{ entry.run.row_count|num if entry.run else DASH }}</td>
+          <td class="nowrap">
+            {% if entry.last_attempt %}
+              <span class="pill pill-{{ entry.last_attempt.status or 'started' }}">{{ entry.last_attempt.status or 'unknown' }}</span>
+              <span class="muted small">{{ entry.last_attempt.started_at|ago }}</span>
+            {% else %}{{ DASH }}{% endif %}
+          </td>
+          <td class="mono-sm muted">{{ entry.run.rules_version if entry.run else DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ m.empty_inline('No runs have been recorded. Run `' ~ SEED_COMMAND ~ '` or `python -m towbook_agent run --report daily`.') }}
+  {% endif %}
+</section>
+
+<!-- ==================================================================== -->
+{% if health.failures %}
+<section class="card">
+  <header>
+    <h2>Failures</h2>
+    <span class="hint">Error text is passed through the secret redactor before it reaches this page</span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr><th>Run</th><th>Type</th><th>Status</th><th>Started</th><th class="num">Rows</th><th class="num">vs previous</th><th class="wrap-text">Error</th></tr>
+      </thead>
+      <tbody>
+        {% for run in health.failures %}
+        <tr>
+          <td class="mono-sm">{{ run.run_id|midtrunc(20) }}</td>
+          <td>{{ run.report_type|nice }}</td>
+          <td><span class="pill pill-{{ run.status or 'started' }}">{{ run.status }}</span></td>
+          <td class="nowrap">{{ run.started_at|dt }}</td>
+          <td class="num">{{ run.row_count|num }}</td>
+          <td class="num">
+            {% if run.row_delta is not none %}
+              <span class="delta {{ 'delta-up' if run.row_delta > 0 else ('delta-down' if run.row_delta < 0 else 'delta-flat') }}">{{ '%+d'|format(run.row_delta) }}</span>
+            {% else %}<span class="muted">{{ DASH }}</span>{% endif %}
+          </td>
+          <td class="wrap-text">{{ run.error_message or DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<!-- ==================================================================== -->
+<section class="card">
+  <header>
+    <h2>Recomputed vs stored</h2>
+    <span class="hint">
+      Left: recomputed from the <code>requests</code> rows right now.
+      Right: what <code>metrics_daily</code> holds. A mismatch means the stored report is stale.
+    </span>
+  </header>
+  {% if health.coverage %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Date</th><th class="num">Offered (live)</th><th class="num">Accepted (live)</th>
+          <th class="num">Rate (live)</th><th class="num">Offered (stored)</th>
+          <th>Stored metric</th><th>Computed at</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in health.coverage|reverse %}
+        <tr>
+          <td class="nowrap">{{ row.date|day("%a %b %d") }}</td>
+          <td class="num">{{ row.live_offered|num }}</td>
+          <td class="num">{{ row.live_accepted|num }}</td>
+          <td class="num">{{ m.rate(row.live_rate) }}</td>
+          <td class="num">{{ row.stored_offered|num if row.stored_offered is not none else DASH }}</td>
+          <td>
+            {% if not row.has_stored %}
+              <span class="muted">not computed</span>
+            {% elif row.matches %}
+              <span class="band band-good">agrees</span>
+            {% else %}
+              <span class="band band-bad">differs</span>
+            {% endif %}
+          </td>
+          <td class="nowrap muted small">{{ row.computed_at|dt if row.computed_at else DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ m.empty_inline('Nothing to compare yet.') }}
+  {% endif %}
+</section>
+
+<!-- ==================================================================== -->
+<section class="card">
+  <header>
+    <h2>Run history</h2>
+    <span class="hint">Newest first &middot; &ldquo;vs previous&rdquo; compares row counts with the previous run of the same type</span>
+  </header>
+  {% if health.runs %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Run</th><th>Type</th><th>Status</th><th>Window</th>
+          <th class="num">Page size</th><th class="num">Rows</th><th class="num">vs previous</th>
+          <th>Started</th><th class="num">Duration</th><th>Rules</th><th class="wrap-text">Source file</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in health.runs %}
+        <tr>
+          <td class="mono-sm">{{ run.run_id|midtrunc(20) }}</td>
+          <td>{{ run.report_type|nice }}</td>
+          <td><span class="pill pill-{{ run.status or 'started' }}">{{ run.status or 'unknown' }}</span></td>
+          <td class="nowrap muted small">
+            {% if run.window_start %}{{ run.window_start|dt("%b %d %I:%M %p") }} &rarr; {{ run.window_end|dt("%b %d %I:%M %p") }}{% else %}{{ DASH }}{% endif %}
+          </td>
+          <td class="num muted">{{ run.page_size|num }}</td>
+          <td class="num">{{ run.row_count|num }}</td>
+          <td class="num">
+            {% if run.row_delta is not none %}
+              <span class="delta {{ 'delta-up' if run.row_delta > 0 else ('delta-down' if run.row_delta < 0 else 'delta-flat') }}">{{ '%+d'|format(run.row_delta) }}</span>
+            {% else %}<span class="muted">{{ DASH }}</span>{% endif %}
+          </td>
+          <td class="nowrap">{{ run.started_at|dt("%b %d %I:%M %p") }}</td>
+          <td class="num muted">{{ run.duration_s|duration }}</td>
+          <td class="mono-sm muted">{{ run.rules_version|midtrunc(16) }}</td>
+          <td class="wrap-text muted small">{{ run.source_file|midtrunc(48) if run.source_file else DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ m.empty_inline('No runs recorded yet.') }}
+  {% endif %}
+</section>
+
+<!-- ==================================================================== -->
+<div class="grid two">
+  <section class="card">
+    <header><h2>Row counts</h2></header>
+    <dl class="kv">
+      {% for key, value in health.counts.items() %}
+      <dt>{{ key|nice }}</dt><dd>{{ value|num }}</dd>
+      {% endfor %}
+    </dl>
+    {% if health.counts.requests_without_offered_at %}
+    <p class="small" style="color: var(--warning); margin-bottom: 0">
+      {{ health.counts.requests_without_offered_at|num }} request(s) have no <code>offered_at</code>.
+      They cannot be placed on a timeline and are excluded from every window on every other page.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <header><h2>Recent alerts</h2></header>
+    {% if health.alerts %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead><tr><th>Alert</th><th>Severity</th><th class="wrap-text">Entity</th><th>Fired</th><th>Delivery</th></tr></thead>
+        <tbody>
+          {% for alert in health.alerts %}
+          <tr>
+            <td class="mono-sm">{{ alert.alert_id }}</td>
+            <td><span class="pill pill-{{ alert.severity or 'low' }}">{{ alert.severity or 'low' }}</span></td>
+            <td class="wrap-text">{{ alert.entity or DASH }}</td>
+            <td class="nowrap muted small">{{ alert.fired_at|ago }}</td>
+            <td class="small">
+              {% if alert.suppressed_reason %}<span class="muted">held: {{ alert.suppressed_reason }}</span>
+              {% elif alert.acknowledged %}<span class="muted">acknowledged</span>
+              {% else %}sent{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ m.empty_inline('No alerts have fired.') }}
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <header><h2>Config fingerprints</h2><span class="hint">Every stored metric records the rules version that produced it</span></header>
+  <dl class="kv">
+    {% for name, digest in health.config_digests.items() %}
+    <dt>{{ name }}</dt><dd class="mono-sm">{{ digest }}</dd>
+    {% endfor %}
+    {% if health.config_error %}<dt>error</dt><dd>{{ health.config_error }}</dd>{% endif %}
+  </dl>
+</section>
+{% endblock %}

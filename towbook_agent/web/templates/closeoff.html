@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Close-off{% endblock %}
+
+{#- ==========================================================================
+    WORK WE DO NOT WANT, GROUPED BY THE CLIENT WHO KEEPS SENDING IT.
+
+    Grouped by client rather than by service type because the action is not a
+    setting, it is a conversation: "stop routing these to us". So every group
+    ends in a paste-ready note addressed to that client, with that client's own
+    numbers already in it.
+
+    The note never quotes a dollar figure. It is going to leave the building,
+    and the one claim it must not make is that these offers were worth a
+    specific amount of money.
+    ========================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Close-off</h1>
+    <div class="sub">
+      {{ closeoff.first_day|day("%b %d, %Y") }} &ndash; {{ closeoff.last_day|day("%b %d, %Y") }}
+      ({{ closeoff.days }} days). Service types we refuse almost every time, and who keeps
+      sending them.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.window_picker('/close-off', closeoff.days, day_options, account) }}
+  </div>
+</div>
+
+{% if not closeoff.available %}
+  {{ m.model_unavailable(closeoff.error) }}
+{% endif %}
+
+{% if not closeoff.has_data %}
+  {% if closeoff.available %}
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Close-off candidates</div>
+      <div class="value">0</div>
+      <div class="sub"><span class="dim">nothing crosses the threshold</span></div>
+    </div>
+  </div>
+  {{ m.empty_inline('No service type in this window was offered at least ' ~ (closeoff.thresholds.min_offers or 5) ~ ' times with an acceptance rate at or below ' ~ (closeoff.thresholds.max_rate or 0.1)|pct ~ '. There is nothing to ask a client to stop sending.') }}
+  {% endif %}
+{% else %}
+
+<div class="stats stats-headline">
+  <div class="stat stat-lead">
+    <div class="label">Offers we almost never take</div>
+    <div class="value hero" style="color: var(--serious)">{{ closeoff.totals.offers|num }}</div>
+    <div class="sub">
+      <span class="dim">producing {{ closeoff.totals.accepted|num }} jobs
+        ({{ closeoff.totals.rate|pct }})</span>
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">Service types</div>
+    <div class="value">{{ closeoff.totals.service_types|num }}</div>
+    <div class="sub"><span class="dim">at or under {{ closeoff.thresholds.max_rate|pct }} accepted</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Clients to talk to</div>
+    <div class="value">{{ closeoff.totals.clients|num }}</div>
+    <div class="sub"><span class="dim">one conversation each</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Miss rate on work we want</div>
+    <div class="value hero band band-{{ miss_band_for(closeoff.wanted_baseline.no_response_rate) }}">{{ closeoff.wanted_baseline.no_response_rate|pct }}</div>
+    <div class="sub"><span class="dim">the number closing these off should improve &mdash;
+      {{ closeoff.wanted_baseline.no_response|num }} of
+      {{ closeoff.wanted_baseline.offers|num }} today</span></div>
+  </div>
+</div>
+
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>
+    <strong>Why this is not just tidying.</strong>
+    {{ closeoff.rationale }}
+  </span>
+</div>
+
+{# --------------------------------------------------------- by service type #}
+
+<section class="card">
+  <header>
+    <h2>The service types</h2>
+    <span class="hint">
+      Qualifies at {{ closeoff.thresholds.min_offers }}+ offers and
+      {{ closeoff.thresholds.max_rate|pct }} or less accepted.
+      {% if closeoff.excluded_service_classes %}
+      Work the policy says take ({{ closeoff.excluded_service_classes|join(', ') }}) is excluded,
+      so this can never advise asking a client to stop sending tows.
+      {% endif %}
+    </span>
+  </header>
+
+  {{ m.ranking_note() }}
+
+  <div class="chart-wrap chart-h-240">
+    <canvas data-chart="closeoff-types"
+            data-chart-data='{{ {"types": closeoff.by_service_type}|tojson }}'
+            role="img"
+            aria-label="Bar chart of offers and accepted jobs for each close-off candidate service type"></canvas>
+  </div>
+  <div class="chart-legend">
+    <span class="key"><span class="swatch" style="background: var(--series-2)"></span>Offered</span>
+    <span class="key"><span class="swatch" style="background: var(--good)"></span>Accepted</span>
+  </div>
+
+  <div class="table-scroll" style="margin-top: 14px">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Verbatim service type</th>
+          <th>Class</th>
+          <th class="num">Offers</th>
+          <th class="num">Accepted</th>
+          <th class="num">Rate</th>
+          <th class="num">Unanswered</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in closeoff.by_service_type %}
+        <tr>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw }}</td>
+          <td class="muted">{{ row.service_class }}</td>
+          <td class="num">{{ row.offers|num }}</td>
+          <td class="num">{{ row.accepted|num }}</td>
+          <td class="num">{{ m.rate(row.rate) }}</td>
+          <td class="num">{{ row.no_response|num }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2">{{ closeoff.by_service_type|length }} service types</td>
+          <td class="num">{{ closeoff.totals.offers|num }}</td>
+          <td class="num">{{ closeoff.totals.accepted|num }}</td>
+          <td class="num">{{ m.rate(closeoff.totals.rate) }}</td>
+          <td class="num"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- by client #}
+
+<h2 style="margin: 22px 0 12px">One conversation per client</h2>
+{{ m.ranking_note('Shares are of everything that client sent in the window.') }}
+
+{% for client in closeoff.clients %}
+<section class="card closeoff-client">
+  <header>
+    <h2>
+      <a href="/clients/{{ client.slug|urlencode }}">{{ client.client }}</a>
+    </h2>
+    <span class="hint">
+      {{ client.candidate_offers|num }} of {{ client.client_offers|num }} offers
+      ({{ client.candidate_share_of_client_offers|pct }}) were work we do not cover &mdash;
+      we took {{ client.candidate_accepted|num }} of them
+      ({{ client.candidate_rate|pct }}).
+    </span>
+  </header>
+
+  <div class="grid two top">
+    <div>
+      <div class="table-scroll">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Service type</th>
+              <th class="num">Offers</th>
+              <th class="num">Accepted</th>
+              <th class="num">Rate</th>
+              <th style="width: 24%">Share of this client&rsquo;s offers</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in client.service_types %}
+            <tr>
+              <td class="wrap-text mono-sm">{{ row.service_type_raw }}</td>
+              <td class="num">{{ row.offers|num }}</td>
+              <td class="num">{{ row.accepted|num }}</td>
+              <td class="num">{{ m.rate(row.rate) }}</td>
+              <td>{{ m.meter(row.share_of_client_offers, 'warn') }}
+                <span class="small muted">{{ row.share_of_client_offers|pct }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>{{ client.service_types|length }} types</td>
+              <td class="num">{{ client.candidate_offers|num }}</td>
+              <td class="num">{{ client.candidate_accepted|num }}</td>
+              <td class="num">{{ m.rate(client.candidate_rate) }}</td>
+              <td>{{ client.candidate_share_of_client_offers|pct }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    {{ m.copyblock(client.email, client.dom_id, 'Copy note') }}
+  </div>
+</section>
+{% endfor %}
+
+{% endif %}
+{% endblock %}

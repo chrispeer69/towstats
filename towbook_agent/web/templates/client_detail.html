@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ client.client_name }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ client.client_name }}</h1>
+    <div class="sub">
+      <a href="/clients">&#8592; All clients</a>
+      &middot; request history for the last {{ client.days }} days
+      {% if client.client_key %}&middot; <span class="mono-sm">{{ client.client_key }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="controls">
+    <span class="seg">
+      {% for option in (7, 30, 90) %}
+      <a href="/clients/{{ client.slug|urlencode }}{{ qs(days=option, account=account) }}"
+         {% if client.days == option %}aria-current="true"{% endif %}>{{ option }}d</a>
+      {% endfor %}
+    </span>
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not client.has_data %}
+<div class="card">
+  <div class="empty-inline" style="padding: 40px 16px">
+    <div style="font-size: 15px; color: var(--text-2); margin-bottom: 6px;">
+      No requests from this client in the last {{ client.days }} days.
+    </div>
+    <div>Try a longer window above, or check <a href="/clients">all clients</a>.</div>
+  </div>
+</div>
+{% else %}
+
+<div class="stats">
+  {{ m.stat('Offered', client.totals.offered|num, sub=client.days ~ '-day total') }}
+  <div class="stat">
+    <div class="label">Accepted</div>
+    <div class="value">{{ client.totals.accepted|num }}</div>
+    <div class="sub"><span class="dim">{{ client.totals.denied|num }} denied &middot; {{ client.totals.expired|num }} expired &middot; {{ client.totals.canceled|num }} canceled</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Acceptance rate</div>
+    <div class="value hero band band-{{ client.totals.band }}">{{ client.totals.rate|pct }}</div>
+    <div class="sub"><span class="dim">{{ client.totals.accepted|num }} of {{ client.totals.offered|num }}</span></div>
+  </div>
+  {{ m.stat('Pending', client.totals.pending|num, sub='Not yet resolved') }}
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <header><h2>Daily volume</h2><span class="hint">Counts</span></header>
+    <div class="chart-wrap chart-h-200">
+      <canvas data-chart="client-volume"
+              data-chart-data='{{ {"trajectory": client.trajectory}|tojson }}'
+              role="img"
+              aria-label="Bar chart of daily offered and accepted requests for this client"></canvas>
+    </div>
+    <div class="chart-legend">
+      <span class="key"><span class="swatch" style="background: var(--series-1)"></span>Offered</span>
+      <span class="key"><span class="swatch" style="background: var(--good)"></span>Accepted</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <header><h2>Acceptance rate trajectory</h2><span class="hint">Gaps are days with no offers, not zeros</span></header>
+    <div class="chart-wrap chart-h-200">
+      <canvas data-chart="client-rate"
+              data-chart-data='{{ {"trajectory": client.trajectory}|tojson }}'
+              role="img"
+              aria-label="Line chart of this client's daily acceptance rate"></canvas>
+    </div>
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <header><h2>Service classes</h2></header>
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr><th>Service class</th><th class="num">Offered</th><th class="num">Accepted</th><th class="num">Rate</th></tr>
+        </thead>
+        <tbody>
+          {% for row in client.services %}
+          <tr>
+            <td>{{ row.service_class }}</td>
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <header><h2>Denial reasons</h2></header>
+    {% if client.denial_mix %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead><tr><th>Reason</th><th class="num">Count</th><th style="width: 34%">Share</th></tr></thead>
+        <tbody>
+          {% for row in client.denial_mix %}
+          <tr>
+            <td class="wrap-text">{{ row.reason }}</td>
+            <td class="num">{{ row.count|num }}</td>
+            <td>{{ m.meter(row.share, 'bad') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ m.empty_inline('Nothing from this client was denied in the window.') }}
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <header>
+    <h2>Request history</h2>
+    <span class="hint">
+      {{ client.row_count|num }} requests
+      {% if client.truncated %}&middot; showing the {{ client.requests|length|num }} most recent{% endif %}
+    </span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Offered</th>
+          <th>Responded</th>
+          <th>Status</th>
+          <th class="wrap-text">Verbatim service type</th>
+          <th>Class</th>
+          <th class="wrap-text">Pickup</th>
+          <th class="wrap-text">Dropoff</th>
+          <th>Truck</th>
+          <th>Driver</th>
+          <th class="num">Amount</th>
+          <th class="wrap-text">Denial reason</th>
+          <th>Request ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in client.requests %}
+        <tr>
+          <td class="nowrap">{{ row.offered_local|dt("%b %d %I:%M %p") }}</td>
+          <td class="nowrap muted">{{ row.responded_local|dt("%b %d %I:%M %p") }}</td>
+          <td>{{ m.status_pill(row.status) }}</td>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
+          <td>{{ row.service_class }}</td>
+          <td class="wrap-text muted">{{ row.pickup_location or DASH }}</td>
+          <td class="wrap-text muted">{{ row.dropoff_location or DASH }}</td>
+          <td class="muted">{{ row.truck_assigned or DASH }}</td>
+          <td class="muted">{{ row.driver_assigned or DASH }}</td>
+          <td class="num">{{ row.amount|money }}</td>
+          <td class="wrap-text muted">{{ row.denial_reason or DASH }}</td>
+          <td class="mono-sm muted">{{ row.request_id|midtrunc(18) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% endif %}
+{% endblock %}

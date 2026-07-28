@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Blind spots{% endblock %}
+
+{#- ==========================================================================
+    THE STAFFING-DECISION VIEW.
+
+    One grid, 7 x 24, coloured by how often offers in that hour go unanswered.
+    It exists to turn "we are missing work" into "nobody is covering these
+    specific hours", which is an argument with evidence attached.
+
+    Colour encoding, deliberately:
+      * magnitude uses the SEQUENTIAL ramp already validated for this app --
+        one hue, light to dark. A miss rate is a magnitude, not a category.
+      * crossing the threshold is a STATE, so it uses the reserved status
+        colour as a ring, and is never colour alone: flagged cells also carry a
+        marker glyph and are listed by name in the table underneath.
+      * a cell with no offers is drawn as an outline. It is not a zero.
+    ========================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Blind spots</h1>
+    <div class="sub">
+      {{ spots.first_day|day("%b %d, %Y") }} &ndash; {{ spots.last_day|day("%b %d, %Y") }}
+      ({{ spots.days }} days). When offers arrive and nobody answers, by hour of the week,
+      local time.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.window_picker('/blind-spots', spots.days, day_options, account) }}
+  </div>
+</div>
+
+{% if not spots.available %}
+  {{ m.model_unavailable(spots.error) }}
+{% endif %}
+
+{% if not spots.has_data %}
+  {% if spots.available %}
+    {{ m.empty_state('Nothing offered in this window',
+                     'No requests were offered between ' ~ spots.first_day ~ ' and ' ~ spots.last_day ~ '.') }}
+  {% endif %}
+{% else %}
+
+<div class="stats stats-headline">
+  <div class="stat stat-lead">
+    <div class="label">Response window Towbook allows</div>
+    <div class="value hero">{{ RESPONSE_WINDOW.median_minutes }}<span class="unit">min median</span></div>
+    <div class="sub">
+      <span class="dim">mean {{ RESPONSE_WINDOW.mean_minutes }}, longest
+        {{ RESPONSE_WINDOW.max_minutes }}. A missed notification is a lost job almost
+        immediately.</span>
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">Offers unanswered</div>
+    <div class="value">{{ spots.totals.no_response|num }}</div>
+    <div class="sub"><span class="dim">of {{ spots.totals.offers|num }} offered</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Overall miss rate</div>
+    <div class="value hero band band-{{ miss_band_for(spots.totals.no_response_rate, spots.thresholds.threshold) }}">{{ spots.totals.no_response_rate|pct }}</div>
+    <div class="sub"><span class="dim">nobody answered in time</span></div>
+  </div>
+  <div class="stat{{ ' stat-flag' if spots.blind_spot_count }}">
+    <div class="label">Unmanned windows</div>
+    <div class="value">{{ spots.blind_spot_count|num }}</div>
+    <div class="sub"><span class="dim">cells with &ge; {{ spots.thresholds.min_offers }} offers
+      and &ge; {{ spots.thresholds.threshold|pct }} missed</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Jobs lost in them</div>
+    <div class="value">{{ spots.blind_spot_no_response|num }}</div>
+    <div class="sub"><span class="dim">of {{ spots.blind_spot_offers|num }} offered in those
+      hours</span></div>
+  </div>
+</div>
+
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>
+    <strong>Why the window matters, and what it does not explain.</strong>
+    {{ RESPONSE_WINDOW.note }}
+    A longer window is not the fix &mdash; measured on this account, window length does not
+    predict miss rate. The constraint is <em>attention</em>: somebody, or something, watching
+    the queue during the highlighted hours.
+  </span>
+</div>
+
+{# ------------------------------------------------------------------ grid #}
+
+<section class="card">
+  <header>
+    <h2>Hour of week</h2>
+    <span class="hint">
+      Darker means more offers went unanswered. Ringed cells are over
+      {{ spots.thresholds.threshold|pct }} on at least {{ spots.thresholds.min_offers }} offers.
+      Hatched cells had fewer than {{ spots.thresholds.min_offers }} offers &mdash; too few to read
+      as a pattern.
+    </span>
+  </header>
+
+  <div class="table-scroll">
+    <div class="heatmap heatmap-miss">
+      <div class="hm-corner"></div>
+      {% for hour in spots.hours %}
+      <div class="hm-hour">{{ '%02d'|format(hour) }}</div>
+      {% endfor %}
+
+      {% for row in spots.grid %}
+      <div class="hm-day">{{ row.label }}</div>
+        {% for cell in row.cells %}
+        <div class="hm-cell {{ 'empty' if cell.step < 0 else 's' ~ cell.step }}{{ ' low' if cell.low_sample }}{{ ' flag' if cell.flag }}"
+             data-tip="{{ row.label }} {{ '%02d'|format(cell.hour) }}:00 · {{ cell.offers }} offered · {{ cell.no_response }} unanswered · {{ cell.no_response_rate|pct }} missed{% if cell.flag %} · BLIND SPOT{% endif %}"></div>
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="heat-legend" style="margin-top: 12px">
+    <span>Share of offers unanswered</span>
+    <span>0%</span>
+    <span class="ramp">
+      <i style="background: var(--seq-0)"></i>
+      <i style="background: var(--seq-1)"></i>
+      <i style="background: var(--seq-2)"></i>
+      <i style="background: var(--seq-3)"></i>
+      <i style="background: var(--seq-4)"></i>
+      <i style="background: var(--seq-5)"></i>
+      <i style="background: var(--seq-6)"></i>
+    </span>
+    <span>100%</span>
+    {#- Self-contained swatches. The .hm-cell rules are scoped to a .heatmap
+        ancestor, so a legend outside the grid has to carry its own paint. -#}
+    <span style="margin-left: 12px">
+      <i class="swatch-key" style="background: var(--seq-4); outline: 2px solid var(--critical); outline-offset: -2px"></i>
+      blind spot
+    </span>
+    <span>
+      <i class="swatch-key" style="border: 1px dashed var(--baseline)"></i>
+      no offers
+    </span>
+    <span>
+      <i class="swatch-key" style="background: var(--seq-2); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 1.5px, transparent 1.5px 4px)"></i>
+      fewer than {{ spots.thresholds.min_offers }} offers
+    </span>
+  </div>
+</section>
+
+{# -------------------------------------------------------------- by hour #}
+
+<section class="card">
+  <header>
+    <h2>By hour of day</h2>
+    <span class="hint">
+      The same offers, collapsed across all seven days. This is the shift question:
+      a single day&rsquo;s 18:00 cell holds four or five offers, but the whole window&rsquo;s
+      does not.
+    </span>
+  </header>
+  <div class="chart-wrap chart-h-240">
+    <canvas data-chart="blind-hours"
+            data-chart-data='{{ {"by_hour": spots.by_hour, "threshold": spots.thresholds.threshold}|tojson }}'
+            role="img"
+            aria-label="Bar chart of the share of offers that went unanswered in each hour of the day, against the blind-spot threshold"></canvas>
+  </div>
+  <div class="chart-legend">
+    <span class="key"><span class="swatch" style="background: var(--series-1)"></span>Share unanswered</span>
+    <span class="key" style="color: var(--critical)"><span class="swatch line dashed"></span><span style="color: var(--text-2)">Blind-spot threshold ({{ spots.thresholds.threshold|pct }})</span></span>
+  </div>
+
+  <div class="table-scroll" style="margin-top: 14px">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Hour</th>
+          <th class="num">Offers</th>
+          <th class="num">Accepted</th>
+          <th class="num">Unanswered</th>
+          <th class="num">Missed</th>
+          <th style="width: 22%">Share missed</th>
+          <th>Verdict</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in spots.by_hour %}
+        <tr class="{{ 'row-flag' if row.is_blind_spot else '' }}">
+          <td class="nowrap mono-sm">{{ row.label }}</td>
+          <td class="num">{{ row.offers|num }}</td>
+          <td class="num">{{ row.accepted|num }}</td>
+          <td class="num">{{ row.no_response|num }}</td>
+          <td class="num">{{ m.miss(row.no_response_rate, spots.thresholds.threshold) }}</td>
+          <td>{{ m.meter(row.no_response_rate, row.band) }}</td>
+          <td>
+            {% if row.is_blind_spot %}<span class="pill pill-denied">uncovered</span>
+            {% elif not row.offers %}<span class="muted">{{ DASH }}</span>
+            {% else %}<span class="muted small">covered</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ------------------------------------------------------- flagged cells #}
+
+<section class="card">
+  <header>
+    <h2>Every unmanned window, worst first</h2>
+    <span class="hint">Ordered by jobs actually lost, not by rate &mdash; the shift you add
+      should be the one that recovers the most work</span>
+  </header>
+
+  {{ m.ranking_note('A cell qualifies at ' ~ spots.thresholds.min_offers ~ ' or more offers.') }}
+
+  {% if spots.worst_cells %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Weekday</th>
+          <th>Hour</th>
+          <th class="num">Offers</th>
+          <th class="num">Accepted</th>
+          <th class="num">Unanswered</th>
+          <th class="num">Missed</th>
+          <th style="width: 24%">Share missed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cell in spots.worst_cells %}
+        <tr>
+          <td>{{ cell.weekday }}</td>
+          <td class="nowrap mono-sm">{{ '%02d'|format(cell.hour) }}:00</td>
+          <td class="num">{{ cell.offers|num }}</td>
+          <td class="num">{{ cell.accepted|num }}</td>
+          <td class="num"><strong>{{ cell.no_response|num }}</strong></td>
+          <td class="num">{{ m.miss(cell.no_response_rate, spots.thresholds.threshold) }}</td>
+          <td>{{ m.meter(cell.no_response_rate, 'bad') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2">{{ spots.worst_cells|length }} windows</td>
+          <td class="num">{{ spots.blind_spot_offers|num }}</td>
+          <td class="num"></td>
+          <td class="num">{{ spots.blind_spot_no_response|num }}</td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+    {{ m.empty_inline('No hour-of-week window has both enough offers to judge and a miss rate over the threshold. Nothing to staff for.') }}
+  {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>{% block title %}Towbook{% endblock %} &middot; Job Acceptance</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128667;</text></svg>">
+<script>
+/* Set the theme before first paint so a light-theme user never sees a dark
+   flash. Kept inline and tiny on purpose; the rest lives in dash.js. */
+(function () {
+  try {
+    var stored = localStorage.getItem("tbk-theme");
+    if (stored === "light" || stored === "dark") {
+      document.documentElement.setAttribute("data-theme", stored);
+      return;
+    }
+  } catch (e) {}
+  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+    document.documentElement.setAttribute("data-theme", "light");
+  }
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      Job Acceptance
+      <span class="brand-sub">Towbook</span>
+    </a>
+    <nav class="main" aria-label="Main">
+      {% for key, label, href in NAV %}
+      <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="topbar-meta">
+      {% if accounts %}
+      <form method="get" style="display:inline">
+        <label for="account-select" class="visually-hidden">Account</label>
+        <select id="account-select" name="account" onchange="this.form.submit()">
+          <option value="">All accounts</option>
+          {% for item in accounts %}
+          <option value="{{ item }}"{% if account == item %} selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
+      <span title="Presentation timezone">{{ now|dt("%a %b %d, %I:%M %p") }} {{ timezone }}</span>
+      <button type="button" class="icon-btn" id="theme-toggle">&#9728; Light</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  {% if notice %}
+  <div class="notice notice-{{ 'ok' if notice_level == 'ok' else ('error' if notice_level == 'error' else ('warn' if notice_level == 'warn' else 'info')) }}">
+    <span class="ico">{% if notice_level == 'ok' %}&#10003;{% elif notice_level == 'error' %}&#9888;{% elif notice_level == 'warn' %}&#9888;{% else %}&#8505;{% endif %}</span>
+    <span>{{ notice }}</span>
+  </div>
+  {% endif %}
+
+  {% if run_is_stale and last_run %}
+  <div class="notice notice-warn">
+    <span class="ico">&#9888;</span>
+    <span>
+      <strong>The data may be stale.</strong>
+      The last pipeline run ({{ last_run.report_type|nice }}, {{ last_run.status }})
+      started {{ last_run.started_at|ago }}. Everything below reflects what was ingested then.
+      Check <a href="/health">Health</a>.
+    </span>
+  </div>
+  {% endif %}
+
+  {% if last_run and last_run.status == 'failed' %}
+  <div class="notice notice-error">
+    <span class="ico">&#9888;</span>
+    <span>
+      <strong>The last pipeline run failed.</strong>
+      {{ last_run.error_message|default('No error message was recorded.', true)|midtrunc(180) }}
+      Numbers below are incomplete until it succeeds &mdash; see <a href="/health">Health</a>.
+    </span>
+  </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="foot">
+  <span>Towbook Job Acceptance Intelligence v{{ APP_VERSION }}</span>
+  <span>Times shown in {{ timezone }}</span>
+  {% if last_run %}<span>Last run: {{ last_run.report_type|nice }} &middot; {{ last_run.started_at|ago }} &middot; {{ last_run.row_count|num }} rows</span>{% endif %}
+  <span><a href="/api/docs">API</a></span>
+</footer>
+
+<script src="/static/htmx.min.js"></script>
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/dash.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

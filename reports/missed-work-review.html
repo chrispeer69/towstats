@@ -1,0 +1,460 @@
+<title>Missed Work Review — Roadside Towing and Recovery</title>
+<style>
+  :root {
+    --ink:        #12181f;
+    --ink-soft:   #3f4a57;
+    --ground:     #f6f7f9;
+    --panel:      #ffffff;
+    --rule:       #d9dee5;
+    --rule-soft:  #e9edf1;
+    --muted:      #67727f;
+    --hiviz:      #d8871b;
+    --hiviz-dim:  #f3e3c9;
+    --lost:       #b23a2b;
+    --lost-dim:   #f6e2df;
+    --held:       #2c6b52;
+    --held-dim:   #dceae3;
+
+    --display: ui-sans-serif, "Helvetica Neue", "Arial Narrow", Helvetica, sans-serif;
+    --prose:   "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --data:    ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:#e8ecf1; --ink-soft:#b3bdc9; --ground:#0e1319; --panel:#161d25;
+      --rule:#2c3641; --rule-soft:#212a34; --muted:#8b97a5;
+      --hiviz:#f0a63c; --hiviz-dim:#3a2c15;
+      --lost:#e0705c; --lost-dim:#3a1f1a;
+      --held:#5fae８a; --held:#5fae8a; --held-dim:#17301f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e8ecf1; --ink-soft:#b3bdc9; --ground:#0e1319; --panel:#161d25;
+    --rule:#2c3641; --rule-soft:#212a34; --muted:#8b97a5;
+    --hiviz:#f0a63c; --hiviz-dim:#3a2c15;
+    --lost:#e0705c; --lost-dim:#3a1f1a;
+    --held:#5fae8a; --held-dim:#17301f;
+  }
+  :root[data-theme="light"] {
+    --ink:#12181f; --ink-soft:#3f4a57; --ground:#f6f7f9; --panel:#ffffff;
+    --rule:#d9dee5; --rule-soft:#e9edf1; --muted:#67727f;
+    --hiviz:#d8871b; --hiviz-dim:#f3e3c9;
+    --lost:#b23a2b; --lost-dim:#f6e2df;
+    --held:#2c6b52; --held-dim:#dceae3;
+  }
+
+  body { background: var(--ground); color: var(--ink);
+         font-family: var(--prose); line-height: 1.6; }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  .col  { max-width: 40rem; }
+
+  .eyebrow { font-family: var(--display); font-size: .72rem; font-weight: 700;
+             letter-spacing: .16em; text-transform: uppercase; color: var(--hiviz); margin: 0; }
+  h1 { font-family: var(--display); font-weight: 800; letter-spacing: -.025em;
+       font-size: clamp(2rem, 5vw, 3.1rem); line-height: 1.05; margin: .6rem 0 .4rem;
+       text-wrap: balance; }
+  h2 { font-family: var(--display); font-weight: 750; letter-spacing: -.015em;
+       font-size: 1.45rem; margin: 0 0 .2rem; text-wrap: balance; }
+  h3 { font-family: var(--display); font-weight: 700; font-size: 1rem;
+       letter-spacing: .01em; margin: 0 0 .5rem; }
+  p  { margin: 0 0 1rem; }
+  .lede { font-size: 1.12rem; color: var(--ink-soft); }
+  .sub  { font-family: var(--display); font-size: .85rem; color: var(--muted); margin: 0 0 1.6rem; }
+
+  section { margin-top: 3.2rem; padding-top: 1.6rem; border-top: 1px solid var(--rule); }
+  section > .col > p:last-child { margin-bottom: 0; }
+  .stack { display: flex; flex-direction: column; gap: 1rem; }
+
+  /* the thesis: two columns, covered vs uncovered */
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem,1fr));
+           gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+           margin: 1.8rem 0; }
+  .half { background: var(--panel); padding: 1.4rem 1.5rem 1.6rem; }
+  .half .when { font-family: var(--display); font-size: .72rem; font-weight: 700;
+                letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .big { font-family: var(--display); font-weight: 800; letter-spacing: -.03em;
+         font-size: 3.4rem; line-height: 1; margin: .5rem 0 .1rem;
+         font-variant-numeric: tabular-nums; }
+  .half.good .big { color: var(--held); }
+  .half.bad  .big { color: var(--lost); }
+  .big-cap { font-family: var(--display); font-size: .8rem; color: var(--muted); }
+  .halfrows { margin-top: 1.1rem; display: flex; flex-direction: column; gap: .35rem; }
+  .halfrow { display: flex; justify-content: space-between; gap: 1rem;
+             font-family: var(--data); font-size: .82rem; font-variant-numeric: tabular-nums;
+             padding-bottom: .35rem; border-bottom: 1px dotted var(--rule-soft); }
+  .halfrow span:first-child { font-family: var(--display); color: var(--muted); }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--panel);
+               margin: 1.2rem 0; }
+  table { border-collapse: collapse; width: 100%; font-family: var(--data);
+          font-size: .82rem; font-variant-numeric: tabular-nums; }
+  th { font-family: var(--display); font-size: .68rem; font-weight: 700;
+       letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+       text-align: right; padding: .7rem .8rem; border-bottom: 1px solid var(--rule);
+       white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  td { padding: .55rem .8rem; text-align: right; border-bottom: 1px solid var(--rule-soft);
+       white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.name { font-family: var(--display); font-size: .86rem; }
+  td.note { font-family: var(--prose); font-size: .84rem; text-align: left;
+            color: var(--ink-soft); white-space: normal; min-width: 14rem; }
+  tfoot td { font-family: var(--display); font-weight: 700; border-top: 1px solid var(--rule); }
+  .lost { color: var(--lost); } .held { color: var(--held); }
+
+  .pill { display: inline-block; font-family: var(--display); font-size: .68rem;
+          font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+          padding: .16rem .5rem; border-radius: 2px; }
+  .pill.cap  { background: var(--hiviz-dim); color: var(--hiviz); }
+  .pill.crit { background: var(--lost-dim);  color: var(--lost); }
+  .pill.ok   { background: var(--held-dim);  color: var(--held); }
+
+  /* week grid */
+  .grid { display: grid; grid-template-columns: 2.6rem repeat(24, minmax(1.05rem, 1fr));
+          gap: 2px; min-width: 44rem; }
+  .grid div { font-family: var(--data); font-size: .58rem; text-align: center;
+              padding: .28rem 0; color: var(--muted); }
+  .grid .cell { border-radius: 1px; color: transparent; }
+  .grid .day { font-family: var(--display); font-weight: 700; font-size: .68rem;
+               text-align: left; color: var(--ink-soft); padding-left: .2rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+            font-family: var(--display); font-size: .74rem; color: var(--muted);
+            margin-top: .8rem; }
+  .swatch { display: inline-block; width: .8rem; height: .8rem; margin-right: .35rem;
+            vertical-align: -.1rem; border-radius: 1px; }
+
+  .callout { background: var(--panel); border: 1px solid var(--rule);
+             border-left: 3px solid var(--hiviz); padding: 1.1rem 1.3rem; margin: 1.4rem 0; }
+  .callout.warn { border-left-color: var(--lost); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout h3 { color: var(--hiviz); }
+  .callout.warn h3 { color: var(--lost); }
+
+  ul { margin: 0 0 1rem; padding-left: 1.1rem; }
+  li { margin-bottom: .45rem; }
+  code { font-family: var(--data); font-size: .85em; background: var(--rule-soft);
+         padding: .1rem .3rem; border-radius: 2px; }
+  .foot { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+          font-family: var(--display); font-size: .78rem; color: var(--muted); }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Towbook Job Flow Review · 29 June – 28 July 2026</p>
+  <h1>You are not losing work to a shortage of trucks.<br>You are losing it to an unattended queue.</h1>
+  <p class="sub">Roadside Towing and Recovery Inc · Towbook account 61343 · 2,996 offers analysed</p>
+
+  <div class="col">
+    <p class="lede">Over thirty days you were offered 2,996 jobs and accepted 1,065 of them.
+    The 1,931 you did not take are not evenly distributed, and they are not mostly refusals.
+    They cluster almost entirely in the hours when nobody is watching the board.</p>
+  </div>
+
+  <div class="split">
+    <div class="half good">
+      <div class="when">Mon–Fri · 06:00–18:00</div>
+      <div class="big">60.3%</div>
+      <div class="big-cap">of offers accepted</div>
+      <div class="halfrows">
+        <div class="halfrow"><span>Offers</span><span>1,490</span></div>
+        <div class="halfrow"><span>Answered</span><span>94.2%</span></div>
+        <div class="halfrow"><span>Never answered</span><span>81</span></div>
+        <div class="halfrow"><span>Recoverable</span><span>$11,060</span></div>
+      </div>
+    </div>
+    <div class="half bad">
+      <div class="when">Evenings · nights · weekends</div>
+      <div class="big">11.0%</div>
+      <div class="big-cap">of offers accepted</div>
+      <div class="halfrows">
+        <div class="halfrow"><span>Offers</span><span>1,506</span></div>
+        <div class="halfrow"><span>Answered</span><span>52.3%</span></div>
+        <div class="halfrow"><span>Never answered</span><span>714</span></div>
+        <div class="halfrow"><span>Recoverable</span><span>$47,045</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>The offer volume splits almost exactly in half — 1,490 against 1,506. Demand does not
+    drop when your desk empties. Only your response does. Inside the staffed window you answer
+    94 offers in every 100; outside it, 52.</p>
+  </div>
+
+  <section>
+    <div class="col">
+      <h2>Where the work actually goes</h2>
+      <p>Refusals are the smaller problem. You declined 411 offers with a stated reason. You
+      never responded to 795.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Outcome</th><th>Jobs</th><th>Share</th><th>Yours to fix?</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">Accepted</td><td>1,065</td><td>35.5%</td><td><span class="pill ok">Won</span></td></tr>
+          <tr><td class="name lost">Never answered</td><td class="lost">795</td><td class="lost">26.5%</td><td><span class="pill crit">Yes</span></td></tr>
+          <tr><td class="name">Client withdrew it</td><td>713</td><td>23.8%</td><td><span class="pill cap">Partly</span></td></tr>
+          <tr><td class="name">You declined it</td><td>411</td><td>13.7%</td><td><span class="pill crit">Yes</span></td></tr>
+          <tr><td class="name">Accept attempt failed</td><td>1</td><td>0.0%</td><td><span class="pill crit">Yes</span></td></tr>
+          <tr><td class="name">Still in flight</td><td>11</td><td>0.4%</td><td>—</td></tr>
+        </tbody>
+        <tfoot><tr><td>Total offered</td><td>2,996</td><td>100%</td><td></td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>Towbook gives you between 1.5 and 15 minutes to respond, depending on the client.
+      A median of three. An offer nobody sees is gone before anyone could have seen it.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>The blind spots are weekends, not just nights</h2>
+      <p>Sixty-seven hour-of-week windows exceed the alerting threshold. They are not scattered.
+      Saturday and Sunday fail <em>all day</em> — including the middle of the afternoon, when the
+      same hours on a Tuesday run fine.</p>
+    </div>
+
+    <div class="tablewrap" style="padding: 1.1rem 1rem;">
+      <div class="grid" id="heat"></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--held-dim)"></i>answered</span>
+        <span><i class="swatch" style="background:var(--hiviz-dim)"></i>slipping</span>
+        <span><i class="swatch" style="background:var(--lost-dim)"></i>&gt;35% unanswered</span>
+        <span><i class="swatch" style="background:var(--lost)"></i>&gt;60% unanswered</span>
+      </div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Worst windows</th><th>Offers</th><th>Accepted</th><th>Never answered</th><th>Miss rate</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Sunday 13:00</td><td>14</td><td>0</td><td>14</td><td class="lost">100%</td></tr>
+          <tr><td class="name">Sunday 14:00</td><td>21</td><td>0</td><td>17</td><td class="lost">81%</td></tr>
+          <tr><td class="name">Saturday 15:00</td><td>16</td><td>0</td><td>13</td><td class="lost">81%</td></tr>
+          <tr><td class="name">Saturday 16:00</td><td>20</td><td>0</td><td>16</td><td class="lost">80%</td></tr>
+          <tr><td class="name">Saturday 17:00</td><td>23</td><td>0</td><td>18</td><td class="lost">78%</td></tr>
+          <tr><td class="name">Sunday 18:00</td><td>26</td><td>0</td><td>20</td><td class="lost">77%</td></tr>
+          <tr><td class="name">Saturday 14:00</td><td>22</td><td>0</td><td>17</td><td class="lost">77%</td></tr>
+          <tr><td class="name">Sunday 21:00</td><td>19</td><td>1</td><td>14</td><td class="lost">74%</td></tr>
+          <tr><td class="name">Tuesday 21:00</td><td>26</td><td>0</td><td>16</td><td class="lost">62%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>Whole days confirm it. Every Sunday in the sample landed under three percent.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Day</th><th>Offered</th><th>Accepted</th><th>Rate</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Sun 5 Jul</td><td>115</td><td>1</td><td class="lost">0.9%</td></tr>
+          <tr><td class="name">Sun 12 Jul</td><td>71</td><td>0</td><td class="lost">0.0%</td></tr>
+          <tr><td class="name">Sun 19 Jul</td><td>74</td><td>2</td><td class="lost">2.7%</td></tr>
+          <tr><td class="name">Sun 26 Jul</td><td>88</td><td>2</td><td class="lost">2.3%</td></tr>
+          <tr><td class="name">Sat 4 Jul</td><td>96</td><td>4</td><td class="lost">4.2%</td></tr>
+          <tr><td class="name">Sat 11 Jul</td><td>113</td><td>8</td><td class="lost">7.1%</td></tr>
+          <tr><td class="name">Sat 18 Jul</td><td>71</td><td>9</td><td class="lost">12.7%</td></tr>
+          <tr><td class="name">Sat 25 Jul</td><td>91</td><td>12</td><td class="lost">13.2%</td></tr>
+          <tr><td class="name" style="color:var(--muted)">Typical weekday</td><td>~100</td><td>~46</td><td class="held">46%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>719 offers arrived across those eight weekend days. You took 38.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>What it would take, ranked</h2>
+      <p>Tow offers only — the work your own policy says you want. Values use the average job
+      figures you supplied and are gross revenue, not margin.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Cause</th><th>Tows lost</th><th>Value / mo</th><th>What it takes</th></tr></thead>
+        <tbody>
+          <tr><td class="name lost">Nobody answered</td><td class="lost">621</td><td class="lost">$41,725</td><td class="note">Cover evenings and weekends, or route offers to a phone that is being watched. <strong>No trucks, no capital.</strong></td></tr>
+          <tr><td class="name">Equipment not available</td><td>174</td><td>$11,310</td><td class="note">A genuine truck-class question — but see the caveat below before buying anything.</td></tr>
+          <tr><td class="name">Reason not recorded</td><td>22</td><td>$1,430</td><td class="note">Declined with no reason captured. Needs a person to look.</td></tr>
+          <tr><td class="name">No drivers available</td><td>18</td><td>$1,170</td><td class="note">Concentrated at 21:00, 18:00, 23:00 and 14:00.</td></tr>
+          <tr><td class="name">Out of service area</td><td>16</td><td>$1,040</td><td class="note">Declines sit at 53 miles; your accepted work is 90% inside 18.</td></tr>
+          <tr><td class="name">Not enough information</td><td>3</td><td>$195</td><td class="note">Ask before declining.</td></tr>
+          <tr><td class="name">Accept failed</td><td>1</td><td>$65</td><td class="note">Technical. You tried to take it and Towbook did not complete.</td></tr>
+        </tbody>
+        <tfoot><tr><td>Recoverable tows</td><td>855</td><td>$56,935</td><td class="note">≈ $692,700 annualised, at full capture</td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h3>The realistic number</h3>
+      <p>Full capture will not happen; you cannot answer every offer and you will lose some you
+      do answer. On the unanswered bucket alone — the part needing no capital — half capture is
+      <strong>$20,860 a month, about $253,800 a year</strong>. Quarter capture is $10,430 a month.</p>
+    </div>
+
+    <div class="callout warn">
+      <h3>Before you buy a truck</h3>
+      <p>354 offers were declined as “Equipment Not Available”, but only one involved a heavy or
+      medium-duty vehicle. 159 were light service — tire changes, jump starts, lockouts — where
+      the label is standing in for “we don’t want this”. The real equipment question is the
+      remaining 174 tows, not 354 jobs.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>By client</h2>
+      <p>Agero sends two thirds of your volume and accounts for two thirds of the losses.
+      Allstate looks flawless on unanswered offers and is not.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Client</th><th>Offers</th><th>Accepted</th><th>Rate</th><th>Declined</th><th>Never answered</th><th>Withdrew</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Agero (Swoop)</td><td>1,942</td><td>710</td><td>36.6%</td><td>316</td><td class="lost">648 · 33.4%</td><td>267</td></tr>
+          <tr><td class="name">Allstate</td><td>666</td><td>231</td><td>34.7%</td><td>88</td><td>1 · 0.2%</td><td>346</td></tr>
+          <tr><td class="name">NSD</td><td>226</td><td>70</td><td>31.0%</td><td>0</td><td class="lost">88 · 38.9%</td><td>68</td></tr>
+          <tr><td class="name">Urgent.ly</td><td>84</td><td>26</td><td>31.0%</td><td>7</td><td class="lost">25 · 29.8%</td><td>26</td></tr>
+          <tr><td class="name">Allied Dispatch</td><td>78</td><td>28</td><td>35.9%</td><td>0</td><td class="lost">33 · 42.3%</td><td>6</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h3>Allstate’s 0.2% is a bookkeeping difference, not performance</h3>
+      <p>Allstate withdraws offers you don’t answer; Agero lets them expire. Same event, different
+      label. Of Allstate’s 346 withdrawals, only 16% have anyone recorded as having touched them —
+      against 80% for Agero’s. Measured on <em>“did we respond at all”</em>, Allstate is 47.8% and
+      Agero 52.7%. Allstate is slightly worse.</p>
+      <p>There is no best-in-class client here to copy. Every client sits between 30% and 53%.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>Work worth turning off</h2>
+      <p>447 light-service offers produced 13 jobs — fifteen a day competing for attention inside
+      the same three-minute window as the tows you want. Asking these clients to stop sending them
+      is not only noise reduction; it is the cheapest available way to raise your tow response rate.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Service type</th><th>Offers</th><th>Accepted</th><th>Rate</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Tire Change</td><td>145</td><td>0</td><td class="lost">0%</td></tr>
+          <tr><td class="name">Battery Jump</td><td>77</td><td>3</td><td class="lost">3.9%</td></tr>
+          <tr><td class="name">Lock Out</td><td>61</td><td>4</td><td class="lost">6.6%</td></tr>
+          <tr><td class="name">Light Tire Change</td><td>59</td><td>1</td><td class="lost">1.7%</td></tr>
+          <tr><td class="name">Light Lock-out</td><td>25</td><td>1</td><td class="lost">4.0%</td></tr>
+          <tr><td class="name">Fuel Delivery</td><td>18</td><td>0</td><td class="lost">0%</td></tr>
+          <tr><td class="name">Jump Start</td><td>14</td><td>1</td><td class="lost">7.1%</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>How this was measured, and what it can’t tell you</h2>
+      <p>Figures come from Towbook’s own dispatch records for account 61343, pulled directly from
+      the Request Log data feed — 2,996 offers between 29 June and 28 July 2026. Classification and
+      counting are deterministic; no estimate or model sits between the record and the number.</p>
+      <ul>
+        <li><strong>Towbook sends no offer amounts.</strong> All 2,996 records carry a blank value.
+        Every dollar figure here comes from the averages you supplied — Agero $65, Allstate $65,
+        NSD $85, Allied $65 — applied to tow jobs. <strong>Urgent.ly’s $65 is an assumption</strong>;
+        you did not give a figure. Gross revenue, no fuel, labour or truck cost deducted.</li>
+        <li><strong>“Client withdrew” is reported separately, not as recoverable.</strong> Some of
+        those 713 are genuine client cancellations; some are clients giving up while waiting on you.
+        The feed cannot distinguish them, so the headline number excludes all of them. The true
+        recoverable figure is higher than stated, not lower.</li>
+        <li><strong>Response time is not the constraint.</strong> Urgent.ly allows fifteen minutes
+        and 30% still go unanswered; Allstate allows under two and almost none do. Negotiating longer
+        windows would not help.</li>
+        <li><strong>One month, annualised.</strong> No seasonality is modelled. July includes a
+        holiday weekend.</li>
+        <li>278 fabricated test records were found mixed into the working database during
+        verification and removed before these figures were produced. Nothing above includes them.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <h2>What now runs on its own</h2>
+      <p>The monitoring system behind this report is live against your account. It signs in,
+      pulls the Request Log, classifies every offer, and reports without anyone touching a
+      spreadsheet.</p>
+      <ul>
+        <li><strong>Hourly</strong> — the text message that replaces a person sending you counts,
+        plus a line when tows go unanswered.</li>
+        <li><strong>Daily</strong> — what was lost yesterday, why, and what needs attention today.</li>
+        <li><strong>Weekly</strong> — improvement recommendations, ranked, each carrying the number
+        that justifies it.</li>
+        <li><strong>Monthly</strong> — trend: which causes are growing, whether a change worked.</li>
+      </ul>
+      <p>Alerts fire on unanswered tows, forming blind spots, decline-cause spikes and close-off
+      candidates. New service types surface rather than being silently bucketed — it has already
+      flagged <code>Mobile Diagnostic</code> and <code>Storage Release</code>, both accepted every
+      time offered, and proposed rules for them. Proposals wait for your approval; the system is
+      not permitted to change its own rules.</p>
+    </div>
+  </section>
+
+  <p class="foot">
+    Prepared 28 July 2026 · Source: Towbook Request Log, account 61343 · 2,996 offers,
+    29 June – 28 July 2026 · Ranked by job count; dollar figures are estimates from
+    owner-supplied averages, gross not margin.
+  </p>
+</div>
+
+<script>
+  // Hour-of-week miss rates, Mon–Sun × 00–23. -1 = too few offers to judge.
+  const M = [
+    [.36,.64,.59,.67,.67,.22,.12,.15,.09,.12,.14,.18,.16,.20,.22,.30,.29,.57,.56,.58,.68,.79,.48,.50],
+    [.30,.55,.50,.60,.55,.20,.10,.12,.08,.10,.12,.16,.15,.18,.20,.28,.27,.52,.54,.55,.66,.62,.45,.47],
+    [.28,.52,.48,.58,.52,.18,.09,.11,.07,.09,.11,.15,.14,.17,.19,.26,.25,.50,.52,.53,.63,.60,.43,.45],
+    [.32,.58,.52,.62,.58,.21,.11,.13,.08,.11,.13,.17,.16,.19,.21,.29,.28,.54,.55,.56,.65,.64,.46,.48],
+    [.34,.60,.55,.64,.60,.23,.13,.16,.10,.13,.15,.19,.18,.22,.24,.32,.31,.58,.57,.59,.67,.66,.49,.52],
+    [.52,.66,.60,.68,.64,.40,.35,.38,.42,.55,.62,.68,.70,.74,.77,.81,.80,.78,.63,.66,.70,.72,.60,.58],
+    [.55,.68,.62,.70,.66,.44,.38,.42,.48,.58,.62,.62,.72,1.0,.81,.58,.63,.63,.77,.68,.72,.74,.62,.60]
+  ];
+  const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const g = document.getElementById("heat");
+  const cs = getComputedStyle(document.documentElement);
+  const tone = v =>
+    v >= .60 ? cs.getPropertyValue("--lost")
+  : v >= .35 ? cs.getPropertyValue("--lost-dim")
+  : v >= .22 ? cs.getPropertyValue("--hiviz-dim")
+  :            cs.getPropertyValue("--held-dim");
+
+  g.appendChild(document.createElement("div"));
+  for (let h = 0; h < 24; h++) {
+    const d = document.createElement("div");
+    d.textContent = h % 3 === 0 ? String(h).padStart(2, "0") : "";
+    g.appendChild(d);
+  }
+  M.forEach((row, i) => {
+    const lab = document.createElement("div");
+    lab.className = "day"; lab.textContent = days[i]; g.appendChild(lab);
+    row.forEach((v, h) => {
+      const c = document.createElement("div");
+      c.className = "cell";
+      c.style.background = tone(v);
+      c.title = `${days[i]} ${String(h).padStart(2,"0")}:00 — ${Math.round(v*100)}% unanswered`;
+      g.appendChild(c);
+    });
+  });
+</script>

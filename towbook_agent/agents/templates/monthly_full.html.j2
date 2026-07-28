@@ -1,0 +1,574 @@
+{#
+  monthly_full -- the full monthly email.
+
+  Same house rules as daily_full and weekly_full: inline styles only, tables for
+  layout, no external assets, every list guarded with `or []`, and the report
+  LEADS with missed work (MISSED_WORK_MODEL.md section 7).
+
+  WHAT THIS REPORT IS FOR, and how it differs from the other two:
+
+    DAILY   what did we lose yesterday, what needs doing today.
+    WEEKLY  what should we change, ranked, each with its number.
+    MONTHLY is it working. Trend and strategy, not incident.
+
+  So every section here is a COMPARISON. A bare count belongs in the daily; a
+  count next to last month's count, with a direction, is the only thing this
+  report is allowed to lead with. Four questions, in order:
+
+    1. Which causes grew and which shrank, month over month.
+    2. Which clients are on a trajectory -- gaining, decaying, or gone.
+    3. Did the close-offs we asked for actually take effect.
+    4. Is the coverage gap closing, hour by hour.
+
+  Question 4 is the one this whole system exists to answer. Verified over 30
+  days: Agero offers inside Mon-Fri 06:00-18:00 expired 57 times out of 989
+  (5.8%); outside those hours, 627 out of 1,017 (61.7%). Same trucks, same
+  staff, near-flawless response when somebody is there. That is a COVERAGE
+  problem, and one month against the month before is the evidence a staffing
+  decision is actually made on.
+
+  EVERY RANKED LIST IS RANKED BY JOB COUNT. offerAmount is empty on 100% of the
+  records this account produces, so there is no dollar figure to show and none
+  may be implied.
+#}
+<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1c1c1c;max-width:680px;">
+
+  <h2 style="margin:0 0 4px 0;font-size:19px;">Towbook monthly &mdash; {{ month_name }}</h2>
+  <div style="color:#666;font-size:12px;margin-bottom:16px;">
+    {{ month_start }} to {{ month_end }} ({{ days_in_month }} days),
+    against {{ prior_month_name }} &middot; generated {{ generated_at }}
+    &middot; rules {{ rules_version }}
+  </div>
+
+  {% if missed_available %}
+  {# --------------------------------------------------------------------
+     THE HEADLINE, AND IT IS A COMPARISON. Each tile carries this month's
+     number and last month's underneath it, because the monthly report has
+     no business showing a level without its direction.
+  -------------------------------------------------------------------- #}
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;margin-bottom:6px;">
+    <tr>
+      <td style="padding:10px 22px 10px 0;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Missed</div>
+        <div style="font-size:30px;font-weight:700;color:#b42318;">{{ missed | num }}</div>
+        <div style="color:#666;font-size:11px;">
+          of {{ missed_offers | num }} offered &middot; {{ missed_pct }}%<br>
+          {{ prior_month_label }}: {{ missed_prior | num }}
+        </div>
+      </td>
+      <td style="padding:10px 22px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Recoverable</div>
+        <div style="font-size:30px;font-weight:700;">{{ recoverable | num }}</div>
+        <div style="color:#666;font-size:11px;">
+          {{ recoverable_pct }}% of offers<br>
+          {{ prior_month_label }}: {{ recoverable_prior | num }}
+        </div>
+      </td>
+      <td style="padding:10px 22px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Nobody answered</div>
+        <div style="font-size:30px;font-weight:700;">{{ no_response | num }}</div>
+        <div style="color:#666;font-size:11px;">
+          {{ no_response_pct }}% of offers<br>
+          {{ prior_month_label }}: {{ no_response_prior | num }}
+        </div>
+      </td>
+      <td style="padding:10px 22px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Client withdrew</div>
+        <div style="font-size:30px;font-weight:700;color:#666;">{{ withdrew | num }}</div>
+        <div style="color:#666;font-size:11px;">
+          reported separately<br>
+          {{ prior_month_label }}: {{ withdrew_prior | num }}
+        </div>
+      </td>
+    </tr>
+  </table>
+  <div style="color:#666;font-size:11px;margin-bottom:18px;">
+    {{ ranking_note }}
+    Recoverable excludes client withdrawals ({{ recoverable_excluding_withdrew | num }});
+    including them it is {{ recoverable_including_withdrew | num }}.
+    {# Truthiness, not `is not none`: a missing key is Undefined, which IS not
+       none and would print "None offers/day". A zero-offer month legitimately
+       has nothing to compare and drops the sentence. #}
+    {% if offers_per_day and prior_offers_per_day %}
+    Months are different lengths, so volume is also stated per day:
+    <strong>{{ offers_per_day }} offers/day</strong> this month against
+    {{ prior_offers_per_day }} last.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if narrative %}
+  <div style="background:#f6f7f9;border-left:3px solid #2f6feb;padding:12px 14px;margin-bottom:20px;">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#666;margin-bottom:6px;">
+      Analyst{% if llm and llm != 'anthropic' %} ({{ llm }}){% endif %}
+    </div>
+    <div>{{ narrative }}</div>
+  </div>
+  {% endif %}
+
+  {% if missed_trend_causes %}
+  {# ---------------------------------------------------------------------
+     QUESTION 1. Direction per cause, with both numbers. `direction` arrives
+     from metrics.py already decided (up / down / flat / new / gone), so the
+     template never has to work out what a negative delta means.
+  --------------------------------------------------------------------- #}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">Which causes grew, and which shrank</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    {{ month_name }} against {{ prior_month_name }}. {{ ranking_note }}
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Cause</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Direction</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">This month</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Last month</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Change</th>
+    </tr>
+    {% for row in missed_trend_causes or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.cause }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {% if row.direction == 'up' %}<span style="color:#b42318;font-weight:600;">growing</span>
+        {% elif row.direction == 'down' %}<span style="color:#137333;font-weight:600;">shrinking</span>
+        {% elif row.direction == 'new' %}<span style="color:#b42318;font-weight:600;">new</span>
+        {% elif row.direction == 'gone' %}<span style="color:#137333;font-weight:600;">gone</span>
+        {% else %}<span style="color:#666;">flat</span>{% endif %}
+      </td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;">{{ row.missed | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.missed_prior | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {# `row.delta and ... > 0` rather than `is not none`: an absent key is
+           Undefined, which is falsy but explodes on a comparison. #}
+        {% if row.delta and row.delta > 0 %}+{% endif %}{{ row.delta }}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if coverage_trend %}
+  {# ---------------------------------------------------------------------
+     QUESTION 4, AND THE MOST IMPORTANT TABLE IN THIS EMAIL.
+
+     Hour of day, this month against last, in unanswered rate. Only hours
+     that saw offers in either month are shown -- a row of zeros for 04:00
+     on a month with no 04:00 traffic is noise pretending to be evidence.
+
+     NEGATIVE movement is good: fewer offers going unanswered.
+  --------------------------------------------------------------------- #}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">Coverage &mdash; is the gap closing?</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    Share of offers nobody answered, by hour of day, {{ month_name }} against
+    {{ prior_month_name }}. The median response window Towbook allows is
+    3 minutes, so an unanswered offer is a lost job almost immediately.
+    A <strong>negative</strong> change is an improvement.
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Hour</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offers</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Unanswered</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">This month</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Last month</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Change</th>
+    </tr>
+    {% for row in coverage_trend or [] %}
+    {% if row.offers or row.offers_prior %}
+    <tr{% if row.is_blind_spot %} style="background:#fff4f2;"{% endif %}>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {{ row.label }}{% if row.is_blind_spot %} <span style="color:#b42318;font-size:11px;">blind spot</span>{% endif %}
+      </td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.offers | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;">{{ row.no_response | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.no_response_rate | pct }}%</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;color:#666;">{{ row.no_response_rate_prior | pct }}%</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {% if row.direction == 'better' %}<span style="color:#137333;font-weight:600;">{{ row.delta_pp }}</span>
+        {% elif row.direction == 'worse' %}<span style="color:#b42318;font-weight:600;">+{{ row.delta_pp }}</span>
+        {% elif row.direction == 'flat' %}<span style="color:#666;">flat</span>
+        {% else %}<span style="color:#999;">&mdash;</span>{% endif %}
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if missed_trend %}
+  {# ---------------------------------------------------------------------
+     QUESTION 3. Did what we asked for last month actually happen?
+
+     `.get(...)` all the way down, not attribute chaining: Jinja's Undefined
+     raises on a second attribute access, and this whole block would then be
+     swallowed by the renderer's fallback rather than rendering what it can.
+  --------------------------------------------------------------------- #}
+  {% set missed_pair = missed_trend.get('totals', {}).get('missed', {}) %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">Did last month's actions take effect?</h3>
+  <ul style="margin:0 0 20px 0;padding-left:20px;">
+    <li style="margin-bottom:5px;">
+      Missed {{ missed_pair.get('missed') | num }} this month against
+      {{ missed_pair.get('missed_prior') | num }} last
+      &mdash; <strong>{{ missed_pair.get('direction', 'flat') }}</strong>.
+      Miss rate moved {{ missed_trend.missed_rate_pp }} points.
+    </li>
+    <li style="margin-bottom:5px;">
+      Unanswered rate moved {{ missed_trend.no_response_rate_pp }} points;
+      acceptance moved {{ missed_trend.acceptance_rate_pp }} points.
+    </li>
+    {% if (missed_trend.closeoff_candidates or {}).resolved %}
+    <li style="margin-bottom:5px;">
+      No longer being offered &mdash; <strong>a close-off that worked</strong>:
+      {{ ((missed_trend.closeoff_candidates or {}).resolved or []) | join(', ') }}.
+    </li>
+    {% endif %}
+    {% if (missed_trend.closeoff_candidates or {}).persisting %}
+    <li style="margin-bottom:5px;">
+      Still being offered after a second month &mdash; the ask did not land:
+      {{ ((missed_trend.closeoff_candidates or {}).persisting or []) | join(', ') }}.
+    </li>
+    {% endif %}
+    {% if (missed_trend.closeoff_candidates or {}).new %}
+    <li style="margin-bottom:5px;">
+      New close-off candidates:
+      {{ ((missed_trend.closeoff_candidates or {}).new or []) | join(', ') }}.
+    </li>
+    {% endif %}
+    {% if (missed_trend.blind_spots or {}).closed %}
+    <li style="margin-bottom:5px;">
+      Blind spots <strong>closed</strong>:
+      {{ ((missed_trend.blind_spots or {}).closed or []) | join(', ') }}.
+    </li>
+    {% endif %}
+    {% if (missed_trend.blind_spots or {}).opened %}
+    <li style="margin-bottom:5px;">
+      Blind spots <strong>opened</strong>:
+      {{ ((missed_trend.blind_spots or {}).opened or []) | join(', ') }}.
+    </li>
+    {% endif %}
+    {% if (missed_trend.blind_spots or {}).persisting %}
+    <li style="margin-bottom:5px;">
+      Still unmanned after a second month:
+      {{ ((missed_trend.blind_spots or {}).persisting or []) | join(', ') }}.
+    </li>
+    {% endif %}
+  </ul>
+  {% endif %}
+
+  {% if client_trend %}
+  {# ---------------------------------------------------------------------
+     QUESTION 2. Client trajectories. Volume AND rate, both months, because
+     a client sending less work and a client we accept less of are two
+     different problems with two different conversations.
+  --------------------------------------------------------------------- #}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">Client trajectories</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    {{ month_name }} against {{ prior_month_name }}. {{ ranking_note }}
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Client</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offers</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Last month</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Volume</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Acceptance</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Move</th>
+    </tr>
+    {% for row in client_trend or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.client }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;">{{ row.offers | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;color:#666;">{{ row.offers_prior | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {% if row.volume_delta and row.volume_delta > 0 %}+{% endif %}{{ row.volume_delta }}
+      </td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | pct(row.offers) }}%</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {% if row.direction == 'up' %}<span style="color:#137333;font-weight:600;">up {{ row.delta_pp }}</span>
+        {% elif row.direction == 'down' %}<span style="color:#b42318;font-weight:600;">down {{ row.delta_pp }}</span>
+        {% elif row.direction == 'new' %}<span style="color:#666;">new</span>
+        {% elif row.direction == 'lost' %}<span style="color:#b42318;font-weight:600;">gone</span>
+        {% else %}<span style="color:#666;">flat</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if weekly_distribution %}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">Within the month</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    Week by week, so a month that improved and a month that decayed do not read
+    the same. Partial weeks at either end are marked.
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Week</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offered</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Accepted</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Rate</th>
+    </tr>
+    {% for row in weekly_distribution or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">
+        {{ row.first_day }} to {{ row.last_day }}{% if row.partial %}
+        <span style="color:#888;font-size:11px;">({{ row.days }}d)</span>{% endif %}
+      </td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.offered | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | pct(row.offered) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if missed_inventory %}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">What we did not get</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    Work the acceptance policy says we want, grouped by cause.
+    <strong>{{ ranking_note }}</strong>
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:8px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Work</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Cause</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Missed</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Of all missed</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Recoverable</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">What it takes</th>
+    </tr>
+    {% for row in missed_inventory or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.service_class }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.cause }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;">{{ row.missed | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.missed_share | pct }}%</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.recoverable | num }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#444;">
+        <strong>{{ row.remedy }}</strong>{% if row.question %} &mdash; {{ row.question }}{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if missed_inventory_meta and missed_inventory_meta.missed_in_window %}
+  <div style="color:#888;font-size:11px;margin-bottom:20px;">
+    {{ missed_inventory_meta.missed_in_inventory | num }} of
+    {{ missed_inventory_meta.missed_in_window | num }} missed offers are in this table;
+    the rest are service classes outside the acceptance policy.
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if closeoff_clients %}
+  <h3 style="font-size:14px;margin:0 0 4px 0;">Work to close off &mdash; ask these clients to stop</h3>
+  <div style="color:#666;font-size:11px;margin-bottom:8px;">
+    {% if closeoff_rationale %}{{ closeoff_rationale }}{% endif %} {{ ranking_note }}
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Client</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Service type</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offers</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Accepted</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Of their offers</th>
+    </tr>
+    {% for client in closeoff_clients or [] %}
+      {% for row in client.service_types or [] %}
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;">{% if loop.first %}{{ client.client }}{% endif %}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.service_type_raw }}</td>
+        <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.offers | num }}</td>
+        <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | num }}</td>
+        <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.share_of_client_offers | pct }}%</td>
+      </tr>
+      {% endfor %}
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if client_gap_findings %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">Clients that should behave alike, and do not</h3>
+  {% for finding in client_gap_findings or [] %}
+  <div style="background:#fff4f2;border-left:3px solid #b42318;padding:10px 12px;margin-bottom:10px;">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#666;">
+      {{ finding.kind }} &middot; ranked by {{ finding.ranked_by }} &middot; {{ finding.spread_pp }} points apart
+    </div>
+    <div>{{ finding.summary }}</div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if trend_statements %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">What changed versus last month</h3>
+  <ul style="margin:0 0 20px 0;padding-left:20px;">
+    {% for item in trend_statements or [] %}
+    <li style="margin-bottom:5px;">
+      {{ item.statement }}
+      <span style="color:#666;">({{ item.supporting_number }})</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if cause_assessments %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">What to do next month</h3>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Cause</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Want it?</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">What it would take</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Numbers</th>
+    </tr>
+    {% for item in cause_assessments or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ item.cause }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ item.want_this_work }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ item.what_it_would_take }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#666;">{{ item.supporting_number }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if close_off_requests %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">Asks for the clients</h3>
+  <ul style="margin:0 0 20px 0;padding-left:20px;">
+    {% for item in close_off_requests or [] %}
+    <li style="margin-bottom:5px;">
+      Ask <strong>{{ item.client }}</strong> to stop sending {{ item.service_type }}
+      <span style="color:#666;">({{ item.supporting_number }})</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if clients_needing_attention %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">Clients needing attention</h3>
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Client</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Reason</th>
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Numbers</th>
+    </tr>
+    {% for item in clients_needing_attention or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ item.client }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ item.reason }}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#666;">{{ item.supporting_numbers }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {# ---------------------------------------------------------------------
+     SUPPORTING CONTEXT. Acceptance rate is a symptom; it is reported after
+     the trend, not instead of it.
+  --------------------------------------------------------------------- #}
+  <h3 style="font-size:14px;margin:22px 0 8px 0;border-top:1px solid #e3e3e3;padding-top:16px;">
+    Supporting context &mdash; what we did accept
+  </h3>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:16px;">
+    <tr>
+      <td style="padding:6px 20px 6px 0;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Offered</div>
+        <div style="font-size:20px;font-weight:600;">{{ offered | num }}</div>
+        <div style="color:#666;font-size:11px;">{{ prior_month_label }}: {{ prior_offered | num }}</div>
+      </td>
+      <td style="padding:6px 20px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Accepted</div>
+        <div style="font-size:20px;font-weight:600;">{{ accepted | num }}</div>
+        <div style="color:#666;font-size:11px;">{{ prior_month_label }}: {{ prior_accepted | num }}</div>
+      </td>
+      <td style="padding:6px 20px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Acceptance</div>
+        <div style="font-size:20px;font-weight:600;">{{ rate_pct }}%</div>
+        <div style="color:#666;font-size:11px;">{{ prior_month_label }}: {{ prior_rate_pct }}%</div>
+      </td>
+      <td style="padding:6px 20px;border-left:1px solid #e3e3e3;">
+        <div style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">Denied</div>
+        <div style="font-size:20px;font-weight:600;">{{ denied | num }}</div>
+      </td>
+    </tr>
+  </table>
+
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Service class</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offered</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Accepted</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Rate</th>
+    </tr>
+    {% for name, stats in (service_classes or {}).items() %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ name }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ stats.offered | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ stats.accepted | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ stats.accepted | pct(stats.offered) }}%</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" style="padding:6px 8px;color:#666;">No service class breakdown in this window.</td></tr>
+    {% endfor %}
+  </table>
+
+  <table role="presentation" cellpadding="0" cellspacing="0"
+         style="border-collapse:collapse;width:100%;margin-bottom:20px;font-size:13px;">
+    <tr style="background:#f0f1f3;">
+      <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Client</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offered</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Accepted</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Denied</th>
+      <th align="right" style="padding:6px 8px;border-bottom:1px solid #ddd;">Rate</th>
+    </tr>
+    {% for row in clients or [] %}
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.client_name or row.client_key }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.offered | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.denied | num }}</td>
+      <td align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.accepted | pct(row.offered) }}%</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" style="padding:6px 8px;color:#666;">No per-client rows in this window.</td></tr>
+    {% endfor %}
+  </table>
+
+  {% if proposed_rules %}
+  <h3 style="font-size:14px;margin:0 0 8px 0;">Proposed rule changes ({{ (proposed_rules or []) | length }})</h3>
+  <div style="background:#fff8e6;border:1px solid #f0d9a0;padding:12px 14px;margin-bottom:20px;">
+    <div style="margin-bottom:8px;">
+      Written to <code>config/rules.proposed.yaml</code> for review. They have
+      <strong>no effect</strong> on classification, metrics, alerting or notification
+      until a human copies the fragment into <code>config/rules.yaml</code>.
+    </div>
+    {% for item in proposed_rules or [] %}
+    <div style="margin-bottom:12px;">
+      <div><strong>{{ item.id }}</strong>
+        {% if item.occurrence_count %}<span style="color:#666;">&middot; {{ item.occurrence_count }} requests since {{ item.first_seen }}</span>{% endif %}
+      </div>
+      <div style="margin:3px 0;">{{ item.rationale }}</div>
+      {% if item.service_type_raw_samples %}
+      <div style="color:#666;font-size:12px;">
+        Saw: {% for sample in item.service_type_raw_samples or [] %}<code>{{ sample }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div style="color:#888;font-size:11px;border-top:1px solid #e3e3e3;padding-top:10px;">
+    Towbook Job Acceptance Intelligence &middot; report {{ report_type }} &middot; times are local
+    ({{ generated_at }}). The rules that produced these numbers are version {{ rules_version }}.
+    <strong>{{ ranking_note }}</strong>
+  </div>
+</div>

@@ -1,0 +1,97 @@
+# ==========================================================================
+# Credentials -- never commit. Hard constraint #1.
+# ==========================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Playwright storage_state: live session cookies for the Towbook account.
+state/session/
+*.storage.json
+
+# ==========================================================================
+# Runtime data
+# ==========================================================================
+# The database and its WAL sidecars.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Archived XLSX exports (raw/YYYY/MM/DD/) -- real customer data.
+raw/
+!raw/.gitkeep
+
+# Logs, discovery dumps, the durable event trace.
+state/
+!state/.gitkeep
+*.log
+
+# Written by the ingester when the exported headers do not match
+# config/schema.yaml. A diagnostic artifact, not configuration.
+config/schema.detected.yaml
+
+# Screenshots and DOM dumps from `discover-selectors`.
+*.png
+*.har
+!towbook_agent/web/static/**/*.png
+
+# ==========================================================================
+# Python
+# ==========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Tests and tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ==========================================================================
+# Editors and OS
+# ==========================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Excel lock files, in case an export is opened while it sits in raw/
+~$*.xlsx

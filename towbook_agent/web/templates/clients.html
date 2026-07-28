@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Clients{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Clients</h1>
+    <div class="sub">
+      One row per client over the last {{ overview.window_days }} days.
+      Rates are shown for three windows because a client that quietly went bad this week
+      still looks fine on a 30-day average.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not overview.has_data %}
+  {{ m.empty_state('No client history yet', 'No requests have been ingested in the last 30 days.') }}
+{% else %}
+
+{% if not overview.missed_available %}
+  {{ m.model_unavailable(overview.missed_error) }}
+{% endif %}
+
+<div class="stats">
+  {{ m.stat('Clients', overview.client_count|num, sub='Sent at least one request in 30 days') }}
+  {{ m.stat('Offered', overview.totals.offered|num, sub='All clients, 30 days') }}
+  <div class="stat">
+    <div class="label">Accepted</div>
+    <div class="value">{{ overview.totals.accepted|num }}</div>
+    <div class="sub"><span class="dim">{{ overview.totals.denied|num }} denied &middot; {{ overview.totals.expired|num }} expired</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Overall rate</div>
+    <div class="value hero band band-{{ overview.totals.band }}">{{ overview.totals.rate|pct }}</div>
+    <div class="sub"><span class="dim">30-day, every client</span></div>
+  </div>
+  <div class="stat{{ ' stat-flag' if overview.no_response_outliers }}">
+    <div class="label">No-response outliers</div>
+    <div class="value">{{ overview.no_response_outliers|num }}</div>
+    <div class="sub">
+      <span class="dim">clients at least
+        {{ overview.no_response_thresholds.gap_pp|round|int }} points worse than the best
+        &mdash; best is {{ overview.no_response_best_rate|pct(1) }}</span>
+    </div>
+  </div>
+</div>
+
+{#- THE FINDING, stated rather than left for the reader to spot. Two clients on
+    the same trucks, the same staff and the same short window whose offers go
+    unanswered at wildly different rates is a process difference, and it is the
+    most actionable thing on this page. -#}
+{% for finding in overview.no_response_findings %}
+<div class="notice notice-{{ 'error' if finding.severity == 'high' else 'warn' }}">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>{{ finding.worst.client }} vs {{ finding.best.client }} &mdash;
+      {{ finding.spread_pp }} point gap</strong> (worst by {{ finding.ranked_by }}).
+    {{ finding.summary }}
+    <a href="/blind-spots">Which hours &rarr;</a>
+  </span>
+</div>
+{% endfor %}
+
+{% include "partials/client_table.html" %}
+
+{% endif %}
+{% endblock %}

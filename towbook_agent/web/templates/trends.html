@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Trends{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Trends</h1>
+    <div class="sub">
+      {{ trends.first_day|day("%b %d, %Y") }} &ndash; {{ trends.last_day|day("%b %d, %Y") }}
+      ({{ trends.weeks }} weeks). Patterns that a single day cannot show you.
+    </div>
+  </div>
+  <div class="controls">
+    <span class="seg">
+      {% for option in week_options %}
+      <a href="/trends{{ qs(weeks=option, account=account) }}"
+         {% if trends.weeks == option %}aria-current="true"{% endif %}>{{ option }}w</a>
+      {% endfor %}
+    </span>
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not trends.has_data %}
+  {{ m.empty_state('No trend data yet', 'No requests have been ingested in this window.') }}
+{% else %}
+
+<div class="stats">
+  {{ m.stat('Offered', trends.totals.offered|num, sub=trends.days ~ ' days') }}
+  <div class="stat">
+    <div class="label">Accepted</div>
+    <div class="value">{{ trends.totals.accepted|num }}</div>
+    <div class="sub"><span class="dim">{{ trends.totals.denied|num }} denied &middot; {{ trends.totals.expired|num }} expired</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Rate over window</div>
+    <div class="value hero band band-{{ trends.totals.band }}">{{ trends.totals.rate|pct }}</div>
+    <div class="sub"><span class="dim">{{ trends.totals.accepted|num }} of {{ trends.totals.offered|num }}</span></div>
+  </div>
+  {{ m.stat('Busiest hour', trends.peak_offered|num, sub='Offers in the busiest hour-of-week slot') }}
+</div>
+
+<section class="card">
+  <header>
+    <h2>Hour of week</h2>
+    <span class="hint">
+      Acceptance rate by weekday and hour, local time.
+      Hatched cells had fewer than {{ trends.min_cell_sample }} offers &mdash; do not read them as a trend.
+    </span>
+  </header>
+
+  <div class="table-scroll">
+    <div class="heatmap">
+      <div class="hm-corner"></div>
+      {% for hour in trends.hours %}
+      <div class="hm-hour">{{ '%02d'|format(hour) }}</div>
+      {% endfor %}
+
+      {% for row in trends.heatmap %}
+      <div class="hm-day">{{ row.label }}</div>
+        {% for cell in row.cells %}
+        <div class="hm-cell {{ 'empty' if cell.step < 0 else 's' ~ cell.step }}{{ ' low' if cell.low_sample }}"
+             data-tip="{{ row.label }} {{ '%02d'|format(cell.hour) }}:00 · {{ cell.offered }} offered · {{ cell.accepted }} accepted · {{ cell.rate|pct }}"></div>
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="heat-legend" style="margin-top: 12px">
+    <span>Acceptance rate</span>
+    <span>0%</span>
+    <span class="ramp">
+      <i style="background: var(--seq-0)"></i>
+      <i style="background: var(--seq-1)"></i>
+      <i style="background: var(--seq-2)"></i>
+      <i style="background: var(--seq-3)"></i>
+      <i style="background: var(--seq-4)"></i>
+      <i style="background: var(--seq-5)"></i>
+      <i style="background: var(--seq-6)"></i>
+    </span>
+    <span>100%</span>
+    <span style="margin-left: 12px">
+      <span class="hm-cell empty" style="display:inline-block;width:14px;height:14px;vertical-align:-3px"></span>
+      no offers
+    </span>
+  </div>
+
+  <details style="margin-top: 14px">
+    <summary class="small muted" style="cursor: pointer">Show the busiest slots as a table</summary>
+    <div class="table-scroll" style="margin-top: 10px">
+      <table class="data">
+        <thead>
+          <tr><th>Weekday</th><th>Hour</th><th class="num">Offered</th><th class="num">Accepted</th><th class="num">Rate</th></tr>
+        </thead>
+        <tbody>
+          {% set flat = [] %}
+          {% for row in trends.heatmap %}{% for cell in row.cells %}
+            {% if cell.offered %}{% set _ = flat.append((cell.offered, row.label, cell)) %}{% endif %}
+          {% endfor %}{% endfor %}
+          {% for offered, label, cell in flat|sort(reverse=true, attribute='0')|list %}
+            {% if loop.index <= 25 %}
+            <tr>
+              <td>{{ label }}</td>
+              <td class="nowrap">{{ '%02d'|format(cell.hour) }}:00</td>
+              <td class="num">{{ cell.offered|num }}</td>
+              <td class="num">{{ cell.accepted|num }}</td>
+              <td class="num">{{ m.rate(cell.rate) }}</td>
+            </tr>
+            {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+<section class="card">
+  <header>
+    <h2>Client rate trajectories</h2>
+    <span class="hint">
+      Weekly acceptance rate for the {{ trends.trajectories|length }} highest-volume clients,
+      against the all-client line. Gaps are weeks with no offers.
+    </span>
+  </header>
+  <div class="chart-wrap chart-h-280">
+    <canvas data-chart="trend-trajectories"
+            data-chart-data='{{ {"trajectories": trends.trajectories, "overall_weekly": trends.overall_weekly}|tojson }}'
+            role="img"
+            aria-label="Line chart of weekly acceptance rate per client against the overall rate"></canvas>
+  </div>
+  <div class="chart-legend">
+    <span class="key" style="color: var(--muted)"><span class="swatch line dashed"></span><span style="color: var(--text-2)">All clients</span></span>
+    {% for entry in trends.trajectories %}
+    <span class="key" style="color: var(--series-{{ loop.index0 % 8 + 1 }})">
+      <span class="swatch line"></span>
+      <a style="color: var(--text-2)" href="/clients/{{ entry.slug|urlencode }}">{{ entry.client_name|midtrunc(24) }}</a>
+      <span class="muted">({{ entry.offered }})</span>
+    </span>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="grid side">
+  <section class="card">
+    <header>
+      <h2>Offer volume over time</h2>
+      <span class="hint">Daily counts</span>
+    </header>
+    <div class="chart-wrap chart-h-240">
+      <canvas data-chart="trend-volume"
+              data-chart-data='{{ {"volume": trends.volume}|tojson }}'
+              role="img"
+              aria-label="Bar chart of requests offered and accepted per day"></canvas>
+    </div>
+    <div class="chart-legend">
+      <span class="key"><span class="swatch" style="background: var(--series-1)"></span>Offered</span>
+      <span class="key"><span class="swatch" style="background: var(--good)"></span>Accepted</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <header><h2>Week by week</h2></header>
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr><th>Week of</th><th class="num">Offered</th><th class="num">Accepted</th><th class="num">Rate</th></tr>
+        </thead>
+        <tbody>
+          {% for row in trends.overall_weekly|reverse %}
+          <tr>
+            <td class="nowrap">{{ row.label }}</td>
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+{% endif %}
+{% endblock %}

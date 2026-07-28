@@ -1,0 +1,287 @@
+{% import "macros.html" as m %}
+{#- Body of the Daily view. Swapped in wholesale when the date picker changes
+    or a client-table column header is clicked. Self-contained: no <script>. -#}
+
+{% set sort_url = '/partials/daily?date=' ~ daily.date ~ (('&account=' ~ account) if account else '') %}
+
+{% if not daily.has_data %}
+  {% if has_data is defined and not has_data %}
+    {{ m.empty_state('No data yet') }}
+  {% else %}
+  <div class="card">
+    <div class="empty-inline" style="padding: 40px 16px">
+      <div style="font-size: 15px; color: var(--text-2); margin-bottom: 6px;">
+        No requests were offered on {{ daily.date|day("%A, %B %d, %Y") }}.
+      </div>
+      <div>
+        Either it was a quiet day, or the pipeline never ran for it &mdash;
+        <a href="/health">Health</a> tells you which.
+        If the datastore is empty, run <code>{{ SEED_COMMAND }}</code>.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% else %}
+
+<div class="stats">
+  {{ m.stat('Offered', daily.totals.offered|num, sub='All statuses') }}
+  <div class="stat">
+    <div class="label">Accepted</div>
+    <div class="value">{{ daily.totals.accepted|num }}</div>
+    <div class="sub"><span class="dim">{{ daily.totals.denied|num }} denied &middot; {{ daily.totals.expired|num }} expired &middot; {{ daily.totals.canceled|num }} canceled</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Acceptance rate</div>
+    <div class="value hero band band-{{ daily.totals.band }}">{{ daily.totals.rate|pct }}</div>
+    <div class="sub"><span class="dim">{{ daily.totals.accepted|num }} of {{ daily.totals.offered|num }}</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">vs day before</div>
+    <div class="value">{{ m.delta(daily.delta_yesterday) }}</div>
+    <div class="sub"><span class="dim">was</span> {{ m.rate(daily.yesterday.rate if daily.yesterday else none) }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">vs prior 7 days</div>
+    <div class="value">{{ m.delta(daily.delta_7d) }}</div>
+    <div class="sub"><span class="dim">7-day rate</span> {{ m.rate(daily.trailing_7d.rate) }}
+      <span class="dim">on {{ daily.trailing_7d.offered|num }} offers</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">Clients</div>
+    <div class="value">{{ daily.clients|length|num }}</div>
+    <div class="sub"><span class="dim">sent at least one request</span></div>
+  </div>
+</div>
+
+<section class="card">
+  <header>
+    <h2>Offers by hour</h2>
+    <span class="hint">Counts, local time</span>
+  </header>
+  <div class="chart-wrap chart-h-200">
+    <canvas data-chart="daily-hours"
+            data-chart-data='{{ {"hours": daily.hours}|tojson }}'
+            role="img"
+            aria-label="Bar chart of requests offered and accepted for each hour of the selected day"></canvas>
+  </div>
+  <div class="chart-legend">
+    <span class="key"><span class="swatch" style="background: var(--series-1)"></span>Offered</span>
+    <span class="key"><span class="swatch" style="background: var(--good)"></span>Accepted</span>
+  </div>
+</section>
+
+<section class="card">
+  <header>
+    <h2>By client</h2>
+    <span class="hint">Click a column heading to sort. Delta compares the day against the client&rsquo;s own prior 7 days.</span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          {{ m.sort_th('Client', 'name', daily.sort, daily.direction, sort_url, '#daily-body', classes='', swap='innerHTML') }}
+          {{ m.sort_th('Offered', 'volume', daily.sort, daily.direction, sort_url, '#daily-body', swap='innerHTML') }}
+          {{ m.sort_th('Accepted', 'accepted', daily.sort, daily.direction, sort_url, '#daily-body', swap='innerHTML') }}
+          {{ m.sort_th('Denied', 'denied', daily.sort, daily.direction, sort_url, '#daily-body', swap='innerHTML') }}
+          <th class="num">Expired</th>
+          {{ m.sort_th('Rate', 'rate', daily.sort, daily.direction, sort_url, '#daily-body', swap='innerHTML') }}
+          {{ m.sort_th('Delta', 'delta', daily.sort, daily.direction, sort_url, '#daily-body', swap='innerHTML') }}
+          <th>Denial reasons</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in daily.clients %}
+        <tr>
+          <td><a href="/clients/{{ row.slug|urlencode }}">{{ row.client_name }}</a></td>
+          <td class="num">{{ row.offered|num }}</td>
+          <td class="num">{{ row.accepted|num }}</td>
+          <td class="num">{{ row.denied|num }}</td>
+          <td class="num">{{ row.expired|num }}</td>
+          <td class="num">{{ m.rate(row.rate) }}</td>
+          <td class="num" title="Prior 7-day rate: {{ row.baseline_rate|pct }} on {{ row.baseline_offered|num }} offers">{{ m.delta(row.delta) }}</td>
+          <td>{{ m.reason_mix(row.denial_mix) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>All clients</td>
+          <td class="num">{{ daily.totals.offered|num }}</td>
+          <td class="num">{{ daily.totals.accepted|num }}</td>
+          <td class="num">{{ daily.totals.denied|num }}</td>
+          <td class="num">{{ daily.totals.expired|num }}</td>
+          <td class="num">{{ m.rate(daily.totals.rate) }}</td>
+          <td class="num">{{ m.delta(daily.delta_7d) }}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <header>
+      <h2>Service class split</h2>
+      <span class="hint">Classified from the verbatim service type by config/rules.yaml</span>
+    </header>
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Service class</th>
+            <th>Policy</th>
+            <th class="num">Offered</th>
+            <th class="num">Accepted</th>
+            <th class="num">Rate</th>
+            <th style="width: 22%">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in daily.service_classes %}
+          <tr>
+            <td>
+              {% if row.service_class == 'unclassified' %}
+                <span class="muted">unclassified</span>
+                <a class="small" href="/rules" title="Map this service type in rules.yaml">map it</a>
+              {% else %}{{ row.service_class }}{% endif %}
+            </td>
+            <td>{% if row.policy %}<span class="pill pill-{{ row.policy }}">{{ row.policy }}</span>{% else %}<span class="muted">{{ DASH }}</span>{% endif %}</td>
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+            <td>{{ m.meter(row.offered / daily.totals.offered if daily.totals.offered else none) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Denial reasons</h2>
+      <span class="hint">
+        {% if daily.totals.denied %}Grouped at read time &mdash; the raw text is never overwritten{% else %}Nothing was denied{% endif %}
+      </span>
+    </header>
+    {% if daily.denial_mix %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr><th>Reason</th><th class="num">Count</th><th style="width: 34%">Share of denials</th></tr>
+        </thead>
+        <tbody>
+          {% for row in daily.denial_mix %}
+          <tr>
+            <td class="wrap-text">{{ row.reason }}</td>
+            <td class="num">{{ row.count|num }}</td>
+            <td>{{ m.meter(row.share, 'bad') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ m.empty_inline('No requests were denied on this day.') }}
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <header>
+    <h2>Policy variance</h2>
+    <span class="hint">Where the day disagreed with config/rules.yaml &rarr; acceptance_policy</span>
+  </header>
+
+  {% if not daily.variance.has_policy %}
+    {{ m.empty_inline('No acceptance policy is defined in rules.yaml, so there is nothing to vary from.') }}
+  {% else %}
+  <div class="stats" style="margin-bottom: 14px">
+    <div class="stat">
+      <div class="label">Should have taken, did not</div>
+      <div class="value" style="color: {{ 'var(--critical)' if daily.variance.missed_count else 'var(--text)' }}">{{ daily.variance.missed_count|num }}</div>
+      <div class="sub"><span class="dim">policy says accept &middot; denied or expired</span></div>
+    </div>
+    <div class="stat">
+      <div class="label">Took against policy</div>
+      <div class="value" style="color: {{ 'var(--warning)' if daily.variance.against_count else 'var(--text)' }}">{{ daily.variance.against_count|num }}</div>
+      <div class="sub"><span class="dim">policy says decline &middot; accepted</span></div>
+    </div>
+    <div class="stat">
+      <div class="label">Covered by policy</div>
+      <div class="value">{{ daily.variance.covered|num }}</div>
+      <div class="sub"><span class="dim">of {{ daily.totals.offered|num }} offered</span></div>
+    </div>
+  </div>
+
+  {% if daily.variance.missed or daily.variance.against %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Variance</th>
+          <th>Time</th>
+          <th>Client</th>
+          <th>Service class</th>
+          <th class="wrap-text">Verbatim service type</th>
+          <th>Status</th>
+          <th class="wrap-text">Denial reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in daily.variance.missed %}
+        <tr>
+          <td><span class="pill pill-denied">missed</span></td>
+          <td class="nowrap">{{ row.offered_local|clock }}</td>
+          <td><a href="/clients/{{ (row.client_key or EMPTY_CLIENT_KEY)|urlencode }}">{{ row.client_name or '(no client name)' }}</a></td>
+          <td>{{ row.service_class }}</td>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
+          <td>{{ m.status_pill(row.status) }}</td>
+          <td class="wrap-text muted">{{ row.denial_reason or DASH }}</td>
+        </tr>
+        {% endfor %}
+        {% for row in daily.variance.against %}
+        <tr>
+          <td><span class="pill pill-pending">off-policy</span></td>
+          <td class="nowrap">{{ row.offered_local|clock }}</td>
+          <td><a href="/clients/{{ (row.client_key or EMPTY_CLIENT_KEY)|urlencode }}">{{ row.client_name or '(no client name)' }}</a></td>
+          <td>{{ row.service_class }}</td>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
+          <td>{{ m.status_pill(row.status) }}</td>
+          <td class="wrap-text muted">{{ DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ m.empty_inline('Every request covered by the acceptance policy was handled the way the policy says.') }}
+  {% endif %}
+  {% endif %}
+</section>
+
+{% if daily.stored_metric %}
+<section class="card">
+  <header>
+    <h2>Stored daily metric</h2>
+    <span class="hint">What the pipeline computed and reported, for comparison with the figures above</span>
+  </header>
+  <dl class="kv">
+    <dt>Computed at</dt><dd>{{ daily.stored_metric.computed_at|dt }}</dd>
+    <dt>Rules version</dt><dd class="mono-sm">{{ daily.stored_metric.rules_version or DASH }}</dd>
+    {% for key, value in daily.stored_metric.metrics.items() %}
+      {% if value is string or value is number %}
+      <dt>{{ key|nice }}</dt><dd>{{ value }}</dd>
+      {% endif %}
+    {% endfor %}
+  </dl>
+  <p class="small muted" style="margin-bottom:0">
+    The tables above are recomputed from the <code>requests</code> rows every time this page loads.
+    If they disagree with this block, the stored metric is stale &mdash; re-run
+    <code>python -m towbook_agent run --report daily --date {{ daily.date }}</code>.
+  </p>
+</section>
+{% endif %}
+
+{% endif %}

@@ -1,0 +1,480 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Missed work{% endblock %}
+
+{#- ==========================================================================
+    THE PRIMARY VIEW.
+
+    The question this page answers, in order:
+
+      1. How much work did we not get, and which of it was ours to lose?
+      2. What kind of work was it, and why did we lose it?
+      3. What is the fix, and who do we have the conversation with?
+
+    Acceptance rate appears once, small, at the end of the tile row. It is a
+    symptom; the inventory is the deliverable. See MISSED_WORK_MODEL.md.
+    ========================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Missed work</h1>
+    <div class="sub">
+      {{ missed.first_day|day("%b %d, %Y") }} &ndash; {{ missed.last_day|day("%b %d, %Y") }}
+      ({{ missed.days }} days). What we were offered and did not get, attributed to a
+      cause, with the fix attached.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.window_picker('/', missed.days, day_options, account) }}
+  </div>
+</div>
+
+{% if not missed.available %}
+  {{ m.model_unavailable(missed.error) }}
+{% endif %}
+
+{% if not missed.has_data %}
+  {% if missed.available %}
+    {{ m.empty_state('Nothing offered in this window',
+                     'No requests were offered between ' ~ missed.first_day ~ ' and ' ~ missed.last_day ~ '.') }}
+  {% endif %}
+{% else %}
+
+{# ---------------------------------------------------------------- headline #}
+
+<div class="stats stats-headline">
+  <div class="stat stat-lead">
+    {% if missed.coverage.available %}
+    <div class="label">Recoverable outside covered hours</div>
+    <div class="value hero" style="color: var(--critical)">{{ missed.coverage.outside.recoverable|num }}</div>
+    <div class="sub">
+      <span class="dim">jobs &mdash; against {{ missed.coverage.inside.recoverable|num }} inside them.
+        {{ missed.totals.recoverable|num }} recoverable in total
+        ({{ missed.totals.recoverable_rate|pct }} of offers).</span>
+    </div>
+    {% else %}
+    <div class="label">Recoverable &mdash; ours to fix</div>
+    <div class="value hero" style="color: var(--critical)">{{ missed.totals.recoverable|num }}</div>
+    <div class="sub">
+      <span class="dim">jobs, of {{ missed.totals.offers|num }} offered
+        ({{ missed.totals.recoverable_rate|pct }})</span>
+    </div>
+    {% endif %}
+  </div>
+
+  {% for bucket in missed.headline_buckets %}
+  <div class="stat{{ ' stat-flag' if bucket.is_recoverable }}">
+    <div class="label">{{ bucket.label }}</div>
+    <div class="value">{{ bucket.count|num }}</div>
+    <div class="sub">
+      <span class="dim">{{ bucket.share|pct }} of offers &middot; {{ bucket.note }}</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# --------------------------------------------------- coverage: THE finding #}
+{#- Above the fold, above the inventory, above the 7 x 24 grid. The grid says
+    WHICH hours leak; this says whether anybody was rostered, and only the
+    second one is an instruction. Both rows always render: 61.7% means nothing
+    without the 5.8% beside it, and the contrast is the business case. -#}
+
+{% if missed.coverage.available %}
+<section class="card">
+  <header>
+    <h2>Covered hours vs uncovered hours</h2>
+    <span class="hint">
+      The staffed window comes from <code>rules.yaml &rarr; missed_work &rarr; coverage</code>
+      {%- for window in missed.coverage.definitions %}
+        &mdash; <strong>{{ window.label }}</strong>
+      {%- endfor %}. Adding a shift is an edit there.
+    </span>
+  </header>
+
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Window</th>
+          <th class="num">Offers</th>
+          <th class="num">Answered</th>
+          <th class="num">Lost unanswered</th>
+          <th class="num">Miss rate</th>
+          <th class="num">Missed</th>
+          <th class="num">Recoverable</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in missed.coverage.rows %}
+        <tr class="{{ 'row-flag' if row.is_headline else '' }}">
+          <td>
+            <strong>{{ row.title }}</strong>
+            <div class="small muted">
+              {{ row.definition_label or (row.label|nice) }}
+              {%- if row.is_headline %} &mdash; nobody rostered{% endif %}
+            </div>
+          </td>
+          <td class="num">{{ row.offers|num }}</td>
+          <td class="num">{{ row.answered|num }}
+            <div class="small muted">{{ row.answer_rate|pct }}</div>
+          </td>
+          <td class="num"><strong>{{ row.no_response|num }}</strong></td>
+          <td class="num">{{ m.miss(row.no_response_rate) }}</td>
+          <td class="num">{{ row.missed|num }}
+            <div class="small muted">{{ row.share_of_missed|pct }} of all missed</div>
+          </td>
+          <td class="num"><strong>{{ row.recoverable|num }}</strong>
+            <div class="small muted">declined, unanswered, accept failed</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="notice notice-error" style="margin-top: 12px">
+    <span class="ico">&#9888;</span>
+    <span>
+      <strong>{{ missed.coverage.contrast.summary }}</strong>
+      {% if missed.coverage.contrast.multiple %}
+        Offers arriving outside the staffed window go unanswered
+        <strong>{{ missed.coverage.contrast.multiple }}&times;</strong> as often
+        ({{ missed.coverage.contrast.spread_pp }} points).
+      {% endif %}
+      {{ missed.coverage.finding }}
+    </span>
+  </div>
+
+  {{ m.ranking_note() }}
+  {% if missed.coverage.value_available %}
+  <p class="small muted" style="margin: 8px 0 0">
+    <code>coverage_analysis()</code> also carries a <code>missed_value</code> per window, priced
+    from the owner-supplied averages in <code>rules.yaml &rarr; missed_work &rarr;
+    job_value_by_client</code>. It is deliberately not shown here: this dashboard reports in
+    jobs throughout, and one dollar column on a screen of counts is read as if every column
+    were money. The reports carry it.
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>
+    <strong>{{ missed.totals.missed|num }} offers did not become jobs.</strong>
+    {{ missed.totals.recoverable|num }} of them are counted as recoverable &mdash; declined,
+    unanswered, or an accept that failed.
+    {% if not missed.totals.count_client_withdrew_as_recoverable %}
+      The {{ missed.totals.withdrew|num }} the client withdrew are reported separately and
+      deliberately kept out of that total, because this feed cannot tell a client changing
+      its mind from a client giving up on us. Folding them in would make it
+      {{ missed.totals.recoverable_including_withdrew|num }}.
+    {% else %}
+      Client withdrawals are folded in, per <code>rules.yaml &rarr; missed_work &rarr;
+      count_client_withdrew_as_recoverable</code>. Excluding them it would be
+      {{ missed.totals.recoverable_excluding_withdrew|num }}.
+    {% endif %}
+    Acceptance rate over the same window was {{ m.rate(missed.totals.acceptance_rate) }}.
+  </span>
+</div>
+
+{# ------------------------------------------------------------- the finding #}
+
+{% for finding in missed.findings %}
+<div class="notice notice-{{ 'error' if finding.severity == 'high' else 'warn' }}">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>{{ finding.worst.client }} vs {{ finding.best.client }} &mdash;
+      {{ finding.spread_pp }} point gap</strong> (ranked by {{ finding.ranked_by }}).
+    {{ finding.summary }}
+  </span>
+</div>
+{% endfor %}
+
+{# ------------------------------------------------------------- inventory #}
+
+<section class="card">
+  <header>
+    <h2>The inventory</h2>
+    <span class="hint">
+      One row per service class and cause.
+      {% if missed.inventory_meta.restricted_to_should_accept %}
+        Filtered to work the policy says take
+        ({{ missed.inventory_meta.service_classes|join(', ') }}) &mdash; the inventory is
+        about work we want.
+      {% endif %}
+    </span>
+  </header>
+
+  {{ m.ranking_note() }}
+
+  {% if not missed.inventory %}
+    {{ m.empty_inline('Nothing was missed in the service classes the acceptance policy says to take.') }}
+  {% else %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Service class</th>
+          <th>Cause</th>
+          <th class="num">Missed</th>
+          <th style="width: 15%">Share of all missed</th>
+          <th class="num">Of that class</th>
+          <th>Remedy</th>
+          <th class="wrap-text">What to do</th>
+          <th>Top clients</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in missed.inventory %}
+        <tr>
+          <td><strong>{{ row.service_class }}</strong>
+            <div class="small muted">{{ row.accepted|num }} of {{ row.offers|num }} taken</div>
+          </td>
+          <td><span class="pill pill-cause-{{ row.cause }}">{{ row.cause|nice }}</span></td>
+          <td class="num"><strong>{{ row.missed|num }}</strong>
+            {% if row.recoverable != row.missed %}
+            <div class="small muted">{{ row.recoverable|num }} recoverable</div>
+            {% endif %}
+          </td>
+          <td>{{ m.meter(row.missed_share, 'bad') }}
+            <span class="small muted">{{ row.missed_share|pct }}</span></td>
+          <td class="num" title="Share of this service class's own offers lost to this cause">
+            {{ m.miss(row.class_miss_rate) }}</td>
+          <td><span class="pill pill-remedy">{{ row.remedy|nice }}</span></td>
+          <td class="wrap-text muted">{{ row.question or DASH }}</td>
+          <td>
+            {% if row.top_clients %}
+            <span class="reason-mix">
+              {%- for client in row.top_clients %}
+              <a class="reason" href="/clients/{{ client.slug|urlencode }}"
+                 title="{{ client.client }} — {{ client.missed }} of this row's missed jobs">
+                {{ client.client|midtrunc(22) }} <b>{{ client.missed }}</b>
+              </a>
+              {%- endfor %}
+            </span>
+            {% else %}<span class="muted">{{ DASH }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>{{ missed.inventory|length }} rows</td>
+          <td></td>
+          <td class="num">{{ missed.inventory_meta.missed_in_inventory|num }}</td>
+          <td colspan="5" class="small muted">
+            of {{ missed.inventory_meta.missed_in_window|num }} missed in the window
+            {%- if missed.inventory_meta.restricted_to_should_accept %}; the rest is work the
+            policy says decline &mdash; see <a href="/close-off">Close-off</a>{% endif %}.
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+{# ------------------------------------------------------------ cause detail #}
+
+<div class="grid side top">
+  <section class="card">
+    <header>
+      <h2>Why we lost it</h2>
+      <span class="hint">Every missed offer in the window, by cause &mdash; including the
+        classes the inventory above filters out</span>
+    </header>
+    {% if missed.causes %}
+    <div class="chart-wrap chart-h-240">
+      <canvas data-chart="missed-causes"
+              data-chart-data='{{ {"causes": missed.causes}|tojson }}'
+              role="img"
+              aria-label="Bar chart of missed jobs by cause"></canvas>
+    </div>
+    <div class="table-scroll" style="margin-top: 12px">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Cause</th>
+            <th>Remedy</th>
+            <th class="num">Missed</th>
+            <th class="num">Recoverable</th>
+            <th style="width: 20%">Share</th>
+            <th class="wrap-text">The question it answers</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in missed.causes %}
+          <tr>
+            <td><span class="pill pill-cause-{{ row.cause }}">{{ row.cause|nice }}</span></td>
+            <td class="muted">{{ row.remedy|nice }}</td>
+            <td class="num">{{ row.missed|num }}</td>
+            <td class="num">{{ row.recoverable|num }}</td>
+            <td>{{ m.meter(row.share, 'bad') }}</td>
+            <td class="wrap-text muted small">{{ row.question or DASH }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      {{ m.empty_inline('Nothing was missed in this window.') }}
+    {% endif %}
+  </section>
+
+  <div class="stack">
+    <section class="card">
+      <header>
+        <h2>Blind spots</h2>
+        <span class="hint"><a href="/blind-spots{{ qs(days=missed.days, account=account) }}">Open the grid &rarr;</a></span>
+      </header>
+      <div class="stats" style="margin-bottom: 12px">
+        <div class="stat">
+          <div class="label">Unmanned windows</div>
+          <div class="value">{{ missed.blind_spots.count|num }}</div>
+          <div class="sub"><span class="dim">hour-of-week cells over
+            {{ missed.blind_spots.thresholds.threshold|pct }}</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Jobs lost in them</div>
+          <div class="value">{{ missed.blind_spots.no_response|num }}</div>
+          <div class="sub"><span class="dim">of {{ missed.blind_spots.offers|num }} offered
+            in those hours</span></div>
+        </div>
+      </div>
+      {% if missed.blind_spots.worst %}
+      <table class="data">
+        <thead>
+          <tr><th>Window</th><th class="num">Offers</th><th class="num">Unanswered</th><th class="num">Miss rate</th></tr>
+        </thead>
+        <tbody>
+          {% for cell in missed.blind_spots.worst %}
+          <tr>
+            <td class="nowrap">{{ cell.label }}</td>
+            <td class="num">{{ cell.offers|num }}</td>
+            <td class="num">{{ cell.no_response|num }}</td>
+            <td class="num">{{ m.miss(cell.no_response_rate, missed.blind_spots.thresholds.threshold) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty_inline('No hour-of-week window crosses the blind-spot threshold.') }}
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>Close-off candidates</h2>
+        <span class="hint"><a href="/close-off{{ qs(days=missed.days, account=account) }}">By client &rarr;</a></span>
+      </header>
+      <div class="stats" style="margin-bottom: 12px">
+        <div class="stat">
+          <div class="label">Offers we do not want</div>
+          <div class="value">{{ missed.closeoff.totals.offers|num }}</div>
+          <div class="sub"><span class="dim">producing {{ missed.closeoff.totals.accepted|num }} jobs
+            ({{ missed.closeoff.totals.rate|pct }})</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Service types</div>
+          <div class="value">{{ missed.closeoff.totals.service_types|num }}</div>
+          <div class="sub"><span class="dim">across {{ missed.closeoff.totals.clients|num }} clients</span></div>
+        </div>
+      </div>
+      {% if missed.closeoff.by_service_type %}
+      <table class="data">
+        <thead>
+          <tr><th>Service type</th><th class="num">Offers</th><th class="num">Taken</th></tr>
+        </thead>
+        <tbody>
+          {% for row in missed.closeoff.by_service_type %}
+          <tr>
+            <td class="wrap-text mono-sm">{{ row.service_type_raw|midtrunc(34) }}</td>
+            <td class="num">{{ row.offers|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        {{ m.empty_inline('No service type crosses the close-off threshold.') }}
+      {% endif %}
+    </section>
+  </div>
+</div>
+
+{# ------------------------------------------------------ how to read this #}
+
+<section class="card">
+  <header>
+    <h2>How these numbers were derived</h2>
+    <span class="hint">So a figure that looks wrong can be traced instead of argued about</span>
+  </header>
+  <div class="grid two">
+    <div>
+      <h3>Where each offer's bucket came from</h3>
+      <table class="data">
+        <tbody>
+          {% for source, count in missed.bucket_sources.items() %}
+          <tr>
+            <td>{{ source|nice }}</td>
+            <td class="num">{{ count|num }}</td>
+            <td class="muted small wrap-text">
+              {%- if source == 'status_code' %}Exact, from the numeric portal status.
+              {%- elif source == 'status_name' %}Exact, from the verbatim status label.
+              {%- elif source == 'canonical_status' %}Coarse &mdash; the five-value vocabulary
+                cannot separate an expired offer from a failed accept.
+              {%- else %}No map recognised the status. Counted, never guessed at.{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3" class="muted">No offers in the window.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% for entry in missed.secondary_buckets %}
+        {% if entry.count %}
+        <p class="small muted" style="margin: 8px 0 0">
+          {{ entry.label }}: {{ entry.count|num }} ({{ entry.share|pct }}).
+        </p>
+        {% endif %}
+      {% endfor %}
+    </div>
+    <div>
+      <h3>Statuses no bucket map knows</h3>
+      {% if missed.unknown_statuses %}
+      <table class="data">
+        <thead><tr><th>Portal status</th><th>Filed as</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for row in missed.unknown_statuses %}
+          <tr>
+            <td class="mono-sm">{{ row.status_raw or DASH }}</td>
+            <td>{{ row.bucketed_as }}</td>
+            <td class="num">{{ row.count|num }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="small muted">
+        Add these to <code>rules.yaml &rarr; missed_work &rarr; buckets</code>. A new Towbook
+        status quietly absorbed into a plausible bucket is how a report starts being
+        confidently wrong.
+      </p>
+      {% else %}
+        {{ m.empty_inline('Every status in this window was recognised.') }}
+      {% endif %}
+      {% if missed.revenue_available %}
+      <p class="small muted">
+        <code>rules.yaml</code> carries owner-supplied average job values. This dashboard
+        deliberately does not use them: it ranks and reports in jobs, because Towbook
+        publishes no offer amount and a mixed screen of counted jobs and estimated dollars
+        is read as one number.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% endif %}
+{% endblock %}
