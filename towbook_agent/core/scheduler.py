@@ -2245,6 +2245,21 @@ _DEFAULT_LEASE_RETRY_SECONDS: float = 60.0
 _lease_watcher: Any = None
 _lease_watch_stop: Any = None
 
+#: Last thing that went wrong trying to start the scheduler, for /healthz.
+#: Railway rate-limits container logs and drops messages, so an error that only
+#: exists in a log is an error nobody can retrieve when it matters.
+_last_start_error: str | None = None
+
+
+def lease_watcher_alive() -> bool:
+    """Is the take-over thread still running?
+
+    Reported by /healthz so that "not scheduling" can be told apart from "not
+    scheduling and nothing is trying to fix it".
+    """
+    watcher = _lease_watcher
+    return bool(watcher is not None and watcher.is_alive())
+
 
 def _lease_retry_seconds() -> float:
     """Seconds between attempts to take over the scheduler lease.
@@ -2364,7 +2379,7 @@ def start_background_scheduler(dry_run: bool = False, _retrying: bool = False) -
     which the dashboard's ``/health`` view reports, because "is anything actually
     scheduled in this container" is otherwise unanswerable from a browser.
     """
-    global _background_scheduler, _background_lease, _process_start
+    global _background_scheduler, _background_lease, _process_start, _last_start_error
 
     status: dict[str, Any] = {"running": False, "reason": "", "jobs": 0, "lease": None}
 
@@ -2425,6 +2440,14 @@ def start_background_scheduler(dry_run: bool = False, _retrying: bool = False) -
         logger.critical("could not start the in-process scheduler: %s", exc, exc_info=True)
         emit_pipeline_failure("scheduler", exc, phase="startup")
         status["reason"] = f"failed to start: {type(exc).__name__}: {exc}"
+        # Kept for /healthz. This exact error was invisible in production for
+        # hours because the platform dropped the log line that carried it.
+        _last_start_error = f"{type(exc).__name__}: {exc}"
+        # Something went wrong on the way up rather than the lock being taken,
+        # so keep trying: the usual causes (database not accepting connections
+        # yet, config mid-write) are transient.
+        if not _retrying:
+            _ensure_lease_watcher(dry_run)
         return status
 
 
@@ -2480,6 +2503,8 @@ def background_scheduler_status() -> dict[str, Any]:
         "running": running,
         "lease": getattr(_background_lease, "reason", None),
         "jobs": sorted(jobs, key=lambda item: item["id"]),
+        "retry_watcher_alive": lease_watcher_alive(),
+        "last_error": _last_start_error,
     }
 
 

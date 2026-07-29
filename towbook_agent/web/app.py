@@ -1018,10 +1018,29 @@ def liveness() -> JSONResponse:
     It deliberately still returns 200 when the scheduler did not start: a board
     that serves stale numbers *and says so* is more useful than a deploy that
     fails its health check and rolls back to an equally broken previous version.
+
+    THE SCHEDULER FIELD IS LIVE, NOT THE BOOT SNAPSHOT. It used to be read from
+    ``BOOT["scheduler"]``, a dict written once during startup and never touched
+    again -- so a process that acquired the scheduler lease *after* boot (see
+    ``_watch_for_the_lease``) went on reporting ``running: false`` forever, and
+    a process whose scheduler died later went on reporting ``running: true``.
+    Both directions are wrong, and this endpoint is the one thing a person has
+    to answer "is it actually scheduling" from outside the container. The boot
+    snapshot is still reported, separately and honestly labelled, because "it
+    never started" and "it started and stopped" need different fixes.
     """
+    # Imported here, like the lifespan does, rather than at module scope.
+    from ..core import scheduler as core_scheduler
+
     database = q.core_db.healthcheck()
     migration = BOOT.get("migration") or {}
-    scheduler = BOOT.get("scheduler") or {}
+    boot_scheduler = BOOT.get("scheduler") or {}
+    try:
+        scheduler = dict(core_scheduler.background_scheduler_status() or {})
+        watcher_alive = core_scheduler.lease_watcher_alive()
+    except Exception as exc:  # pragma: no cover - the probe must always answer
+        scheduler = {"running": None, "jobs": 0, "error": f"{type(exc).__name__}: {exc}"}
+        watcher_alive = None
     payload = {
         "ok": bool(database.get("ok")),
         "version": __version__,
@@ -1031,7 +1050,25 @@ def liveness() -> JSONResponse:
             "tables": len(database.get("tables") or []),
         },
         "migration": {"ok": migration.get("ok"), "revision": migration.get("revision")},
-        "scheduler": {"running": scheduler.get("running"), "jobs": scheduler.get("jobs")},
+        "scheduler": {
+            "running": scheduler.get("running"),
+            # background_scheduler_status() returns the job records; the probe
+            # wants the count, as it always reported.
+            "jobs": len(scheduler.get("jobs") or [])
+            if isinstance(scheduler.get("jobs"), list)
+            else scheduler.get("jobs"),
+            "reason": scheduler.get("reason"),
+            # Is the take-over thread still alive? Without this, "not running"
+            # cannot be told apart from "not running and never going to be",
+            # which is the difference between waiting and paging someone.
+            "retry_watcher_alive": watcher_alive,
+            "lease": scheduler.get("lease"),
+            "last_error": scheduler.get("last_error"),
+            "at_boot": {
+                "running": boot_scheduler.get("running"),
+                "reason": boot_scheduler.get("reason"),
+            },
+        },
         "storage_warning": BOOT.get("storage_warning"),
         # Roster-wide, not per company: this is a liveness probe, and "does
         # ANY company have data" is the question a deploy check is asking.

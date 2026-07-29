@@ -145,6 +145,38 @@ def acquire_scheduler_lease(name: str = SCHEDULER_LOCK_NAME) -> SchedulerLease:
     """
     backend = core_db.backend_name()
 
+    # THE ESCAPE HATCH. `SCHEDULER_REQUIRE_LOCK=false` skips the advisory lock
+    # and schedules unconditionally.
+    #
+    # This exists because the lock is the SECOND guard, not the first. The
+    # first is one web worker and `numReplicas: 1`, which railway.json pins and
+    # the README tells you not to change -- and on a deployment where that
+    # holds, the lock can only ever be wrong: it cannot prevent a second
+    # scheduler that cannot exist, and it demonstrably can and did prevent the
+    # only one. Two full nights of this deployment had no scheduler at all
+    # because a lock was doing its job against a container that no longer
+    # existed.
+    #
+    # Turn it off ONLY where replicas are pinned to one. If you scale to two,
+    # set it back to true first -- or accept two pulls an hour, which is
+    # wasteful but not corrupting, because every job here is idempotent.
+    if (os.environ.get("SCHEDULER_REQUIRE_LOCK") or "").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        logger.warning(
+            "SCHEDULER_REQUIRE_LOCK is false: scheduling without the advisory lock. "
+            "This is only safe while this service runs a single replica with a single "
+            "worker, which railway.json pins. Scale past that and set it back to true."
+        )
+        return SchedulerLease(
+            acquired=True,
+            backend=backend or "unknown",
+            reason="advisory lock disabled by SCHEDULER_REQUIRE_LOCK=false",
+        )
+
     if not backend.startswith("postgres"):
         return SchedulerLease(
             acquired=True,
