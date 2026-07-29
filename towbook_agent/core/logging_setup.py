@@ -231,8 +231,22 @@ def setup_logging(
             root.warning("file logging disabled, could not open %s: %s", target, exc)
 
     # These libraries are chatty at DEBUG and leak request bodies at times.
-    for noisy in ("httpx", "httpcore", "urllib3", "asyncio", "apscheduler.executors.default"):
+    for noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
         logging.getLogger(noisy).setLevel(max(level, logging.INFO))
+
+    # APScheduler's executor logs two INFO lines per job RUN. The config watch
+    # job fires every 30 seconds, so that alone is ~5,800 lines a day -- which
+    # is how a seven-hour pipeline outage scrolled off the end of Railway's
+    # retained log buffer before anyone could read why it happened. The line
+    # below used to be `max(level, INFO)`, which at the default LOG_LEVEL=INFO
+    # resolved to INFO and suppressed nothing.
+    #
+    # WARNING here loses nothing that matters: a job that raises still logs
+    # through _job_error_listener, a missed tick through _job_missed_listener,
+    # and `_run_job` logs its own "job X fired" line per real pipeline run.
+    logging.getLogger("apscheduler.executors.default").setLevel(
+        max(level, logging.WARNING)
+    )
 
     _configured = True
     return root
