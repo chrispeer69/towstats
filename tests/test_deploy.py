@@ -603,6 +603,54 @@ def test_a_recorded_pipeline_failure_reaches_the_banner_when_delivery_is_off() -
     assert "only warning" in (banner["hint"] or "")
 
 
+def test_a_successful_run_retires_the_recorded_failure() -> None:
+    """Fixed is not broken. Nothing acknowledges alerts, so a success has to.
+
+    Without this the 24h timer is the only way down and the board keeps
+    shouting about a run that broke hours ago while the pipeline is producing
+    normally -- which is how a real alarm gets read as decoration.
+    """
+    from datetime import timedelta
+
+    from towbook_agent.core.db import get_session
+    from towbook_agent.core.models import AlertFired, Run, utcnow
+    from towbook_agent.web import queries as q
+
+    broke_at = utcnow() - timedelta(hours=3)
+    with get_session() as session:
+        session.add(
+            AlertFired(
+                alert_id="pipeline_failure",
+                entity="acquisition",
+                severity="high",
+                fired_at=broke_at,
+                payload={"stage": "acquisition", "error": "TimeoutError: the portal did not respond"},
+                suppressed_reason="delivery_disabled",
+            )
+        )
+
+    broken = q.pipeline_banner()
+    assert broken is not None and "failure" in broken["title"].lower(), (
+        "still broken: the banner belongs up"
+    )
+
+    # The next hourly run went through, which is what "fixed" looks like from
+    # the outside. Recent, so the overdue check is satisfied too.
+    with get_session() as session:
+        session.add(
+            Run(
+                run_id="recovered-1",
+                report_type="hourly",
+                status="succeeded",
+                started_at=utcnow() - timedelta(minutes=2),
+                finished_at=utcnow() - timedelta(minutes=1),
+                row_count=42,
+            )
+        )
+
+    assert q.pipeline_banner() is None, "a later success means the failure is history"
+
+
 def test_the_banner_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """It renders on every page. It must not be able to take the board down."""
     from towbook_agent.web import queries as q

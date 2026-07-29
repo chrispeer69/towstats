@@ -91,6 +91,7 @@ __all__ = [
     "sparkline_points",
     # -- the board IS the delivery mechanism; this is the alarm --------------
     "pipeline_banner",
+    "last_recovery",
     "PIPELINE_FAILURE_BANNER_HOURS",
     # -- the missed-work model (MISSED_WORK_MODEL.md) --------------------
     "missed_work_snapshot",
@@ -2962,9 +2963,39 @@ def last_run_summary(company_id: str | None = None) -> dict[str, Any] | None:
         return None
 
 
-#: How long a recorded pipeline_failure keeps the banner up. Long enough that a
-#: failure overnight is still on the board when the owner opens it in the
-#: morning; short enough that a problem fixed two days ago stops shouting.
+def last_recovery(company_id: str | None = None) -> datetime | None:
+    """When this company's pipeline last produced a good run, local-aware.
+
+    The clock that tells a recorded failure it is history. ``partial`` counts,
+    for the same reason the watchdog counts it: the numbers were produced.
+    Returns ``None`` when nothing has ever succeeded, which reads as "no
+    recovery", so a failure on a pipeline that has never worked stays up.
+    """
+    try:
+        with core_db.get_session(commit=False) as session:
+            run = session.execute(
+                select(Run)
+                .where(
+                    Run.company_id == _companies.resolve_company_id(company_id),
+                    Run.status.in_(("succeeded", "partial")),
+                )
+                .order_by(Run.started_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if run is None:
+                return None
+            return to_local(run.finished_at or run.started_at)
+    except Exception:
+        return None
+
+
+#: How long a recorded pipeline_failure keeps the banner up WHEN NOTHING HAS
+#: SUCCEEDED SINCE. Long enough that a failure overnight is still on the board
+#: when the owner opens it in the morning. A later successful run retires it
+#: sooner -- see the recovery check in :func:`pipeline_banner` -- because this
+#: timer alone cannot tell "still broken" from "fixed an hour ago", and a red
+#: banner over a pipeline that is running again is a false alarm that teaches
+#: the owner to ignore the real one.
 PIPELINE_FAILURE_BANNER_HOURS: float = 24.0
 
 
@@ -2990,7 +3021,10 @@ def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
        container was redeployed and the scheduler never came back, the cron
        entry was removed, RUN_SCHEDULER was left false on the service.
     3. **A pipeline_failure was recorded recently** and delivery was disabled,
-       so nothing was sent about it anywhere else.
+       so nothing was sent about it anywhere else -- and *no run has succeeded
+       since it fired*. Conditions 1 and 2 read live state and clear themselves
+       the moment the pipeline produces again; this one reads a row in a log
+       that nothing ever deletes, so it needs to be told when it is over.
 
     Returns ``None`` when the pipeline is healthy -- a banner that is always
     there is furniture, and gets read as furniture. Never raises: the banner is
@@ -3044,6 +3078,15 @@ def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
                 }
             )
 
+        # A failure that a later run has already superseded is history, and
+        # history belongs on Health, not on a red banner on every tab. Nothing
+        # in this system ever sets alerts_fired.acknowledged, so without this
+        # the 24h timer is the ONLY way down: the pipeline could be fixed and
+        # running hourly and the board would still be shouting about the run
+        # that broke at 22:00. That trains the owner to read the banner as
+        # decoration, which costs us the one alarm we have.
+        recovered_at = last_recovery(company_id)
+
         for alert in recent_alerts(limit=25, company_id=company_id):
             if alert.get("alert_id") != "pipeline_failure":
                 continue
@@ -3054,6 +3097,8 @@ def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
             if age_hours > PIPELINE_FAILURE_BANNER_HOURS or age_hours < 0:
                 continue
             if alert.get("acknowledged"):
+                continue
+            if recovered_at is not None and recovered_at > fired:
                 continue
             payload = alert.get("payload") or {}
             candidates.append(
