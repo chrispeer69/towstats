@@ -562,8 +562,33 @@ api:
     pickup_location:
       - startingLocation
 
+    # VERIFIED populated on 3,122 of 3,124 records. The API states the ZIP as
+    # its own field, so territory is keyed on it rather than on a regex over
+    # startingLocation, which is written half a dozen ways ("Columbus, OH,
+    # 43201", "COLUMBUS OH 43201", "43201-1234, USA"). The CSV export has no
+    # equivalent, so CSV-ingested rows leave this NULL by design.
+    pickup_zip:
+      - zip
+
     dropoff_location:
       - towDestination
+
+    # VERIFIED populated on 3,124 of 3,124 records (median 12.2 mi, p90 30.1).
+    # Miles, not money: the owner is quoted a hook rate PLUS mileage, and this
+    # is only the mileage half. Nothing may present it as revenue.
+    distance_miles:
+      - distance
+
+    # VERIFIED present on every record. `expires_at - offered_at` is the
+    # decision window the owner actually gets: median 2.8 minutes, mean 3.6,
+    # p90 7.0, max 15.0 across 3,123 records -- which is the evidence behind
+    # MISSED_WORK_MODEL.md section 4.
+    #
+    # This is NOT a response time and must never be read as one. It is when the
+    # club stops accepting an answer. See responded_at above: that field does
+    # not exist in this feed and is deliberately left unmapped.
+    expires_at:
+      - expirationDate
 
     # VERIFIED ABSENT: no truck is named on an offer.
     truck_assigned: []
@@ -604,7 +629,6 @@ api:
     - requestDateUtc
     - reason
     - vehicle
-    - expirationDate
     - companyId
     - companyName
     - contractorId
@@ -612,8 +636,8 @@ api:
     - masterAccountId
     - callNumber
     - purchaseOrderNumber
-    - distance
-    - zip
+    # expirationDate, distance and zip were listed here and discarded for the
+    # first year of this system. They are now mapped canonical fields above.
     - etaGiven
     - maxEta
     - availableActions

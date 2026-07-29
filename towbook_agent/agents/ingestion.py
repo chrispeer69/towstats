@@ -197,11 +197,14 @@ _TEXT_FIELDS: tuple[str, ...] = (
     "denial_reason",
     "service_type_raw",
     "pickup_location",
+    "pickup_zip",
     "dropoff_location",
     "truck_assigned",
     "driver_assigned",
 )
-_DATETIME_FIELDS: tuple[str, ...] = ("offered_at", "responded_at")
+_DATETIME_FIELDS: tuple[str, ...] = ("offered_at", "responded_at", "expires_at")
+#: Parsed with the money parser but NOT money. See Request.distance_miles.
+_DECIMAL_FIELDS: tuple[str, ...] = ("amount", "distance_miles")
 _CANONICAL_FIELDS: tuple[str, ...] = (
     "request_id",
     "client_name",
@@ -211,10 +214,13 @@ _CANONICAL_FIELDS: tuple[str, ...] = (
     "denial_reason",
     "service_type_raw",
     "pickup_location",
+    "pickup_zip",
     "dropoff_location",
     "truck_assigned",
     "driver_assigned",
     "amount",
+    "distance_miles",
+    "expires_at",
 )
 
 #: Without these three there is no usable row: no identity, no time axis, no
@@ -243,18 +249,24 @@ _UPSERT_COLUMNS: tuple[str, ...] = (
     "service_type_raw",
     "service_class",
     "pickup_location",
+    "pickup_zip",
     "dropoff_location",
     "truck_assigned",
     "driver_assigned",
     "amount",
+    "distance_miles",
+    "expires_at",
     "ingested_at",
     "source_run_id",
 )
 
-#: Rows per statement. 19 columns x 40 rows = 760 bound parameters, comfortably
-#: under the 999 limit of SQLite builds older than 3.32. Was 50 while the record
-#: had 17 columns; status_raw and status_code took it to 950, close enough to the
-#: ceiling that the next column added would have silently broken old SQLite.
+#: Rows per statement. 22 columns x 40 rows = 880 bound parameters, under the
+#: 999 limit of SQLite builds older than 3.32 but no longer comfortably: three
+#: more columns at this chunk size would cross it. Was 50 while the record had
+#: 17 columns; status_raw and status_code took it to 950, which is why it came
+#: down to 40. If the record grows again, LOWER THIS FIRST -- the failure mode
+#: is an sqlite3 "too many SQL variables" error at ingest, which surfaces as a
+#: pipeline_failure rather than silently, but only once real data hits it.
 _UPSERT_CHUNK: int = 40
 #: Ids per IN (...) lookup.
 _SELECT_CHUNK: int = 400
@@ -1347,10 +1359,13 @@ def _build_record(
             parsed.unparsed_datetimes += 1
         record[name] = value
 
-    amount, amount_failed = _parse_amount(_cell(row, column_map.get("amount")), cleanup)
-    record["amount"] = amount
-    if amount_failed:
-        parsed.unparsed_amounts += 1
+    for name in _DECIMAL_FIELDS:
+        value, failed = _parse_amount(_cell(row, column_map.get(name)), cleanup)
+        record[name] = value
+        if failed:
+            # Counted together: both are "a number the source sent that we could
+            # not read", and the reject report names the field.
+            parsed.unparsed_amounts += 1
 
     raw_status = _cell(row, column_map.get("status"))
     status = map_status(raw_status, vocabulary)

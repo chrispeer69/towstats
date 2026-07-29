@@ -236,7 +236,36 @@ class Request(Base):
     #: derived from service_type_raw by the classifier; safe to recompute
     service_class: Mapped[Optional[str]] = mapped_column(String(64))
     pickup_location: Mapped[Optional[str]] = mapped_column(Text)
+    #: The pickup ZIP as the API states it, NOT parsed back out of
+    #: ``pickup_location``. The JSON feed carries it as its own field on 3,122
+    #: of 3,124 records; the CSV export does not, so this is NULL on
+    #: CSV-ingested rows and territory falls back to the address text there.
+    #:
+    #: This is what the territory bands in ``rules.yaml -> territory`` are keyed
+    #: on. Storing the source field rather than a regex over the address means
+    #: an address written "Columbus OH 43201, USA" and one written "43201-1234"
+    #: land on the same key, and it keeps the boundary a config decision
+    #: instead of a parsing accident.
+    pickup_zip: Mapped[Optional[str]] = mapped_column(String(16))
     dropoff_location: Mapped[Optional[str]] = mapped_column(Text)
+    #: Towbook's own distance for the job, in miles. VERIFIED populated on
+    #: 3,124 of 3,124 records (median 12.2, p90 30.1), and previously discarded.
+    #:
+    #: Half of what prices a job -- the owner is quoted a hook rate plus
+    #: mileage. It is NOT revenue on its own and nothing may total it as money;
+    #: see ``amount``, which the API leaves at 0.0 on every record.
+    distance_miles: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+    #: When the offer stops being answerable. Stored RAW rather than as a
+    #: precomputed window, for the same reason ``status_raw`` is: the derived
+    #: value can then be re-cut at read time without a migration.
+    #:
+    #: ``expires_at - offered_at`` is the decision window, and it is the number
+    #: that makes the blind-spot analysis urgent: median 2.8 minutes, mean 3.6,
+    #: p90 7.0, max 15.0 across 3,123 records. A missed notification is a lost
+    #: job almost immediately. This is NOT a response time -- the feed has no
+    #: responded-at field at all (see schema.yaml) -- it is how long the club
+    #: gives this company to decide.
+    expires_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
     truck_assigned: Mapped[Optional[str]] = mapped_column(String(128))
     driver_assigned: Mapped[Optional[str]] = mapped_column(String(128))
     amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
@@ -255,6 +284,9 @@ class Request(Base):
         # window is "this company, this time range", in that order, so the
         # composite is the one that actually gets used.
         Index("ix_requests_company_offered_at", "company_id", "offered_at"),
+        # Territory is asked as "this company, was this ZIP ours", so the ZIP
+        # index leads with company_id for the same reason the one above does.
+        Index("ix_requests_company_zip", "company_id", "pickup_zip"),
         Index("ix_requests_source_run_id", "source_run_id"),
     )
 

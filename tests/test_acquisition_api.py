@@ -88,6 +88,11 @@ def record(request_id: int, *, status_name: str = "Expired", status: int = 5, **
         "vehicle": "2012 HONDA ODYSSEY EX red",
         "expirationDate": "2026-07-26T18:34:39",
         "companyId": 61343,
+        # Populated on every live record, and mapped since 0005: the ZIP decides
+        # territory, the distance is half of what prices the job, and
+        # expirationDate above closes the decision window three minutes out.
+        "zip": "43201",
+        "distance": 4.3,
     }
     row.update(extra)
     return row
@@ -436,6 +441,47 @@ def test_an_api_archive_ingests_and_keys_on_call_request_id(api, portal, ingesti
     assert result.matched_headers["request_id"] == "callRequestId"
     assert result.matched_headers["offered_at"] == "requestDate"
     assert result.matched_headers["status"] == "statusName"
+
+
+def test_the_zip_distance_and_expiry_are_stored(api, portal, ingestion) -> None:
+    """All three arrive on every record and were discarded until 0005.
+
+    The ZIP decides territory, so it is taken from the API's own field rather
+    than parsed back out of the address; the distance is half of what prices a
+    job; and expires_at minus offered_at is the decision window the owner
+    actually gets, which on real data is a median of 2.8 minutes.
+    """
+    portal(pages=[[record(900003, zip="43015", distance=12.4)]])
+    archived = api.acquire_api("2026-07-26", "2026-07-27")
+
+    result = ingestion.ingest(archived, "api-run-zip")
+    assert result.rows_rejected == 0
+
+    row = all_requests()[0]
+    assert row.pickup_zip == "43015"
+    assert float(row.distance_miles) == 12.4
+    # 18:31:39.71 offered -> 18:34:39 expiry, both company-local, stored UTC.
+    window = (row.expires_at - row.offered_at).total_seconds()
+    assert 175 <= window <= 185, f"expected a ~3 min decision window, got {window}s"
+
+
+def test_a_record_without_a_zip_still_ingests(api, portal, ingestion) -> None:
+    """The CSV export carries no ZIP at all, and 2 of 3,124 API records lacked one.
+
+    A missing ZIP must leave the row usable and the field NULL -- territory is
+    then simply unknown for it, which is honest. Rejecting the row would
+    understate the offered count, which is the number this system exists to
+    get right.
+    """
+    payload = record(900004)
+    del payload["zip"]
+    portal(pages=[[payload]])
+
+    result = ingestion.ingest(api.acquire_api("2026-07-26", "2026-07-27"), "api-run-nozip")
+
+    assert result.rows_rejected == 0
+    assert result.rows_inserted == 1
+    assert all_requests()[0].pickup_zip is None
 
 
 def test_re_ingesting_the_same_window_is_idempotent(api, portal, ingestion) -> None:
