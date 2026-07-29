@@ -30,7 +30,29 @@
     <div class="value" style="color: {{ 'var(--good)' if health.database.ok else 'var(--critical)' }}">
       {{ 'OK' if health.database.ok else 'DOWN' }}
     </div>
-    <div class="sub"><span class="dim">{{ health.database.tables|length if health.database.tables else 0 }} tables{% if health.database.error %} &middot; {{ health.database.error|midtrunc(60) }}{% endif %}</span></div>
+    <div class="sub"><span class="dim">{{ health.database.backend or 'unknown' }} &middot; {{ health.database.tables|length if health.database.tables else 0 }} tables{% if health.database.error %} &middot; {{ health.database.error|midtrunc(60) }}{% endif %}</span></div>
+  </div>
+  {#-
+    IS ANYTHING ACTUALLY SCHEDULED IN THIS CONTAINER?
+
+    With the board as the only delivery mechanism, a web process that serves
+    pages but runs no jobs is the failure that looks most like everything being
+    fine: the pages render, the numbers are real, and they are yesterday's. The
+    banner catches it once a report goes overdue; this tile answers it directly,
+    now, before anything has had time to go stale.
+  -#}
+  <div class="stat">
+    <div class="label">Scheduler</div>
+    {% if health.scheduler.running %}
+    <div class="value" style="color: var(--good)">RUNNING</div>
+    <div class="sub"><span class="dim">{{ health.scheduler.jobs|length }} job(s) in this process</span></div>
+    {% elif health.scheduler.enabled is sameas false %}
+    <div class="value" style="color: var(--warning); font-size: 17px">SPLIT OUT</div>
+    <div class="sub"><span class="dim">RUN_SCHEDULER is false &mdash; another service must run it</span></div>
+    {% else %}
+    <div class="value" style="color: var(--critical); font-size: 17px">NOT RUNNING</div>
+    <div class="sub"><span class="dim">nothing is refreshing this board{% if health.scheduler.lease %} &middot; {{ health.scheduler.lease|midtrunc(48) }}{% endif %}</span></div>
+    {% endif %}
   </div>
   {{ m.stat('Requests stored', health.counts.requests|default(0)|num, sub='Rows in the requests table') }}
   <div class="stat">

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Monthly{% endblock %}
+
+{#- TAB 3 -- MONTHLY. This month against last: the trend per cause, client
+    trajectories, and whether the close-offs actually worked. Shares its body
+    with the Weekly tab -- see partials/period_body.html for why. -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>This month</h1>
+    <div class="sub">
+      {{ period.current_first|day("%b %d") }} &ndash; {{ period.current_last|day("%b %d, %Y") }},
+      against {{ period.previous_first|day("%b %d") }} &ndash;
+      {{ period.previous_last|day("%b %d") }}. Calendar months, local time.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not period.available %}
+  {{ m.model_unavailable(period.error) }}
+{% elif not period.has_data %}
+  {{ m.empty_state('Nothing offered this month or last',
+                   'No requests were offered between ' ~ period.previous_first ~ ' and ' ~ period.current_last ~ '.') }}
+{% else %}
+  {% include "partials/period_body.html" %}
+{% endif %}
+{% endblock %}

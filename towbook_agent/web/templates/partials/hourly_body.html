@@ -1,0 +1,217 @@
+{% import "macros.html" as m %}
+{#- Body of the Hourly tab. Rendered inline on first load and swapped in by the
+    60-second HTMX poll, so it must be self-contained: no <script> tags, they
+    would not execute after an innerHTML swap. -#}
+
+{# ------------------------------------------------ the current hour, big #}
+
+<div class="stats stats-headline">
+  <div class="stat stat-lead">
+    <div class="label">This hour &mdash; {{ hourly.current.range_label }}</div>
+    <div class="value hero band band-{{ hourly.current.band }}">{{ hourly.current.rate|pct }}</div>
+    <div class="sub">
+      <span class="dim">{{ hourly.current.accepted|num }} accepted of
+        {{ hourly.current.offered|num }} offered</span>
+    </div>
+  </div>
+
+  <div class="stat{{ ' stat-flag' if hourly.current.unanswered }}">
+    <div class="label">Unanswered this hour</div>
+    <div class="value">{{ hourly.current.unanswered|num }}</div>
+    <div class="sub"><span class="dim">{{ m.miss(hourly.current.unanswered_rate) }} of this hour's offers</span></div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Day so far</div>
+    <div class="value">{{ hourly.totals.accepted|num }} / {{ hourly.totals.offered|num }}</div>
+    <div class="sub"><span class="dim">Running total</span> {{ m.rate(hourly.totals.rate) }}</div>
+  </div>
+
+  <div class="stat{{ ' stat-flag' if hourly.totals.unanswered }}">
+    <div class="label">Unanswered today</div>
+    <div class="value">{{ hourly.totals.unanswered|num }}</div>
+    <div class="sub"><span class="dim">{{ m.miss(hourly.totals.unanswered_rate) }} of today's offers</span></div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Same hour, usual day</div>
+    <div class="value">{{ hourly.current.baseline_offered }}</div>
+    <div class="sub">
+      <span class="dim">offers on average over {{ hourly.baseline_days }} days,
+        accepted at</span> {{ m.rate(hourly.current.baseline_rate) }}
+    </div>
+  </div>
+</div>
+
+{% if hourly.current.alert_line %}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span><strong>{{ hourly.current.alert_line }}</strong>
+    Towbook's median response window on this account is
+    {{ RESPONSE_WINDOW.median_minutes }} minutes &mdash; an offer nobody sees is lost almost
+    immediately. <a href="/blind-spots">Which hours leak</a>.</span>
+</div>
+{% elif hourly.day_alert_line %}
+<div class="notice notice-warn">
+  <span class="ico">&#9888;</span>
+  <span><strong>{{ hourly.day_alert_line }}</strong> Nothing went unanswered in the current hour.</span>
+</div>
+{% endif %}
+
+{% if not hourly.has_today %}
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>No requests have been offered yet today. The baseline column is still live.</span>
+</div>
+{% endif %}
+
+{# ------------------------------------------- the message, exactly as it read #}
+
+<section class="card">
+  <header>
+    <h2>What the hourly text said</h2>
+    <span class="hint">
+      Built by the same <code>agents/notifier.py</code> helpers that built the message,
+      so this board and that text cannot drift apart. Nothing is sent any more.
+    </span>
+  </header>
+  {{ m.copyblock(hourly.text_block, 'hourly-sms', 'Copy') }}
+</section>
+
+{# --------------------------------------------------------- hour by hour #}
+
+<section class="card">
+  <header>
+    <h2>Hour by hour</h2>
+    <span class="hint">
+      Local time. The running columns are the day total as at the end of that hour.
+      Hours that have not happened yet are em-dashes, never zeros.
+    </span>
+  </header>
+
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Hour</th>
+          <th class="num">Offered</th>
+          <th class="num">Accepted</th>
+          <th class="num">Rate</th>
+          <th class="num">Unanswered</th>
+          <th class="num">Miss rate</th>
+          <th class="num">Declined</th>
+          <th class="num">Withdrew</th>
+          <th class="num">Day offered</th>
+          <th class="num">Day accepted</th>
+          <th class="num">Day rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in hourly.hours %}
+        <tr class="{{ 'row-flag' if row.is_current else ('dim-row' if row.is_future else '') }}">
+          <td class="nowrap">
+            <strong>{{ row.range_label }}</strong>
+            {% if row.is_current %}<span class="pill pill-accepted">now</span>{% endif %}
+          </td>
+          {% if row.is_future %}
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+            <td class="num muted">{{ DASH }}</td>
+          {% else %}
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+            <td class="num">{% if row.unanswered %}<strong>{{ row.unanswered|num }}</strong>{% else %}{{ row.unanswered|num }}{% endif %}</td>
+            <td class="num">{{ m.miss(row.unanswered_rate) }}</td>
+            <td class="num">{{ row.declined|num }}</td>
+            <td class="num">{{ row.withdrew|num }}</td>
+            <td class="num">{{ row.running_offered|num }}</td>
+            <td class="num">{{ row.running_accepted|num }}</td>
+            <td class="num">{{ m.rate(row.running_rate) }}</td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="rank-note">
+    <span class="ico">&#8505;</span>
+    {{ hourly.basis_note }}
+  </p>
+</section>
+
+{# ------------------------------------------------------------- context #}
+
+<div class="grid side">
+  <section class="card">
+    <header>
+      <h2>Clients today</h2>
+      <span class="hint">Highest volume first</span>
+    </header>
+    {% if hourly.top_clients %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th class="num">Offered</th>
+            <th class="num">Accepted</th>
+            <th class="num">Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in hourly.top_clients %}
+          <tr>
+            <td><a href="/clients/{{ row.slug|urlencode }}">{{ row.client_name }}</a></td>
+            <td class="num">{{ row.offered|num }}</td>
+            <td class="num">{{ row.accepted|num }}</td>
+            <td class="num">{{ m.rate(row.rate) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="rank-note"><span class="ico">&#8505;</span> {{ hourly.basis_note }}</p>
+    {% else %}
+      {{ m.empty_inline('No clients have sent a request today.') }}
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Recent alerts</h2>
+      <span class="hint">Newest first</span>
+    </header>
+    {% if hourly.alerts %}
+    <table class="data">
+      <tbody>
+        {% for alert in hourly.alerts %}
+        <tr>
+          <td><span class="pill pill-{{ alert.severity or 'low' }}">{{ alert.severity or 'low' }}</span></td>
+          <td class="wrap-text">
+            <span class="mono-sm">{{ alert.alert_id }}</span>
+            {% if alert.entity %}<span class="muted"> &middot; {{ alert.entity|midtrunc(30) }}</span>{% endif %}
+          </td>
+          <td class="num muted small nowrap">{{ alert.fired_at|ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      {{ m.empty_inline('No alerts have fired.') }}
+    {% endif %}
+  </section>
+</div>
+
+<p class="small muted" style="margin-top: 14px">
+  Refreshed {{ hourly.generated_at|clock }}. This page reloads its own body every
+  {{ HOURLY_REFRESH_SECONDS }} seconds.
+</p>

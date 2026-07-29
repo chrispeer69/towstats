@@ -1,15 +1,48 @@
 # ==========================================================================
 # notifications.yaml -- who gets told what, through which channel, and when.
 #
-# Hard constraint #2: adding a route or changing a recipient is a config edit,
-# not a code change.
+# ############################################################################
+# # EVERY ROUTE IN THIS FILE IS DISABLED. THE DASHBOARD IS THE DELIVERY.     #
+# ############################################################################
+#
+# No SMS. No email. Nothing is sent anywhere. The board is checked several
+# times a day in a browser and that is the channel; a text message duplicating
+# a page somebody is already looking at is noise, and every SMS costs money in
+# every company this repo is handed to.
+#
+# The routing table below is INTACT AND CORRECT, not deleted. Each route
+# carries `enabled: false`. Turning a channel back on is one word:
+#
+#     - report: daily
+#       channel: sms
+#       enabled: true          # <- this
+#       to: [owner]
+#       template: daily_summary
+#
+# ...plus the credentials that channel needs in the environment (SMS:
+# TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM and OWNER_PHONE. Email:
+# SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM and OWNER_EMAIL).
+# No code change, no redeploy: the loader re-stats this file on every access,
+# so a running scheduler picks the edit up on its next job.
+#
+# WHERE FAILURES GO NOW -- read this before you decide the system went quiet
+# -----------------------------------------------------------------------
+# `pipeline_failure` is still non-suppressible and still recorded, and with the
+# SMS route off it is delivered by the board instead: web/queries.py ->
+# pipeline_banner() reads the alerts_fired table and the runs table and puts a
+# persistent red banner across EVERY tab when the last scheduled run failed or
+# a report is overdue. That banner is the replacement for the text message. It
+# is why turning these routes off is safe and why the banner must not be
+# removed from base.html.
 #
 # ROUTE MATCHING
 #   * A route with `report:` fires when that scheduled report completes.
 #   * A route with `event:` fires on an emitted event ("alert" or
 #     "pipeline_failure"). An optional `severity:` narrows it.
-#   * ALL matching routes fire. Daily deliberately matches two routes: a short
-#     SMS and a full email.
+#   * ALL matching enabled routes fire. Daily deliberately matches two routes:
+#     a short SMS and a full email.
+#   * `enabled:` defaults to TRUE when the key is absent, so a route added
+#     without it is live. Absent means on; only `false` means off.
 #
 # SUPPRESSION -- read this before editing quiet_hours
 #   * pipeline_failure is NON-SUPPRESSIBLE. It ignores quiet hours entirely
@@ -17,6 +50,10 @@
 #     bad one, and silence is never treated as success.
 #   * quiet_hours suppresses only the severities listed in
 #     suppress_severities. `high` is absent from that list on purpose.
+#   * `enabled: false` is NOT suppression. Suppression is a runtime decision
+#     about one message; this is a standing decision about a channel, and it is
+#     recorded against the run as `delivery_disabled` rather than logged as a
+#     misconfiguration.
 # ==========================================================================
 
 version: 2
@@ -24,18 +61,22 @@ version: 2
 routes:
   - report: hourly
     channel: sms
+    enabled: false
     to: [owner]
     template: hourly_short
   - report: daily
     channel: sms
+    enabled: false
     to: [owner]
     template: daily_summary
   - report: daily
     channel: email
+    enabled: false
     to: [owner, ops_manager]
     template: daily_full
   - report: weekly
     channel: email
+    enabled: false
     to: [owner, ops_manager]
     template: weekly_full
   # Monthly is EMAIL ONLY, deliberately. A month of trend does not fit in 320
@@ -43,15 +84,21 @@ routes:
   # channel is reserved for things that need a response now.
   - report: monthly
     channel: email
+    enabled: false
     to: [owner, ops_manager]
     template: monthly_full
   - event: alert
     severity: high
     channel: sms
+    enabled: false
     to: [owner]
     immediate: true
+  # The one route to re-enable first if a company does want a text: a pipeline
+  # failure is the only thing here that cannot wait for somebody to open the
+  # board. Until then the banner carries it.
   - event: pipeline_failure
     channel: sms
+    enabled: false
     to: [owner]
     immediate: true
 

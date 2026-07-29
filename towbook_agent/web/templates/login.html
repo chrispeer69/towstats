@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in &middot; Job Acceptance</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128667;</text></svg>">
+<script>
+(function () {
+  try {
+    var stored = localStorage.getItem("tbk-theme");
+    if (stored === "light" || stored === "dark") {
+      document.documentElement.setAttribute("data-theme", stored);
+      return;
+    }
+  } catch (e) {}
+  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+    document.documentElement.setAttribute("data-theme", "light");
+  }
+})();
+</script>
+</head>
+<body class="login-page">
+
+<main class="login-wrap">
+  <div class="login-card">
+    <div class="login-brand">
+      Job Acceptance
+      <span class="brand-sub">Towbook</span>
+    </div>
+
+    {% if error %}
+    <div class="notice notice-error">
+      <span class="ico">&#9888;</span>
+      <span>{{ error }}</span>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             autofocus required>
+      <button type="submit" class="btn btn-primary">Sign in</button>
+    </form>
+
+    {#- ===================================================================
+        THE BANNER.
+
+        Shown whenever the password is still the shipped default. It says the
+        quiet part out loud, on the screen, at the moment somebody is about to
+        type it -- because saying it only in a README means the person who
+        deployed this on a public URL for four towing companies will not have
+        read it.
+        =================================================================== -#}
+    {% if password_is_default %}
+    <div class="notice notice-error login-warning">
+      <span class="ico">&#9888;</span>
+      <span>
+        <strong>This board is protected by the default password
+          &ldquo;{{ default_password }}&rdquo;.</strong>
+        That is not adequate protection for real customer data. It is four digits,
+        it is published in this project's README, and it is the same for every
+        deployment of this repository. There is one shared password here &mdash;
+        no individual accounts, no record of who looked at what, and no lockout
+        after repeated guesses &mdash; so anyone who learns it has every client
+        name, every volume and every acceptance rate on the board, and if this
+        instance serves more than one towing company, it has all of theirs too.
+        <br><br>
+        Set <code>DASHBOARD_PASSWORD</code> to something long and random before
+        this holds data anybody would mind losing. On Railway that is
+        <em>Variables &rarr; New Variable</em>, then redeploy.
+      </span>
+    </div>
+    {% endif %}
+
+    {% if session_secret_is_ephemeral %}
+    <p class="small muted login-note">
+      <code>SESSION_SECRET</code> is not set, so one was generated when this process
+      started. Signing in works, but every session ends at the next restart or
+      redeploy. Set <code>SESSION_SECRET</code> to keep sessions alive across both.
+    </p>
+    {% endif %}
+
+    <p class="small muted login-note">
+      A session lasts {{ session_days }} day{{ '' if session_days == 1 else 's' }}.
+      Sign out from the header to end it sooner.
+    </p>
+  </div>
+
+  <p class="login-foot">Towbook Job Acceptance Intelligence v{{ APP_VERSION }}</p>
+</main>
+
+</body>
+</html>

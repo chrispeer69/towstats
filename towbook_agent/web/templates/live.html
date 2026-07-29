@@ -20,7 +20,7 @@
   {{ m.empty_state('Nothing to show yet', 'No requests have been ingested for today or the previous 30 days.') }}
 {% else %}
 <div id="live-body"
-     hx-get="/partials/live{{ qs(account=account) }}"
+     hx-get="/partials/live{{ qs(company=company_id) }}"
      hx-trigger="every 60s"
      hx-target="this"
      hx-swap="innerHTML">

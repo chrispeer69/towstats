@@ -30,7 +30,8 @@ from fastapi.testclient import TestClient
 from conftest import ingest_file
 from fixture_generator import generate_fixture_xlsx
 from towbook_agent.core.db import get_session
-from towbook_agent.web.app import DASH, app, f_pct
+from towbook_agent.web.app import DASH, TABS, app, f_pct
+from towbook_agent.web.auth import COOKIE_NAME, DEFAULT_PASSWORD
 from towbook_agent.web.queries import RANKING_NOTE
 
 #: Captured at import, before conftest's ``no_network`` fixture replaces them.
@@ -89,6 +90,10 @@ SEED = 42
 PATH_PARAMS = {
     "slug": "agero",
     "proposal_id": "does-not-exist",
+    # The company switcher. "default" is the id a single-company install has,
+    # and an unknown id would resolve to the default anyway -- the switcher is
+    # deliberately incapable of 404ing on a stale bookmark.
+    "company_id": "default",
 }
 
 #: Routes that are not a page and are exercised elsewhere. ``/healthz`` is in
@@ -117,8 +122,29 @@ ROUTES = _get_routes()
 
 
 @pytest.fixture
-def client() -> TestClient:
+def anonymous() -> TestClient:
+    """A client with no session cookie. Used to prove the gate is closed."""
     return TestClient(app)
+
+
+@pytest.fixture
+def client(anonymous: TestClient) -> TestClient:
+    """A signed-in client.
+
+    The whole board is behind a shared password now, so every page test needs a
+    session. Logging in through the real form rather than forging a cookie
+    means the sweep below also proves the login path works: if
+    :mod:`towbook_agent.web.auth` broke, this fixture would fail and take every
+    route test with it, which is the correct blast radius.
+    """
+    response = anonymous.post(
+        "/login",
+        data={"password": DEFAULT_PASSWORD, "next": "/"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.status_code
+    assert COOKIE_NAME in anonymous.cookies, "logging in did not set a session cookie"
+    return anonymous
 
 
 @pytest.fixture
@@ -143,6 +169,13 @@ def test_the_route_table_is_not_empty() -> None:
     assert len(ROUTES) >= 20, ROUTES
     for expected in ("/", "/live", "/blind-spots", "/close-off", "/clients", "/daily"):
         assert expected in ROUTES, f"{expected} is not served; ROUTES={ROUTES}"
+
+
+def test_the_four_tabs_are_served() -> None:
+    """The board is the delivery mechanism; the four tabs are the board."""
+    for _key, _label, href in TABS:
+        assert href in ROUTES, f"{href} is not served; ROUTES={ROUTES}"
+    assert [href for _k, _l, href in TABS] == ["/hourly", "/weekly", "/monthly", "/trends"]
 
 
 @pytest.mark.parametrize("path", ROUTES)
@@ -374,3 +407,274 @@ def test_the_dashboard_never_writes(client: TestClient, seeded) -> None:
     for path in ("/", "/blind-spots", "/close-off", "/clients", "/api/missed-work"):
         assert client.get(path).status_code == 200
     assert count() == before, "rendering the dashboard wrote to metrics_missed_work"
+
+
+# --------------------------------------------------------------------------
+# The password gate
+# --------------------------------------------------------------------------
+#
+# The board is on a public URL now, so "is it actually closed" is not a detail.
+# These assert the gate is shut, that the documented default opens it, that
+# /healthz stays open for Railway, and that the login form says out loud what
+# "1234" is worth.
+
+
+def test_the_board_is_closed_without_a_session(anonymous: TestClient) -> None:
+    for path in ("/", "/hourly", "/weekly", "/monthly", "/trends", "/clients", "/health"):
+        response = anonymous.get(path, follow_redirects=False)
+        assert response.status_code == 303, f"{path} was served without a session"
+        assert response.headers["location"].startswith("/login?next="), path
+
+
+def test_the_api_answers_401_rather_than_redirecting(anonymous: TestClient) -> None:
+    """A chart fetch that followed a redirect would parse HTML as JSON."""
+    response = anonymous.get("/api/hourly", follow_redirects=False)
+    assert response.status_code == 401
+    assert response.json()["login"] == "/login"
+
+
+def test_healthz_is_exempt_so_railway_can_probe_it(anonymous: TestClient) -> None:
+    response = anonymous.get("/healthz", follow_redirects=False)
+    assert response.status_code == 200
+
+
+def test_the_stylesheet_is_exempt(anonymous: TestClient) -> None:
+    """The login page has to be able to load its own CSS."""
+    assert anonymous.get("/static/app.css", follow_redirects=False).status_code == 200
+
+
+def test_the_login_page_renders_and_warns_about_the_default_password(
+    anonymous: TestClient,
+) -> None:
+    body = anonymous.get("/login").text
+    assert 'name="password"' in body
+    assert "not adequate protection for real customer data" in body
+    assert "DASHBOARD_PASSWORD" in body
+
+
+def test_a_changed_password_removes_the_default_warning(
+    anonymous: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "a-long-and-boring-passphrase")
+    body = anonymous.get("/login").text
+    assert "not adequate protection for real customer data" not in body
+
+
+def test_the_wrong_password_is_refused(anonymous: TestClient) -> None:
+    response = anonymous.post(
+        "/login", data={"password": "wrong", "next": "/"}, follow_redirects=False
+    )
+    assert response.status_code == 401
+    assert COOKIE_NAME not in anonymous.cookies
+
+
+def test_the_default_password_works_out_of_the_box(client: TestClient) -> None:
+    """The ``client`` fixture logs in with 1234 and nothing else configured."""
+    assert client.get("/hourly").status_code == 200
+
+
+def test_rotating_the_password_invalidates_a_live_session(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rotation that left old cookies working would not be a rotation."""
+    assert client.get("/hourly", follow_redirects=False).status_code == 200
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "something-else-entirely")
+    assert client.get("/hourly", follow_redirects=False).status_code == 303
+
+
+def test_signing_out_ends_the_session(client: TestClient) -> None:
+    assert client.post("/logout", follow_redirects=False).status_code == 303
+    assert client.get("/hourly", follow_redirects=False).status_code == 303
+
+
+def test_the_login_form_will_not_redirect_off_site(anonymous: TestClient) -> None:
+    """An open redirect on a login form is a phishing link with a real domain."""
+    response = anonymous.post(
+        "/login",
+        data={"password": DEFAULT_PASSWORD, "next": "//evil.example.com/"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
+def test_the_session_cookie_is_httponly_and_lax(anonymous: TestClient) -> None:
+    response = anonymous.post(
+        "/login", data={"password": DEFAULT_PASSWORD, "next": "/"}, follow_redirects=False
+    )
+    header = response.headers["set-cookie"].casefold()
+    assert "httponly" in header
+    assert "samesite=lax" in header
+    # No TLS on this transport, so no Secure flag -- a Secure cookie over plain
+    # http is never stored and the login would silently loop.
+    assert "secure" not in header
+
+
+def test_the_cookie_is_secure_behind_an_https_proxy(anonymous: TestClient) -> None:
+    """Railway terminates TLS, so the scheme is http and the header is the truth."""
+    response = anonymous.post(
+        "/login",
+        data={"password": DEFAULT_PASSWORD, "next": "/"},
+        headers={"x-forwarded-proto": "https"},
+        follow_redirects=False,
+    )
+    assert "secure" in response.headers["set-cookie"].casefold()
+
+
+# --------------------------------------------------------------------------
+# The four tabs
+# --------------------------------------------------------------------------
+
+
+def test_every_tab_is_in_the_navigation_of_every_page(client: TestClient, seeded) -> None:
+    for path in ("/", "/hourly", "/weekly", "/monthly", "/trends", "/health"):
+        body = client.get(path).text
+        for _key, label, href in TABS:
+            assert f'href="{href}"' in body, f"{path} does not link to {href}"
+            assert label in body, f"{path} does not name the {label} tab"
+
+
+def test_the_detail_views_are_still_reachable_from_every_tab(
+    client: TestClient, seeded
+) -> None:
+    """Demoting them to a second row must not have hidden them."""
+    body = client.get("/hourly").text
+    for href in (
+        "/",
+        "/blind-spots",
+        "/close-off",
+        "/live",
+        "/daily",
+        "/clients",
+        "/rules",
+        "/health",
+    ):
+        assert f'href="{href}"' in body, f"the Hourly tab does not link to {href}"
+
+
+def test_the_hourly_tab_carries_everything_the_sms_carried(
+    client: TestClient, seeded
+) -> None:
+    """This screen IS the hourly text message. Losing a line loses it for good.
+
+    The message was three lines: the hour, the running day total, and an
+    unanswered warning when there was one. The first two are unconditional and
+    must be on the page verbatim.
+    """
+    body = client.get("/hourly").text
+    payload = client.get("/api/hourly").json()
+
+    lines = payload["text_block"].splitlines()
+    assert len(lines) >= 2
+    assert "| Offered " in lines[0] and "/ Accepted " in lines[0]
+    assert lines[1].startswith("Day: ")
+    for line in lines:
+        assert line in body, f"the hourly board does not show {line!r}"
+
+    assert "Unanswered this hour" in body
+    assert "Day so far" in body
+    assert "Hour by hour" in body
+
+
+def test_the_hourly_tab_refreshes_itself(client: TestClient, seeded) -> None:
+    """It replaced a message that arrived without being asked for."""
+    body = client.get("/hourly").text
+    assert 'hx-get="/partials/hourly' in body
+    assert 'hx-trigger="every 60s"' in body
+    assert client.get("/partials/hourly").status_code == 200
+
+
+def test_the_hourly_grid_has_twenty_four_hours_and_no_fake_zeros(
+    client: TestClient,
+) -> None:
+    """Against an empty datastore every hour is ``None`` -- not 0%."""
+    payload = client.get("/api/hourly").json()
+    assert len(payload["hours"]) == 24
+    assert all(row["offered"] == 0 for row in payload["hours"])
+    assert all(row["rate"] is None for row in payload["hours"])
+    assert all(row["unanswered_rate"] is None for row in payload["hours"])
+
+
+def test_the_period_tabs_compare_like_for_like(client: TestClient, seeded) -> None:
+    """A two-day-old week against a full previous week reads as a collapse."""
+    for kind in ("week", "month"):
+        payload = client.get(f"/api/period?kind={kind}").json()
+        assert payload["kind"] == kind
+        current_days = (
+            date.fromisoformat(payload["current_last"])
+            - date.fromisoformat(payload["current_first"])
+        ).days
+        previous_days = (
+            date.fromisoformat(payload["previous_last"])
+            - date.fromisoformat(payload["previous_first"])
+        ).days
+        assert current_days == previous_days, f"{kind} compares unequal spans"
+
+
+def test_the_weekly_tab_leads_with_coverage_causes_and_actions(
+    client: TestClient, seeded
+) -> None:
+    body = client.get("/weekly").text
+    assert "This week" in body
+    assert "What to do about it" in body or "Nothing offered this week" in body
+    assert "Cause, and whether it is growing" in body or "Nothing offered this week" in body
+
+
+def test_the_monthly_tab_tracks_trajectories_and_close_offs(
+    client: TestClient, seeded
+) -> None:
+    body = client.get("/monthly").text
+    assert "This month" in body
+    assert "Client trajectories" in body or "Nothing offered this month" in body
+    assert "Did the close-offs work?" in body or "Nothing offered this month" in body
+
+
+def test_the_trends_tab_carries_the_important_trends(client: TestClient, seeded) -> None:
+    body = client.get("/trends").text
+    for marker in (
+        "Blind spots",  # the 7 x 24 grid
+        "Coverage gap, week by week",
+        "Client rate trajectories",
+        "Offer volume over time",
+        "Close-off candidates",
+    ):
+        assert marker in body, f"the Trends tab is missing {marker!r}"
+
+
+def test_every_tab_states_what_unit_its_numbers_are_in(client: TestClient, seeded) -> None:
+    """The single most important sentence in the UI, on the new tabs too.
+
+    ``notifier.ranking_note`` is the one place that decides which of the two
+    true sentences to print, so the board and the reports cannot end up making
+    different claims about the same figures.
+    """
+    from towbook_agent.agents.notifier import ranking_note
+
+    expected = ranking_note(False)
+    for path in ("/hourly", "/weekly", "/monthly"):
+        assert expected in client.get(path).text, f"{path} does not state its basis"
+    assert RANKING_NOTE in client.get("/trends").text
+
+
+def test_the_new_tabs_render_on_an_empty_datastore(client: TestClient) -> None:
+    """A brand-new deployment has no data and must not 500."""
+    for path in ("/hourly", "/weekly", "/monthly", "/trends", "/api/hourly", "/api/period"):
+        assert client.get(path).status_code == 200, path
+
+
+def test_the_period_tabs_never_write(client: TestClient, seeded) -> None:
+    """Three compute_missed_work calls per page load, all with persist=False."""
+    from sqlalchemy import func, select
+
+    from towbook_agent.core.models import MetricsMissedWork
+
+    def count() -> int:
+        with get_session(commit=False) as session:
+            return int(
+                session.execute(select(func.count()).select_from(MetricsMissedWork)).scalar_one()
+            )
+
+    before = count()
+    for path in ("/weekly", "/monthly", "/api/period?kind=week", "/api/period?kind=month"):
+        assert client.get(path).status_code == 200, path
+    assert count() == before, "rendering a period tab wrote to metrics_missed_work"

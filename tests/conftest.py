@@ -73,6 +73,7 @@ import towbook_agent  # noqa: E402  (import must follow the env setup above)
 for _key in _NEUTRALISED_AT_IMPORT:
     os.environ.pop(_key, None)
 
+from towbook_agent.core import companies as companies_module  # noqa: E402
 from towbook_agent.core import db as db_module  # noqa: E402
 from towbook_agent.core import events as events_module  # noqa: E402
 from towbook_agent.core import paths as paths_module  # noqa: E402
@@ -92,6 +93,14 @@ PACKAGE_DIR = Path(towbook_agent.__file__).resolve().parent
 AGENTS_DIR = PACKAGE_DIR / "agents"
 
 #: The config files copied into the sandbox for every test.
+#:
+#: ``companies.yaml`` is DELIBERATELY ABSENT. With no roster the system runs as
+#: a single company whose id is ``"default"``, which is the shipped
+#: single-company behaviour and the state every other test in the suite assumes
+#: -- copying the real roster in would give every test the owner's
+#: America/Detroit timezone instead of the UTC the arithmetic is hand-checked
+#: against. tests/test_companies.py writes its own two-company roster with the
+#: ``write_config`` fixture and reloads the registry around it.
 CONFIG_FILES = (
     "rules.yaml",
     "schema.yaml",
@@ -171,7 +180,14 @@ _ENV_KEYS = (
     "HEADLESS",
     "PLAYWRIGHT_SLOWMO",
     "LOG_LEVEL",
+    "DASHBOARD_HOST",
     "DASHBOARD_PORT",
+    # The dashboard password gate. Cleared like everything else so a test never
+    # inherits the operator's real password from .env, and so the suite proves
+    # the documented out-of-the-box default actually works.
+    "DASHBOARD_PASSWORD",
+    "DASHBOARD_SESSION_DAYS",
+    "SESSION_SECRET",
     "SQL_ECHO",
 )
 
@@ -192,6 +208,10 @@ _ENV_DEFAULTS = {
     "OPS_MANAGER_EMAIL": "ops@example.invalid",
     "HEADLESS": "true",
     "LOG_LEVEL": "WARNING",
+    # A fixed signing key, so a token minted in one test is still valid in the
+    # next. DASHBOARD_PASSWORD is deliberately NOT set: leaving it unset is what
+    # exercises the shipped default, which is the state a fresh deployment is in.
+    "SESSION_SECRET": "test-session-secret-not-a-real-one",
 }
 
 
@@ -247,10 +267,16 @@ def config_dir(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
     monkeypatch.setattr(CONFIG, "config_dir", target, raising=False)
     CONFIG.reload()
+    # The tenant registry caches the parsed roster behind the config loader's
+    # own cache, so it has to be dropped too -- otherwise a test that wrote a
+    # two-company companies.yaml would leave the next test resolving companies
+    # that no longer exist on disk.
+    companies_module.reload_companies()
     try:
         yield target
     finally:
         CONFIG.reload()
+        companies_module.reload_companies()
 
 
 def set_schema_scalar(key: str, value: Any, config_root: Path | None = None) -> Path:

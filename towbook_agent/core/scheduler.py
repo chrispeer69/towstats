@@ -74,6 +74,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 from zoneinfo import ZoneInfo
 
+from . import companies as _companies
 from .config_loader import CONFIG, ConfigError, get_schedule, rules_version
 from .db import get_session, init_db
 from .events import emit_pipeline_failure
@@ -129,6 +130,12 @@ __all__ = [
     "apply_schedule",
     "run_scheduler",
     "watchdog_check",
+    "overdue_reports",
+    # in-process scheduler (the deployed web service runs the jobs itself)
+    "run_scheduler_enabled",
+    "start_background_scheduler",
+    "stop_background_scheduler",
+    "background_scheduler_status",
 ]
 
 logger = logging.getLogger(__name__)
@@ -544,7 +551,8 @@ class PipelineResult:
 
     report_type: str
     run_id: str
-    account_id: str
+    #: Which towing company this run was for -- an id from companies.yaml.
+    company_id: str
     window_start: datetime
     window_end: datetime
     status: str = "failed"
@@ -563,6 +571,11 @@ class PipelineResult:
     rules_version: str = ""
     started_at: datetime = field(default_factory=utcnow)
     finished_at: datetime | None = None
+
+    @property
+    def account_id(self) -> str:
+        """Deprecated alias for :attr:`company_id`, for callers that predate it."""
+        return self.company_id
 
     @property
     def ok(self) -> bool:
@@ -640,15 +653,18 @@ def summarize_metrics(metrics: dict[str, Any]) -> tuple[Any, Any, float | None]:
 # ==========================================================================
 
 
-def make_run_id(report_type: str, account_id: str, window_start: datetime) -> str:
+def make_run_id(report_type: str, company_id: str, window_start: datetime) -> str:
     """Deterministic run id -- the same window always produces the same id.
 
     That is what makes a re-run an update rather than a duplicate: the ``runs``
     row is upserted, and every ``requests`` row keeps pointing at one run.
+
+    The company is IN the id, so two tenants running the same window at the
+    same minute produce two runs rather than fighting over one row.
     """
     stamp = to_utc_naive(window_start)
     assert stamp is not None  # window_start is never None here
-    return f"{report_type}-{account_id}-{stamp:%Y%m%dT%H%M%S}"
+    return f"{report_type}-{company_id}-{stamp:%Y%m%dT%H%M%S}"
 
 
 _db_ready = False
@@ -674,7 +690,7 @@ def _record_run_start(result: PipelineResult, page_size: int | None) -> None:
         if run is None:
             run = Run(run_id=result.run_id)
             session.add(run)
-        run.account_id = result.account_id
+        run.company_id = result.company_id
         run.report_type = result.report_type
         run.window_start = to_utc_naive(result.window_start)
         run.window_end = to_utc_naive(result.window_end)
@@ -832,6 +848,7 @@ def run_pipeline(
     window_end: datetime,
     *,
     page_size: int | None = None,
+    company_id: str | None = None,
     account_id: str = DEFAULT_ACCOUNT_ID,
     dry_run: bool = False,
     acquire: bool = True,
@@ -850,7 +867,11 @@ def run_pipeline(
     page_size     rows per portal page; defaults to schedule.yaml's value.
                   Ignored on the ``api`` source, which caps its own page size at
                   1000 (2000 returns HTTP 500 after a 30 s server timeout).
-    account_id    Towbook account; "default" unless multi-account is configured.
+    company_id    which towing company from config/companies.yaml this run is
+                  for. Defaults to the roster's default company, which on a
+                  single-company install is "default" -- the id every existing
+                  row already carries. ``account_id`` is the old name and still
+                  works.
     dry_run       render and log messages, send nothing.
     acquire       False re-uses an archived payload instead of the portal.
     xlsx_path     a specific payload to ingest (implies acquire=False). Any
@@ -864,6 +885,44 @@ def run_pipeline(
     ``pipeline_failure``, recorded on the ``runs`` row, and reported through
     :attr:`PipelineResult.exit_code`.
     """
+    company_id = _companies.resolve_company_id(
+        company_id if company_id is not None else account_id
+    )
+    # Everything below -- the window snap, the run id, the acquirer, the
+    # metrics pass -- happens in this company's timezone and against this
+    # company's rules. The scope is entered here rather than deeper down so
+    # that a single tenant is active for the whole run, including the parts
+    # that read the clock before touching the database.
+    with _companies.use_company(company_id):
+        return _run_pipeline(
+            report_type,
+            window_start,
+            window_end,
+            page_size=page_size,
+            company_id=company_id,
+            dry_run=dry_run,
+            acquire=acquire,
+            xlsx_path=xlsx_path,
+            skip_ingest=skip_ingest,
+            notify=notify,
+            source=source,
+        )
+
+
+def _run_pipeline(
+    report_type: str,
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    page_size: int | None,
+    company_id: str,
+    dry_run: bool,
+    acquire: bool,
+    xlsx_path: Path | None,
+    skip_ingest: bool,
+    notify: bool,
+    source: str | None,
+) -> PipelineResult:
     if window_start.tzinfo is None:
         window_start = window_start.replace(tzinfo=local_timezone())
     if window_end.tzinfo is None:
@@ -917,8 +976,8 @@ def run_pipeline(
 
     result = PipelineResult(
         report_type=report_type,
-        run_id=make_run_id(report_type, account_id, window_start),
-        account_id=account_id,
+        run_id=make_run_id(report_type, company_id, window_start),
+        company_id=company_id,
         window_start=window_start,
         window_end=window_end,
         dry_run=dry_run,
@@ -952,7 +1011,8 @@ def run_pipeline(
             error,
             report_type=report_type,
             run_id=result.run_id,
-            account_id=account_id,
+            company_id=company_id,
+            account_id=company_id,
             window_start=window_start.isoformat(timespec="minutes"),
             window_end=window_end.isoformat(timespec="minutes"),
             dry_run=dry_run,
@@ -975,14 +1035,14 @@ def run_pipeline(
             return result
 
         logger.info(
-            "pipeline start | %s | window %s -> %s (%s) | run_id=%s | account=%s | "
+            "pipeline start | %s | window %s -> %s (%s) | run_id=%s | company=%s | "
             "source=%s | page_size=%s | rules=%s%s",
             report_type,
             window_start.isoformat(timespec="minutes"),
             window_end.isoformat(timespec="minutes"),
             timezone_name(),
             result.run_id,
-            account_id,
+            company_id,
             source,
             page_size,
             result.rules_version,
@@ -1008,7 +1068,7 @@ def run_pipeline(
                             acquisition.acquire_api,
                             window_start,
                             window_end,
-                            account_id=account_id,
+                            company_id=company_id,
                             dry_run=dry_run,
                         )
                     else:
@@ -1018,7 +1078,7 @@ def run_pipeline(
                             window_start,
                             window_end,
                             page_size,
-                            account_id=account_id,
+                            company_id=company_id,
                             dry_run=dry_run,
                         )
                     if not produced:
@@ -1053,7 +1113,7 @@ def run_pipeline(
                     ingestion.ingest,
                     result.xlsx_path,
                     result.run_id,
-                    account_id=account_id,
+                    company_id=company_id,
                     dry_run=dry_run,
                 )
                 result.row_count = _row_count_from(ingest_result)
@@ -1073,7 +1133,7 @@ def run_pipeline(
         try:
             classifier = _load_agent("classifier")
             with get_session() as session:
-                reclassified = classifier.backfill(session)
+                reclassified = classifier.backfill(session, company_id)
             logger.info("classified %s row(s) against rules %s", reclassified, result.rules_version)
         except Exception as exc:
             fail("classification", exc)
@@ -1099,7 +1159,7 @@ def run_pipeline(
                 )
             # persist=True is the default and is what makes a re-run upsert on
             # the metrics table's unique window key rather than duplicate.
-            metrics = _call(compute, key, account_id=account_id)
+            metrics = _call(compute, key, company_id=company_id)
             result.metrics = metrics if isinstance(metrics, dict) else {}
             offered, accepted, rate = summarize_metrics(result.metrics)
             logger.info(
@@ -1203,7 +1263,13 @@ class JobSpec:
     page_size: int | None = None
     #: "api" (JSON endpoint, the primary source) or "ui" (Playwright export).
     source: str = DEFAULT_SOURCE
-    account_id: str = DEFAULT_ACCOUNT_ID
+    #: Which company this job runs for. **None means EVERY enabled company in
+    #: config/companies.yaml**, which is the point: one `daily` entry in
+    #: schedule.yaml serves however many tenants the install has, and adding a
+    #: company is an edit to companies.yaml with no change to the schedule.
+    #: Naming one company here pins the job to it -- useful when a tenant needs
+    #: its own cron because it is in a different timezone.
+    company_id: str | None = None
     enabled: bool = True
     coalesce: bool = True
     max_instances: int = 1
@@ -1252,6 +1318,23 @@ def _as_int(value: Any, default: int | None) -> int | None:
         return default
 
 
+def _job_company(entry: dict[str, Any], defaults: dict[str, Any]) -> str | None:
+    """Which company a schedule.yaml entry pins itself to, or None for all.
+
+    ``company_id:`` is the current key; ``account_id:`` is the one the
+    single-company build documented and is still honoured. The literal
+    ``"default"`` that the old key defaulted to is treated as "not pinned", so
+    an existing schedule.yaml written before companies existed runs every
+    company rather than only the one called ``default``.
+    """
+    for key in ("company_id", "account_id"):
+        raw = entry.get(key, defaults.get(key))
+        text = str(raw or "").strip()
+        if text and text != DEFAULT_ACCOUNT_ID:
+            return text
+    return None
+
+
 def load_job_specs(strict: bool = True) -> list[JobSpec]:
     """Parse ``config/schedule.yaml`` into JobSpec objects.
 
@@ -1260,9 +1343,11 @@ def load_job_specs(strict: bool = True) -> list[JobSpec]:
     per-job keys an operator may add without any code change:
 
     ``report`` (which metrics function to run when the job name is not one of
-    hourly/daily/weekly), ``source`` (``api`` or ``ui``), ``account_id``,
-    ``enabled``, ``coalesce``, ``max_instances``, ``misfire_grace_time``,
-    ``grace_minutes`` (watchdog), ``notify``.
+    hourly/daily/weekly), ``source`` (``api`` or ``ui``), ``company_id``
+    (pin the job to ONE company in config/companies.yaml -- omit it and the job
+    runs for every enabled company), ``enabled``, ``coalesce``,
+    ``max_instances``, ``misfire_grace_time``, ``grace_minutes`` (watchdog),
+    ``notify``.
 
     A top-level ``defaults:`` mapping supplies fallbacks for all of those.
 
@@ -1352,9 +1437,7 @@ def load_job_specs(strict: bool = True) -> list[JobSpec]:
                     report_type=report_type,
                     page_size=_as_int(entry.get("page_size", defaults.get("page_size")), None),
                     source=source,
-                    account_id=str(
-                        entry.get("account_id") or defaults.get("account_id") or DEFAULT_ACCOUNT_ID
-                    ),
+                    company_id=_job_company(entry, defaults),
                     enabled=_as_bool(entry.get("enabled", defaults.get("enabled")), True),
                     coalesce=_as_bool(entry.get("coalesce", defaults.get("coalesce")), True),
                     max_instances=_as_int(
@@ -1544,46 +1627,51 @@ def _cron_interval(cron_expr: str, tz, now: datetime, report_type: str) -> timed
     return _FALLBACK_INTERVAL.get(report_type, timedelta(days=1))
 
 
-def _last_success(report_type: str) -> datetime | None:
+def _last_success(report_type: str, company_id: str | None = None) -> datetime | None:
     """Naive-UTC timestamp of the most recent successful run of a report type.
 
     ``partial`` counts as a success here: the numbers were correct and the
     report went out, only something optional degraded. The watchdog's question
     is "is this report still being produced at all", and a partial run answers
     yes. The degradation itself is already visible in ``runs.error_message``.
+
+    Scoped to one company when asked. Unscoped -- which is what the roster-wide
+    watchdog wants -- one healthy tenant would answer for a silent one.
     """
     from sqlalchemy import select
 
     with get_session(commit=False) as session:
-        row = session.execute(
+        statement = (
             select(Run)
             .where(Run.report_type == report_type, Run.status.in_(("succeeded", "partial")))
             .order_by(Run.started_at.desc())
             .limit(1)
-        ).scalar_one_or_none()
+        )
+        if company_id:
+            statement = statement.where(Run.company_id == company_id)
+        row = session.execute(statement).scalar_one_or_none()
     if row is None:
         return None
     return row.finished_at or row.started_at
 
 
-def watchdog_check(
+def overdue_reports(
     specs: Sequence[JobSpec] | None = None,
     now: datetime | None = None,
     baseline: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Emit ``pipeline_failure`` for any report type that has gone quiet.
+    """Which report types have gone quiet, as a READ-ONLY question.
 
-    A try/except around a job cannot catch the failures that matter most: the
-    process was killed, the laptop slept through the 06:00 tick, someone
-    commented the job out. This does.
+    Split out of :func:`watchdog_check` so the dashboard can ask it. The
+    watchdog's job is to *shout* -- it emits a ``pipeline_failure`` and keeps a
+    cooldown so it does not shout every fifteen minutes. The board's job is to
+    *show*, on every page load, with no cooldown and no side effect. Sharing one
+    function would have meant either the banner silencing the alert or the alert
+    firing once per page view.
 
-    For each configured report type: expected interval (derived from its cron)
-    plus a grace period. If the newest successful run is older than that, the
-    watchdog fires. When nothing has ever succeeded, the process start time is
-    the baseline, so a freshly started scheduler does not alarm immediately.
-
-    Returns the list of stale report descriptions (empty when healthy). Never
-    raises.
+    Returns one entry per stale report type, each with ``report_type``,
+    ``last_success`` (naive UTC or None), ``overdue_seconds``, ``interval_seconds``
+    and a human ``message``. Empty means healthy. Never raises.
     """
     findings: list[dict[str, Any]] = []
     try:
@@ -1618,13 +1706,6 @@ def watchdog_check(
             if age <= deadline:
                 continue
 
-            cooldown = max(deadline, timedelta(minutes=settings["grace_minutes"]))
-            previous_alert = _watchdog_last_alert.get(report_type)
-            if previous_alert is not None and moment_utc - previous_alert < cooldown:
-                logger.debug("watchdog for %s still in cooldown", report_type)
-                continue
-            _watchdog_last_alert[report_type] = moment_utc
-
             if last is None:
                 detail = (
                     f"no successful {report_type} run has ever been recorded; "
@@ -1632,35 +1713,87 @@ def watchdog_check(
                 )
             else:
                 detail = (
-                    f"last successful {report_type} run finished {last.isoformat(timespec='seconds')}Z, "
-                    f"{age} ago"
+                    f"last successful {report_type} run finished "
+                    f"{last.isoformat(timespec='seconds')}Z, {age} ago"
                 )
-            message = (
-                f"WATCHDOG: {report_type} report is overdue. Expected every {interval} "
-                f"(+{int(grace_seconds // 60)}m grace). {detail}."
-            )
-            logger.critical(message)
-            emit_pipeline_failure(
-                "watchdog",
-                message,
-                report_type=report_type,
-                expected_interval_seconds=int(interval.total_seconds()),
-                grace_seconds=int(grace_seconds),
-                last_success=last.isoformat(timespec="seconds") if last else None,
-                overdue_seconds=int(age.total_seconds()),
-            )
             findings.append(
                 {
                     "report_type": report_type,
                     "last_success": last,
                     "overdue_seconds": int(age.total_seconds()),
-                    "message": message,
+                    "interval_seconds": int(interval.total_seconds()),
+                    "grace_seconds": int(grace_seconds),
+                    "deadline_seconds": int(deadline.total_seconds()),
+                    "message": (
+                        f"WATCHDOG: {report_type} report is overdue. Expected every "
+                        f"{interval} (+{int(grace_seconds // 60)}m grace). {detail}."
+                    ),
                 }
             )
     except Exception:
+        # Asking the question must never be able to break the caller -- the
+        # dashboard calls this on every page render.
+        logger.exception("overdue report check failed")
+    return findings
+
+
+def watchdog_check(
+    specs: Sequence[JobSpec] | None = None,
+    now: datetime | None = None,
+    baseline: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Emit ``pipeline_failure`` for any report type that has gone quiet.
+
+    A try/except around a job cannot catch the failures that matter most: the
+    process was killed, the laptop slept through the 06:00 tick, someone
+    commented the job out. This does.
+
+    For each configured report type: expected interval (derived from its cron)
+    plus a grace period. If the newest successful run is older than that, the
+    watchdog fires. When nothing has ever succeeded, the process start time is
+    the baseline, so a freshly started scheduler does not alarm immediately.
+
+    Returns the list of stale report descriptions it alerted on (empty when
+    healthy, or when every stale report is still inside its alert cooldown).
+    Never raises.
+
+    The "which reports are stale" question itself lives in :func:`overdue_reports`
+    so the dashboard can ask it without emitting anything; everything below is
+    the *alerting* half -- the cooldown and the ``pipeline_failure``.
+    """
+    alerted: list[dict[str, Any]] = []
+    try:
+        settings = _watchdog_settings()
+        moment_utc = to_utc_naive(now or datetime.now(local_timezone())) or utcnow()
+
+        for finding in overdue_reports(specs=specs, now=now, baseline=baseline):
+            report_type = str(finding["report_type"])
+            cooldown = max(
+                timedelta(seconds=finding["deadline_seconds"]),
+                timedelta(minutes=settings["grace_minutes"]),
+            )
+            previous_alert = _watchdog_last_alert.get(report_type)
+            if previous_alert is not None and moment_utc - previous_alert < cooldown:
+                logger.debug("watchdog for %s still in cooldown", report_type)
+                continue
+            _watchdog_last_alert[report_type] = moment_utc
+
+            last = finding["last_success"]
+            logger.critical(finding["message"])
+            emit_pipeline_failure(
+                "watchdog",
+                finding["message"],
+                report_type=report_type,
+                expected_interval_seconds=finding["interval_seconds"],
+                grace_seconds=finding["grace_seconds"],
+                last_success=last.isoformat(timespec="seconds") if last else None,
+                overdue_seconds=finding["overdue_seconds"],
+            )
+            alerted.append(finding)
+    except Exception:
         # A broken watchdog must not take the scheduler with it.
         logger.exception("watchdog check failed")
-    return findings
+    return alerted
 
 
 # ==========================================================================
@@ -1682,33 +1815,114 @@ class _SchedulerState:
         self.applied_watchdog_minutes: float = 0.0
 
 
+def job_companies(spec: JobSpec) -> list[str]:
+    """The companies one fired job must run for, in roster order.
+
+    A job that names no company runs EVERY enabled company. That is what makes
+    one `daily` entry in schedule.yaml serve a multi-tenant install: adding a
+    towing company is an edit to companies.yaml, never to the cron table.
+
+    A job pinned to a company that has since been removed or disabled runs
+    nothing and says so, rather than silently falling back to somebody else's
+    data.
+    """
+    if spec.company_id:
+        company = _companies.get_company(spec.company_id)
+        if company is None:
+            logger.error(
+                "job %s is pinned to company %r, which is not in "
+                "config/companies.yaml; the job will not run",
+                spec.name,
+                spec.company_id,
+            )
+            emit_pipeline_failure(
+                "schedule",
+                f"job {spec.name!r} names unknown company {spec.company_id!r}",
+                job=spec.name,
+                company_id=spec.company_id,
+            )
+            return []
+        if not company.enabled:
+            logger.info(
+                "job %s is pinned to company %r, which is disabled; skipping",
+                spec.name,
+                company.id,
+            )
+            return []
+        return [company.id]
+    return [company.id for company in _companies.enabled_companies()]
+
+
 def _run_job(spec: JobSpec, dry_run: bool) -> None:
-    """APScheduler entry point for one configured job.
+    """APScheduler entry point for one configured job, for every company.
 
     The window comes from the clock at fire time, never from "since last run",
     which is what makes the job idempotent: the 15:00 tick always processes
     14:00-15:00, whether it is the first run or the fifth.
+
+    ONE COMPANY'S FAILURE MUST NOT STOP THE OTHERS. Each company gets its own
+    try block and its own ``pipeline_failure`` event; the loop continues. A
+    tenant whose Towbook password expired cannot take the rest of the roster's
+    reporting down with it, and the run that failed is visible on its own
+    /health page rather than as an absence everywhere.
+
+    The window is resolved INSIDE each company's scope, because ``resolve_range``
+    reads the local timezone and a Texas tenant's "yesterday" is not an Ohio
+    tenant's.
     """
-    tz = local_timezone()
-    now = datetime.now(tz)
-    try:
-        start, end = resolve_range(spec.range_name, now)
-    except Exception as exc:
-        logger.exception("job %s: could not resolve range %r", spec.name, spec.range_name)
-        emit_pipeline_failure("schedule", exc, job=spec.name, range=spec.range_name)
+    company_ids = job_companies(spec)
+    if not company_ids:
         return
 
-    logger.info("job %s fired at %s", spec.name, now.isoformat(timespec="seconds"))
-    run_pipeline(
-        spec.report_type,
-        start,
-        end,
-        page_size=spec.page_size,
-        account_id=spec.account_id,
-        dry_run=dry_run,
-        notify=spec.notify,
-        source=spec.source,
-    )
+    failures: list[str] = []
+    for company_id in company_ids:
+        try:
+            with _companies.use_company(company_id):
+                tz = local_timezone()
+                now = datetime.now(tz)
+                start, end = resolve_range(spec.range_name, now)
+                logger.info(
+                    "job %s fired at %s for company %s",
+                    spec.name,
+                    now.isoformat(timespec="seconds"),
+                    company_id,
+                )
+                run_pipeline(
+                    spec.report_type,
+                    start,
+                    end,
+                    page_size=spec.page_size,
+                    company_id=company_id,
+                    dry_run=dry_run,
+                    notify=spec.notify,
+                    source=spec.source,
+                )
+        except Exception as exc:
+            # run_pipeline never raises by contract, so reaching here means the
+            # range failed to resolve or something outside the pipeline broke.
+            # Either way it is one company's problem, not the roster's.
+            failures.append(company_id)
+            logger.exception(
+                "job %s failed for company %s; continuing with the rest",
+                spec.name,
+                company_id,
+            )
+            emit_pipeline_failure(
+                "schedule",
+                exc,
+                job=spec.name,
+                range=spec.range_name,
+                company_id=company_id,
+            )
+
+    if failures and len(failures) < len(company_ids):
+        logger.warning(
+            "job %s completed for %d of %d companies; failed: %s",
+            spec.name,
+            len(company_ids) - len(failures),
+            len(company_ids),
+            ", ".join(failures),
+        )
 
 
 def _job_ids(scheduler) -> list[str]:
@@ -1900,18 +2114,34 @@ def _job_missed_listener(event) -> None:
     )
 
 
-def build_scheduler(dry_run: bool = False):
-    """Construct a configured BlockingScheduler with the job table applied."""
+def build_scheduler(dry_run: bool = False, background: bool = False):
+    """Construct a configured scheduler with the job table applied.
+
+    ``background=False`` builds a ``BlockingScheduler`` -- the dedicated
+    ``python -m towbook_agent schedule`` process, which is the whole process and
+    should own its main thread.
+
+    ``background=True`` builds a ``BackgroundScheduler``, which runs its jobs on
+    its own thread pool inside a host process. That is how the web service runs
+    the pipeline: the board is the only delivery mechanism now, so a deployment
+    that serves pages but schedules nothing would look perfectly healthy while
+    quietly going stale. Both share this function, so the two never drift into
+    scheduling different things.
+    """
     from apscheduler.events import (
         EVENT_JOB_ERROR,
         EVENT_JOB_MISSED,
         EVENT_SCHEDULER_STARTED,
     )
-    from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
+    if background:
+        from apscheduler.schedulers.background import BackgroundScheduler as _Scheduler
+    else:
+        from apscheduler.schedulers.blocking import BlockingScheduler as _Scheduler
+
     tz = local_timezone()
-    scheduler = BlockingScheduler(
+    scheduler = _Scheduler(
         timezone=tz,
         job_defaults={
             # A missed tick must not stampede: coalesce collapses a burst of
@@ -1970,6 +2200,159 @@ def build_scheduler(dry_run: bool = False):
 
 def _watchdog_job() -> None:
     watchdog_check()
+
+
+# ==========================================================================
+# In-process scheduler -- what the deployed web service runs
+# ==========================================================================
+#
+# WHY THE WEB PROCESS SCHEDULES AT ALL
+# ------------------------------------
+# There is no SMS and no email any more: config/notifications.yaml ships with
+# every route disabled and the dashboard IS the delivery. That changes what
+# "the scheduler did not run" costs. It used to mean a text did not arrive,
+# which is loud. It now means the board keeps rendering yesterday's numbers as
+# though they were today's, which is silent -- and the owner is looking at that
+# board several times a day.
+#
+# One service, one process, both jobs, is therefore the safe default: if the
+# board is up, the data behind it is being refreshed. RUN_SCHEDULER=false peels
+# the scheduler off into its own Railway service (start command
+# `python -m towbook_agent schedule`) the day the volume justifies it, with no
+# code change.
+#
+# DOUBLE-RUN GUARD: see towbook_agent/core/leader.py. One uvicorn worker is the
+# primary guard; a Postgres advisory lock is the enforcement.
+
+_RUN_SCHEDULER_ENV: str = "RUN_SCHEDULER"
+
+_background_scheduler: Any = None
+_background_lease: Any = None
+
+
+def run_scheduler_enabled() -> bool:
+    """Should this process run scheduled jobs? ``RUN_SCHEDULER``, default true.
+
+    Defaults to true on purpose. The failure this guards against -- a board that
+    silently stops updating -- is worse than the one an accidental extra runner
+    causes, because every job here is idempotent and re-running a window
+    recomputes it rather than doubling it.
+    """
+    raw = (os.environ.get(_RUN_SCHEDULER_ENV) or "").strip().lower()
+    if not raw:
+        return True
+    return raw in _TRUTHY
+
+
+def start_background_scheduler(dry_run: bool = False) -> dict[str, Any]:
+    """Start the scheduler inside the current process. Never raises.
+
+    Returns a small status dict -- ``{"running", "reason", "jobs", "lease"}`` --
+    which the dashboard's ``/health`` view reports, because "is anything actually
+    scheduled in this container" is otherwise unanswerable from a browser.
+    """
+    global _background_scheduler, _background_lease, _process_start
+
+    status: dict[str, Any] = {"running": False, "reason": "", "jobs": 0, "lease": None}
+
+    if not run_scheduler_enabled():
+        status["reason"] = f"{_RUN_SCHEDULER_ENV} is false; this process serves the board only"
+        logger.warning(
+            "%s -- something else must run `python -m towbook_agent schedule`, or the board "
+            "will go stale with no warning other than its own overdue banner.",
+            status["reason"],
+        )
+        return status
+
+    if _background_scheduler is not None and getattr(_background_scheduler, "running", False):
+        status.update(running=True, reason="already running")
+        return status
+
+    try:
+        from .leader import acquire_scheduler_lease
+
+        lease = acquire_scheduler_lease()
+        status["lease"] = lease.reason
+        if not lease.acquired:
+            status["reason"] = lease.reason
+            return status
+
+        _ensure_db()
+        # The watchdog measures "has this report been produced lately" against
+        # process start when nothing has ever succeeded, so it has to be the
+        # start of THIS process, not of the module import.
+        _process_start = utcnow()
+
+        scheduler = build_scheduler(dry_run=dry_run, background=True)
+        scheduler.start()
+        _background_scheduler = scheduler
+        _background_lease = lease
+
+        status["running"] = True
+        status["jobs"] = len(_job_ids(scheduler))
+        status["reason"] = "in-process scheduler running"
+        logger.info(
+            "in-process scheduler started | timezone %s | %d job(s) | %s | %s",
+            timezone_name(),
+            status["jobs"],
+            lease.reason,
+            "DRY RUN - nothing will be sent" if dry_run else "live",
+        )
+        return status
+    except Exception as exc:
+        # The board must still come up. A scheduler that failed to start is
+        # exactly the condition the overdue banner exists to make visible.
+        logger.critical("could not start the in-process scheduler: %s", exc, exc_info=True)
+        emit_pipeline_failure("scheduler", exc, phase="startup")
+        status["reason"] = f"failed to start: {type(exc).__name__}: {exc}"
+        return status
+
+
+def stop_background_scheduler(wait: bool = False) -> None:
+    """Shut the in-process scheduler down and release the lease. Never raises."""
+    global _background_scheduler, _background_lease
+
+    scheduler, _background_scheduler = _background_scheduler, None
+    lease, _background_lease = _background_lease, None
+
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=wait)
+            logger.info("in-process scheduler stopped")
+        except Exception as exc:  # pragma: no cover - shutdown races
+            logger.debug("scheduler shutdown: %s", exc)
+    if lease is not None:
+        try:
+            lease.release()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("lease release: %s", exc)
+
+
+def background_scheduler_status() -> dict[str, Any]:
+    """What the in-process scheduler is doing right now, for /health."""
+    scheduler = _background_scheduler
+    running = bool(scheduler is not None and getattr(scheduler, "running", False))
+    jobs: list[dict[str, Any]] = []
+    if running:
+        try:
+            for job in scheduler.get_jobs():
+                if not str(job.id).startswith(_JOB_PREFIX):
+                    continue
+                jobs.append(
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        "next_run_time": getattr(job, "next_run_time", None),
+                    }
+                )
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return {
+        "enabled": run_scheduler_enabled(),
+        "running": running,
+        "lease": getattr(_background_lease, "reason", None),
+        "jobs": sorted(jobs, key=lambda item: item["id"]),
+    }
 
 
 def run_scheduler(dry_run: bool = False) -> int:

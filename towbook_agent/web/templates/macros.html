@@ -125,7 +125,7 @@
 {% macro window_picker(base, current, options, account) -%}
 <span class="seg">
   {% for option in options %}
-  <a href="{{ base }}{{ qs(days=option, account=account) }}"
+  <a href="{{ base }}{{ qs(days=option, company=company_id) }}"
      {% if current == option %}aria-current="true"{% endif %}>{{ option }}d</a>
   {% endfor %}
 </span>

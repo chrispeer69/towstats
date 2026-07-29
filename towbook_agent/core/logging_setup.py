@@ -40,9 +40,22 @@ SENSITIVE_ENV_KEYS: Final[tuple[str, ...]] = (
     # Not named in the spec but equally dangerous if they are ever populated.
     "TWILIO_ACCOUNT_SID",
     "TOWBOOK_ACCOUNTS",
+    # The dashboard password gate. SESSION_SECRET signs every session cookie,
+    # and DASHBOARD_PASSWORD is the only thing standing in front of the board
+    # once it is deployed on a public URL.
+    "SESSION_SECRET",
+    "DASHBOARD_PASSWORD",
 )
 
 REDACTION: Final[str] = "***REDACTED***"
+
+#: Values that are never redacted even when a sensitive variable holds them.
+#:
+#: The shipped default dashboard password is ``1234``. It is printed in the
+#: README and on the login page -- it protects nothing and hides nothing -- and
+#: redacting the literal string "1234" would blank out row counts, request ids
+#: and timestamps all over the log. A published default is not a secret.
+_PUBLISHED_DEFAULTS: Final[frozenset[str]] = frozenset({"1234"})
 
 _DEFAULT_FORMAT: Final[str] = "%(asctime)s %(levelname)-8s %(name)s | %(message)s"
 _DEFAULT_DATEFMT: Final[str] = "%Y-%m-%dT%H:%M:%S%z"
@@ -64,10 +77,25 @@ def _current_secrets() -> list[str]:
     imported.
     """
     secrets: list[str] = []
-    for key in SENSITIVE_ENV_KEYS:
+    # EVERY per-company Towbook password, not only the single-company one.
+    # config/companies.yaml names a prefix per tenant -- TOWBOOK_ACME_PASS and
+    # so on -- and those are discovered from the environment rather than listed
+    # here, because the roster is data and this module must not have to be
+    # edited every time a towing company is added. Matching on the shape of the
+    # name means a password added tomorrow is redacted today.
+    keys = list(SENSITIVE_ENV_KEYS)
+    keys.extend(
+        name
+        for name in os.environ
+        if name.startswith("TOWBOOK_") and name.endswith("_PASS") and name not in keys
+    )
+    for key in keys:
         value = os.environ.get(key)
-        if value and len(value.strip()) >= _MIN_SECRET_LENGTH:
-            secrets.append(value.strip())
+        if not value:
+            continue
+        value = value.strip()
+        if len(value) >= _MIN_SECRET_LENGTH and value not in _PUBLISHED_DEFAULTS:
+            secrets.append(value)
     # Longest first, so that a secret which contains another secret as a
     # substring is masked completely rather than partially.
     secrets.sort(key=len, reverse=True)

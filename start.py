@@ -1,31 +1,38 @@
-"""Railway entrypoint: migrate, bootstrap if empty, then serve.
+"""Container entrypoint: check the storage, migrate, backfill once, then serve.
 
-Railway runs this as the web process. It is deliberately defensive: a container
-that dies on boot gives you a build log and nothing else, so every step here
-either succeeds, or logs precisely what went wrong and keeps going far enough
-to serve a page that tells you.
+Railway (and Render, and Fly, and Heroku) run this as the web process. It is
+deliberately defensive: a container that dies on boot leaves you a build log and
+nothing else, so every step below either succeeds or logs exactly what went
+wrong and keeps going far enough to serve a page that says so. The board is the
+only delivery mechanism -- there is no SMS and no email to fall back on -- so
+"came up and displayed the error" beats "crash-looped" every time.
 
-Order matters:
+This file is a THIN WRAPPER. Every decision it needs is already implemented in
+the package, and it calls that code rather than reimplementing it, because a
+second copy of the boot logic is a second copy that can be wrong:
 
-1. Normalise DATABASE_URL. Railway hands out ``postgresql://``; some older
-   plugins still hand out ``postgres://``, which SQLAlchemy 2 rejects outright.
-2. Run migrations before anything imports a model and caches metadata.
-3. Bootstrap the last 30 days IF the database is empty. Railway's filesystem is
-   ephemeral and Postgres starts bare, so without this the first deploy serves
-   empty tabs and looks broken.
-4. Serve on $PORT. Railway assigns it; binding anything else fails the health
-   check with no useful message.
+* URL normalisation      -> towbook_agent.core.db.normalize_database_url
+* the ephemeral warning  -> towbook_agent.core.db.warn_if_ephemeral_sqlite
+* alembic upgrade head   -> towbook_agent.core.db.upgrade_to_head
+* host / port resolution -> towbook_agent.web.app.resolve_host / resolve_port
+* the scheduler          -> started by the app's own lifespan hook, once it is
+                            serving, with a Postgres advisory lock so two
+                            replicas cannot both schedule
+
+Running ``python -m towbook_agent serve`` directly does the same thing minus the
+cold-start backfill, which is the only behaviour unique to this file.
 """
+
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -33,72 +40,78 @@ logging.basicConfig(
 )
 log = logging.getLogger("start")
 
-
-def normalise_database_url() -> str:
-    """Return the DATABASE_URL SQLAlchemy will actually accept."""
-    url = (os.environ.get("DATABASE_URL") or "").strip()
-
-    if not url:
-        log.error(
-            "DATABASE_URL is not set. On Railway this means no Postgres service is "
-            "attached to this app. Add one (New -> Database -> PostgreSQL), then "
-            "reference it from this service's Variables as DATABASE_URL. "
-            "SQLite is NOT usable on Railway: the filesystem is wiped on every "
-            "redeploy and every report would silently reset to empty."
-        )
-        # Fall back so the container still boots and serves the explanation
-        # rather than crash-looping with no page to look at.
-        url = "sqlite:///data/towbook.db"
-        os.environ["DATABASE_URL"] = url
-        return url
-
-    if url.startswith("postgres://"):
-        url = "postgresql+psycopg://" + url[len("postgres://"):]
-    elif url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url[len("postgresql://"):]
-
-    os.environ["DATABASE_URL"] = url
-    scheme = url.split("://", 1)[0]
-    log.info("database backend: %s", scheme)
-    return url
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
-def run_migrations() -> None:
-    log.info("running alembic upgrade head")
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        log.info("migrations applied")
-        return
+def check_storage() -> None:
+    """Refuse to be quiet about a database that is about to be deleted.
 
-    # A fresh database with no alembic_version, created by create_all, is the
-    # one case worth repairing automatically -- see core/db.py.
-    log.error("alembic failed (exit %s)", result.returncode)
-    for line in (result.stderr or "").strip().splitlines()[-12:]:
-        log.error("  %s", line)
-    log.warning("falling back to create_all so the service can still start")
-    try:
-        from towbook_agent.core.db import init_db
-
-        init_db()
-        log.info("schema created directly")
-    except Exception:
-        log.exception("could not create the schema; the board will show an error page")
-
-
-def bootstrap_if_empty() -> None:
-    """Pull the last 30 days on a cold database.
-
-    The owner's scope is 'the last 30 days, and then going forward'. A cold
-    Railway Postgres has neither, so the first boot fetches the window and the
-    scheduler carries it from there.
+    A container filesystem is ephemeral. ``sqlite:///data/towbook.db`` is the
+    default, so a service with no DATABASE_URL boots perfectly, serves real
+    numbers all week, and wipes every one of them on the next ``git push``. It
+    is not an error the process can see -- so it is said here, at CRITICAL, and
+    again on a red banner across every tab of the board.
     """
-    if (os.environ.get("BOOTSTRAP_ON_EMPTY") or "true").lower() not in {"1", "true", "yes"}:
-        log.info("bootstrap disabled by BOOTSTRAP_ON_EMPTY")
+    from towbook_agent.core.db import database_url, warn_if_ephemeral_sqlite
+
+    raw = (os.environ.get("DATABASE_URL") or "").strip()
+    if not raw:
+        log.critical(
+            "DATABASE_URL is not set. On Railway that means no Postgres service is "
+            "attached: add one (New -> Database -> PostgreSQL), then reference it from "
+            "this service's Variables as DATABASE_URL=${{Postgres.DATABASE_URL}}. "
+            "SQLite is NOT usable here -- the filesystem is wiped on every redeploy and "
+            "the whole history silently resets to empty."
+        )
+    else:
+        warn_if_ephemeral_sqlite()
+
+    # database_url() applies the postgres:// and driver rewrites. Logged with the
+    # password removed, because this line ends up in a build log.
+    url = database_url()
+    log.info("database backend: %s", url.split("://", 1)[0])
+
+
+def migrate() -> bool:
+    """``alembic upgrade head``, in-process. Idempotent; never raises.
+
+    In-process rather than ``subprocess alembic upgrade head`` so it resolves the
+    connection string through exactly the code the application uses, and so the
+    "tables exist but were never stamped" repair in
+    :func:`towbook_agent.core.db.upgrade_to_head` applies here too. A
+    subprocess would have to rediscover both.
+    """
+    from towbook_agent.core.db import upgrade_to_head
+
+    result = upgrade_to_head()
+    if result["ok"]:
+        log.info("database at revision %s (%s)", result["revision"], result["action"])
+        return True
+    log.critical("MIGRATION FAILED: %s", result["error"])
+    log.critical("the board will start, show a banner, and be wrong until this is fixed")
+    return False
+
+
+def backfill_if_empty() -> None:
+    """On a cold database, load the trailing window once so the board is not blank.
+
+    A fresh Postgres has no history, and the scheduler only ever computes the
+    window that just closed -- so without this the first deploy shows empty tabs
+    for a day and looks broken rather than new.
+
+    ONE acquisition, then metrics-only recomputes. The API call is paged over the
+    whole window in a single pull; each day's metrics are then computed from rows
+    already in the database with ``skip_ingest=True``, which touches no network.
+    Doing it as N daily pipeline runs would mean N logins and N pulls, would take
+    long enough to fail the platform's health check, and would hammer Towbook on
+    every cold start.
+
+    Off with ``BOOTSTRAP_ON_EMPTY=false``. Never raises: a failed backfill leaves
+    an empty board that fills on the next scheduled run, which is a delay, not a
+    fault.
+    """
+    if (os.environ.get("BOOTSTRAP_ON_EMPTY") or "true").strip().lower() not in _TRUTHY:
+        log.info("cold-start backfill disabled by BOOTSTRAP_ON_EMPTY")
         return
 
     try:
@@ -107,59 +120,96 @@ def bootstrap_if_empty() -> None:
         from towbook_agent.core.db import get_session
         from towbook_agent.core.models import Request
 
-        with get_session() as session:
-            count = session.scalar(select(func.count()).select_from(Request)) or 0
+        with get_session(commit=False) as session:
+            count = int(session.execute(select(func.count()).select_from(Request)).scalar_one())
     except Exception:
-        log.exception("could not check whether the database is empty; skipping bootstrap")
+        log.exception("could not check whether the database is empty; skipping the backfill")
         return
 
     if count:
-        log.info("database already holds %s requests; no bootstrap needed", count)
+        log.info("database already holds %s request(s); no backfill needed", f"{count:,}")
         return
 
     if not (os.environ.get("TOWBOOK_USER") and os.environ.get("TOWBOOK_PASS")):
         log.warning(
-            "database is empty and TOWBOOK_USER / TOWBOOK_PASS are not set, so there "
-            "is nothing to load. Set them in Railway variables and redeploy."
+            "the database is empty and TOWBOOK_USER / TOWBOOK_PASS are not set, so there "
+            "is nothing to load. Set them in the service's variables and redeploy."
         )
         return
 
-    days = int(os.environ.get("BOOTSTRAP_DAYS") or 30)
-    log.info("cold database: loading the last %s days from Towbook", days)
     try:
-        import datetime as dt
+        days = max(1, min(int(os.environ.get("BOOTSTRAP_DAYS") or 30), 365))
+    except (TypeError, ValueError):
+        days = 30
 
-        from towbook_agent.core.scheduler import run_pipeline
+    log.info("cold database: loading the last %d days from Towbook", days)
+    try:
+        from datetime import timedelta
 
-        today = dt.date.today()
-        loaded = 0
-        for offset in range(days, -1, -1):
-            day = today - dt.timedelta(days=offset)
-            try:
-                run_pipeline("daily", day=day, notify=False)
-                loaded += 1
-            except Exception as exc:  # one bad day must not stop the bootstrap
-                log.warning("bootstrap: %s failed (%s)", day, exc)
-        log.info("bootstrap complete: %s of %s days loaded", loaded, days + 1)
+        from towbook_agent.core.scheduler import (
+            _load_agent,
+            make_run_id,
+            now_local,
+            run_pipeline,
+        )
+
+        # Local midnight tomorrow, so the window ends after today's offers and
+        # the half-open [start, end) convention still holds.
+        end = now_local().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        start = end - timedelta(days=days)
+
+        # 1. One pull, one ingest, for the whole window.
+        acquisition = _load_agent("acquisition_api")
+        payload = acquisition.acquire_api(start, end)
+        run_id = make_run_id("backfill", "default", start)
+        ingestion = _load_agent("ingestion")
+        result = ingestion.ingest(payload, run_id)
+        log.info("backfill ingested %s row(s)", getattr(result, "rows_upserted", "?"))
+
+        # 2. Metrics per day, recomputed from what is now stored. No network, no
+        #    notifications -- notifications are off anyway, but say so explicitly
+        #    so re-enabling a channel later does not send 30 backdated reports.
+        computed = 0
+        day = start
+        while day < end:
+            outcome = run_pipeline(
+                "daily",
+                day,
+                day + timedelta(days=1),
+                skip_ingest=True,
+                notify=False,
+            )
+            computed += 1 if outcome.ok else 0
+            day += timedelta(days=1)
+        log.info("backfill complete: %d of %d day(s) computed", computed, days)
     except Exception:
-        log.exception("bootstrap failed; the board will start empty and fill on schedule")
+        log.exception("backfill failed; the board starts empty and fills on the next run")
 
 
 def main() -> int:
-    normalise_database_url()
-    run_migrations()
-    bootstrap_if_empty()
-
-    port = int(os.environ.get("PORT") or os.environ.get("DASHBOARD_PORT") or 8080)
-    log.info("serving on 0.0.0.0:%s", port)
+    check_storage()
+    migrate()
+    backfill_if_empty()
 
     import uvicorn
 
-    # Single worker on purpose: the APScheduler instance lives in this process,
-    # and a second worker would run every scheduled job twice.
+    from towbook_agent.web.app import resolve_host, resolve_port
+
+    host = resolve_host("0.0.0.0")
+    port = resolve_port()
+    log.info("serving on %s:%s", host, port)
+
+    # ONE WORKER. The scheduler runs inside this process (see the lifespan hook
+    # in towbook_agent/web/app.py), so N workers would be N schedulers pulling
+    # the Towbook API on the same cron. core/leader.py's advisory lock catches
+    # that on Postgres; one worker is the configuration where it cannot happen.
+    #
+    # proxy_headers/forwarded_allow_ips: the platform terminates TLS and proxies,
+    # so without these every request looks like it came from the proxy over
+    # plain HTTP and the login cookie's Secure flag misbehaves behind it.
     uvicorn.run(
         "towbook_agent.web.app:app",
-        host="0.0.0.0",
+        host=host,
         port=port,
         workers=1,
         log_level=(os.environ.get("LOG_LEVEL") or "info").lower(),

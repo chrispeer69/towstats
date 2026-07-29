@@ -1,10 +1,39 @@
-# Pin the interpreter. Nixpacks otherwise picks whatever it considers current,
-# and the project targets 3.11+ with wheels verified on 3.12.
+# Nixpacks build plan. Railway reads this; it is the build half of railway.json.
+#
+# PIN THE INTERPRETER. pyproject.toml requires >=3.11 and every wheel here is
+# verified on 3.12. Left unpinned, Nixpacks picks whatever it currently
+# considers default -- which changes without notice and will eventually pick a
+# version with no psycopg or openpyxl wheel, turning a working redeploy of
+# unchanged code into a build failure. .python-version carries the same number
+# for pyenv and uv locally.
+#
+# gcc is a safety net only. psycopg[binary] and every other dependency ship
+# wheels, so nothing should compile; if the build ever starts compiling
+# something, that is worth investigating rather than papering over.
 [phases.setup]
 nixPkgs = ["python312", "gcc"]
 
 [phases.install]
-cmds = ["python -m pip install --upgrade pip", "python -m pip install --no-cache-dir -r requirements.txt"]
+cmds = [
+  "python -m pip install --upgrade pip",
+  "python -m pip install --no-cache-dir -r requirements.txt",
+]
+
+# Playwright is NOT installed. The default acquisition path (source: api) talks
+# to Towbook's JSON endpoint over httpx and needs no browser -- every playwright
+# import in agents/acquisition.py is lazy or behind TYPE_CHECKING, so nothing
+# here imports it. Only add it if you switch config/schedule.yaml to
+# `source: ui`, and then you need the browser binaries too:
+#
+#   [phases.install]
+#   cmds = [
+#     "python -m pip install --upgrade pip",
+#     "python -m pip install --no-cache-dir -r requirements.txt 'playwright>=1.44'",
+#     "python -m playwright install --with-deps chromium",
+#   ]
+#
+# That adds several hundred MB to the image and a browser download to every
+# build, which is the reason the API path is the default.
 
 [start]
 cmd = "python start.py"

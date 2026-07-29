@@ -1,0 +1,39 @@
+{#
+  THE ALARM. Included by base.html, so it renders on EVERY tab.
+
+  config/notifications.yaml ships with every SMS and email route disabled: this
+  board is the delivery mechanism. That is fine for a report -- a report is
+  something you go and look at -- and it is not fine for a failure, because a
+  failure notification's whole job is to find you. This banner is what finds
+  you instead, and it is why turning the routes off is safe.
+
+  Do not move it into one view, do not make it dismissible, and do not render it
+  when the pipeline is healthy: a banner that is always on the page is furniture
+  and gets read as furniture. towbook_agent.web.queries.pipeline_banner()
+  returns None when there is nothing wrong.
+#}
+{% if storage_warning %}
+<div class="notice notice-error" role="alert">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>This deployment will lose its history on the next redeploy.</strong>
+    {{ storage_warning }}
+    See <a href="/health">Health</a> for the database this process is actually using.
+  </span>
+</div>
+{% endif %}
+
+{% if pipeline_banner %}
+<div class="notice notice-{{ pipeline_banner.level|default('error', true) }}" role="alert">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>{{ pipeline_banner.title }}</strong>
+    {{ pipeline_banner.detail|midtrunc(240) }}
+    {% if pipeline_banner.hint %}<br><span class="muted">{{ pipeline_banner.hint }}</span>{% endif %}
+    {% if pipeline_banner.others %}
+    <br><span class="muted">and {{ pipeline_banner.others }} other pipeline problem{{ 's' if pipeline_banner.others != 1 }}.</span>
+    {% endif %}
+    <br><span class="muted">No SMS or email is sent for this &mdash; the board is the delivery. Details on <a href="/health">Health</a>.</span>
+  </span>
+</div>
+{% endif %}

@@ -31,10 +31,13 @@ Three public entry points, plus one manual helper:
 
 Design rules this module obeys
 ------------------------------
-* Hard constraint #1 -- credentials come from TOWBOOK_USER / TOWBOOK_PASS (or
-  TOWBOOK_ACCOUNTS) only. They appear in no source file, no log line, no
-  screenshot, no HTML dump and no discovery inventory. The username is masked
-  even in diagnostics.
+* Hard constraint #1 -- credentials come from the environment only:
+  TOWBOOK_USER / TOWBOOK_PASS, or the per-company pair a company's
+  ``credentials_env`` prefix names (TOWBOOK_<PREFIX>_USER / _PASS), or the
+  legacy TOWBOOK_ACCOUNTS JSON. They appear in no source file, not in
+  config/companies.yaml -- which holds only the variable NAME -- no log line,
+  no screenshot, no HTML dump and no discovery inventory. The username is
+  masked even in diagnostics.
 * Hard constraint #7 -- ZERO hardcoded selectors. Every selector, every URL
   path and even the keyword vocabularies used to classify a failed login come
   from config/selectors.yaml through ``resolve()``. When nothing matches,
@@ -45,8 +48,10 @@ Design rules this module obeys
 
 Environment variables (all optional except the credentials)
 -----------------------------------------------------------
-    TOWBOOK_USER, TOWBOOK_PASS      required
-    TOWBOOK_ACCOUNTS                optional JSON list for multi-account
+    TOWBOOK_USER, TOWBOOK_PASS      required for a single-company install
+    TOWBOOK_<PREFIX>_USER / _PASS   per company, named by companies.yaml
+                                    -> credentials_env: <PREFIX>
+    TOWBOOK_ACCOUNTS                legacy JSON list for multi-account
     TOWBOOK_BASE_URL                default https://app.towbook.com
     HEADLESS                        default true
     PLAYWRIGHT_SLOWMO               ms between actions, default 0
@@ -81,6 +86,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Sequence
 import yaml
 
 from ..core import events
+from ..core import companies as _companies
 from ..core.config_loader import CONFIG, ConfigError
 from ..core.logging_setup import get_logger, redact
 from ..core.paths import (
@@ -403,14 +409,47 @@ def _credentials_error(account_id: str, detail: str) -> CredentialsMissing:
 
 
 def credentials_for(account_id: str = DEFAULT_ACCOUNT_ID) -> Credentials:
-    """Read credentials for ``account_id`` from the environment.
+    """Read credentials for one company from the environment.
 
-    Single account: TOWBOOK_USER / TOWBOOK_PASS.
-    Multi account:  TOWBOOK_ACCOUNTS, a JSON list of
-                    {"account_id": ..., "user": ..., "pass": ...}.
+    Resolution order:
+
+    1. **The company's own pair.** ``config/companies.yaml`` gives each company
+       a ``credentials_env`` PREFIX -- never a login -- and that names
+       ``TOWBOOK_<PREFIX>_USER`` / ``TOWBOOK_<PREFIX>_PASS``.
+    2. ``TOWBOOK_ACCOUNTS``, the legacy JSON list, for installs that already
+       used it.
+    3. ``TOWBOOK_USER`` / ``TOWBOOK_PASS``, the single-company pair.
+
+    **A company that declares a prefix never falls through to step 3.** Falling
+    back would log into the WRONG company's Towbook account and file the
+    resulting offers under this one -- a silent, permanent mixing of two
+    tenants' data, produced by nothing worse than a typo in a variable name. A
+    missing per-company variable is an error with the variable named in it.
 
     Raises CredentialsMissing with an actionable message naming the .env file.
     """
+    company = _companies.get_company(account_id)
+    if company is not None and company.credentials_env:
+        username = _env_str(company.env_user)
+        password = os.environ.get(company.env_pass) or ""
+        missing = [
+            name
+            for name, value in ((company.env_user, username), (company.env_pass, password))
+            if not value
+        ]
+        if missing:
+            raise _credentials_error(
+                account_id,
+                f"{' and '.join(missing)} "
+                f"{'is' if len(missing) == 1 else 'are'} not set. "
+                f"config/companies.yaml gives {company.id!r} the credentials_env "
+                f"prefix {company.credentials_env!r}, so its login must live in "
+                f"those two variables. It deliberately does NOT fall back to "
+                f"TOWBOOK_USER / TOWBOOK_PASS: that would sign in as a different "
+                f"company and file its jobs under this one",
+            )
+        return Credentials(account_id=account_id, username=username, password=password)
+
     raw_accounts = _env_str("TOWBOOK_ACCOUNTS")
     if raw_accounts:
         try:

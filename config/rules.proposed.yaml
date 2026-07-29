@@ -1090,17 +1090,17 @@ proposals:
   proposed_at: '2026-07-28T18:40:41+00:00'
   source_report: daily
   target: service_classes
-  rationale: The raw service type 'Start' fell through to unclassified this week;
-    it likely means jump/battery start, which the light_service class already matches
-    via 'light start' and 'jump start'.
+  rationale: Raw service type 'Start' is falling into unclassified every time it's
+    offered; it matches the intent of light_service's jump/light start category already
+    defined in rules.
   service_type_raw_samples: &id035
   - Start
   first_seen: '2026-07-28T18:40:41+00:00'
-  last_seen: '2026-07-28T18:53:58+00:00'
-  occurrence_count: 1
+  last_seen: '2026-07-28T23:31:03+00:00'
+  occurrence_count: 4
   evidence:
     sample_service_type_raw: *id035
-    affected_requests: 1
+    affected_requests: 4
   patch:
     service_classes:
       light_service:
@@ -1115,21 +1115,22 @@ proposals:
   proposed_at: '2026-07-28T18:43:29+00:00'
   source_report: daily
   target: acceptance_policy
-  rationale: Tire Change offers are accepted 0% of the time today (5 offers, 0 accepted,
-    3 no_response) and sit in the same 3-minute decision window as tow offers we do
-    want. Auto-declining frees dispatcher attention for tow.
+  rationale: Tire Change is already classified light_service (should_decline) but
+    still sits in the queue long enough to go no_response 4 of 6 times, eating attention
+    that should go to tow offers in the same 3-minute window.
   service_type_raw_samples: &id036
   - Tire Change
   first_seen: '2026-07-28T18:43:29+00:00'
-  last_seen: '2026-07-28T18:43:29+00:00'
-  occurrence_count: 5
+  last_seen: '2026-07-28T23:30:24+00:00'
+  occurrence_count: 6
   evidence:
     sample_service_type_raw: *id036
-    affected_requests: 5
+    affected_requests: 6
   patch:
-    acceptance_policy:
-      should_decline:
-      - service_type_raw: Tire Change
+    missed_work:
+      closeoff_candidates:
+        auto_decline_service_types:
+        - Tire Change
   patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type_raw: \"Tire\
     \ Change\"\n"
   status: pending
@@ -1544,6 +1545,64 @@ proposals:
     \ start\n      - start\n      - battery\n      - lockout\n      - lock out\n \
     \     - lock-out\n      - fuel\n      - fuel delivery\n      - unleaded\n    \
     \  - out of gas\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: closeoff-tire-change
+  proposed_at: '2026-07-28T23:31:40+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change is offered by two clients and accepted 0% of 5 tries in the
+    last day, yet it eats time inside the same 3-minute decision window as tow offers.
+    Closing it off should raise the answer rate on wanted work.
+  service_type_raw_samples: &id050
+  - Tire Change
+  first_seen: '2026-07-28T23:31:40+00:00'
+  last_seen: '2026-07-28T23:31:40+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id050
+    affected_requests: 5
+  patch:
+    missed_work:
+      closeoff:
+      - client: Agero (Swoop)
+        service_type_raw: Tire Change
+        action: auto_decline
+      - client: Allied Dispatch Solutions
+        service_type_raw: Tire Change
+        action: auto_decline
+  patch_yaml: "missed_work:\n  closeoff:\n    - client: 'Agero (Swoop)'\n      service_type_raw:\
+    \ 'Tire Change'\n      action: auto_decline\n    - client: 'Allied Dispatch Solutions'\n\
+    \      service_type_raw: 'Tire Change'\n      action: auto_decline\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: decline-tire-change-battery-jump
+  proposed_at: '2026-07-28T23:32:56+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change and Battery Jump offers are almost never accepted yet they
+    sit in the same 3-minute decision window as tow offers, competing for dispatcher
+    attention.
+  service_type_raw_samples: &id051
+  - Tire Change
+  - Battery Jump
+  first_seen: '2026-07-28T23:32:56+00:00'
+  last_seen: '2026-07-28T23:32:56+00:00'
+  occurrence_count: 19
+  evidence:
+    sample_service_type_raw: *id051
+    affected_requests: 19
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type: Tire Change
+      - service_type: Battery Jump
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type: \"Tire Change\"\
+    \n    - service_type: \"Battery Jump\"\n"
   status: pending
   reviewed_by: null
   reviewed_at: null

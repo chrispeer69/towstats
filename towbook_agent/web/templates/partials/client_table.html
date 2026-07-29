@@ -8,7 +8,7 @@
     of them is a decision. It is coloured on the inverted scale (high is bad)
     and outliers carry a marker glyph as well as the colour. -#}
 
-{% set sort_url = '/partials/clients' ~ (('?account=' ~ account) if account else '') %}
+{% set sort_url = '/partials/clients' ~ (('?company=' ~ company_id) if company_id else '') %}
 
 <section class="card" id="client-table">
   <header>

@@ -5,9 +5,10 @@
     discover-selectors  dump the live Request Log DOM to reconcile selectors.yaml
     backfill            re-derive service_class from the stored service_type_raw
     initdb              create the database and its tables
+    migrate             bring the database up to the alembic head (deploy step)
     seed                load fixture data end-to-end without touching the portal
-    serve               run the dashboard
-    schedule            run the APScheduler process
+    serve               run the dashboard (and, by default, the scheduler)
+    schedule            run the APScheduler process on its own
 
 Global flags work on either side of the command, so both of these are valid::
 
@@ -86,10 +87,16 @@ def _add_global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
         help="override the LOG_LEVEL environment variable",
     )
     parser.add_argument(
+        "--company",
         "--account",
+        dest="company",
         default=default(None),
         metavar="ID",
-        help=f"Towbook account id for multi-account setups (default: {_DEFAULT_ACCOUNT})",
+        help=(
+            "which towing company from config/companies.yaml to run for "
+            f"(default: the roster's default_company, or {_DEFAULT_ACCOUNT!r} when "
+            "there is no roster). --account is the old spelling and still works."
+        ),
     )
     parser.add_argument(
         "--no-acquire",
@@ -268,12 +275,38 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser(
         "serve", parents=[common], help="run the dashboard"
     )
-    serve_parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     serve_parser.add_argument(
-        "--port", type=int, default=None, help="port (default: DASHBOARD_PORT, or 8080)"
+        "--host",
+        default=None,
+        help="bind address (default 127.0.0.1 locally, 0.0.0.0 in a container)",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=None, help="port (default: PORT, DASHBOARD_PORT, or 8080)"
     )
     serve_parser.add_argument("--reload", action="store_true", help="auto-reload on code changes")
+    serve_parser.add_argument(
+        "--no-scheduler",
+        action="store_true",
+        help=(
+            "serve the board only; do not run scheduled jobs in this process "
+            "(same as RUN_SCHEDULER=false). Something else must then run `schedule`."
+        ),
+    )
     serve_parser.set_defaults(func=cmd_serve)
+
+    # -- migrate -----------------------------------------------------------
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        parents=[common],
+        help="bring the database up to the alembic head",
+        description=(
+            "Run `alembic upgrade head` against DATABASE_URL. Idempotent: safe on a "
+            "brand new empty database, on one that is already current, and on one "
+            "created by an older `initdb`. The web process does this automatically "
+            "on startup; this command is for running it by hand."
+        ),
+    )
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # -- schedule ----------------------------------------------------------
     schedule_parser = subparsers.add_parser(
@@ -296,8 +329,23 @@ def build_parser() -> argparse.ArgumentParser:
 # ==========================================================================
 
 
+def _company(args: argparse.Namespace) -> str:
+    """Which company this invocation is about.
+
+    ``--company`` (or its old spelling ``--account``) when given, otherwise the
+    roster's default. Resolving through core.companies rather than defaulting
+    to the literal "default" means a multi-company install with a real
+    ``default_company:`` opens on the right tenant.
+    """
+    from .core.companies import resolve_company_id
+
+    requested = (getattr(args, "company", None) or "").strip()
+    return resolve_company_id(requested or None)
+
+
 def _account(args: argparse.Namespace) -> str:
-    return (getattr(args, "account", None) or _DEFAULT_ACCOUNT).strip() or _DEFAULT_ACCOUNT
+    """Deprecated alias for :func:`_company`."""
+    return _company(args)
 
 
 def _flag(args: argparse.Namespace, name: str, default: Any = None) -> Any:
@@ -466,7 +514,7 @@ def _print_result(result: Any, window_origin: str) -> None:
     )
     print(f"  window     {window_origin}")
     print(f"  run_id     {result.run_id}")
-    print(f"  account    {result.account_id}")
+    print(f"  company    {result.company_id}")
     print(f"  rules      {result.rules_version}")
     print(f"  source     {getattr(result, 'source', '?')}")
     if result.xlsx_path:
@@ -519,7 +567,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         start,
         end,
         page_size=_flag(args, "page_size"),
-        account_id=_account(args),
+        company_id=_company(args),
         dry_run=bool(_flag(args, "dry_run", False)),
         acquire=not (no_acquire or xlsx is not None),
         xlsx_path=xlsx,
@@ -623,10 +671,10 @@ def cmd_login_check(args: argparse.Namespace) -> int:
 
         if source == "api":
             acquisition = _load_agent("acquisition_api")
-            raw = acquisition.login_check_api(account_id=_account(args))
+            raw = acquisition.login_check_api(account_id=_company(args))
         else:
             acquisition = _load_agent("acquisition")
-            raw = acquisition.login_check(account_id=_account(args))
+            raw = acquisition.login_check(account_id=_company(args))
     except Exception as exc:
         print(f"LOGIN FAILED [error] - login_check itself raised {type(exc).__name__}: {exc}")
         logger.debug("login_check raised", exc_info=True)
@@ -721,7 +769,7 @@ def cmd_discover_selectors(args: argparse.Namespace) -> int:
     from .core.scheduler import _load_agent
 
     acquisition = _load_agent("acquisition")
-    destination = acquisition.discover_selectors(account_id=_account(args))
+    destination = acquisition.discover_selectors(account_id=_company(args))
     print(f"Discovery dump written to {destination}")
     print(
         f"  Reconcile the candidates in {CONFIG_DIR / 'selectors.yaml'} against what was "
@@ -746,7 +794,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     classifier = _load_agent("classifier")
 
     with get_session(commit=not dry_run) as session:
-        count = classifier.backfill(session)
+        count = classifier.backfill(session, _company(args))
 
     suffix = "  (dry run - nothing was committed)" if dry_run else ""
     print(f"Reclassified {count} request(s) against rules {rules_version()}.{suffix}")
@@ -1005,7 +1053,7 @@ def cmd_seed(args: argparse.Namespace) -> int:
     print(f"Seeding from {fixture}")
     print("  seed is always a dry run: no SMS and no email will be sent.\n")
 
-    account = _account(args)
+    company = _company(args)
     now = now_local()
     plan = (
         ("hourly", previous_full_hour(now), False),
@@ -1019,7 +1067,7 @@ def cmd_seed(args: argparse.Namespace) -> int:
             report_type,
             start,
             end,
-            account_id=account,
+            company_id=company,
             dry_run=True,           # non-negotiable for seed
             acquire=False,
             xlsx_path=None if skip_ingest else fixture,
@@ -1061,11 +1109,28 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     init_db()
 
-    port = args.port or int((os.environ.get("DASHBOARD_PORT") or "8080").strip() or 8080)
-    host = args.host
+    if getattr(args, "no_scheduler", False):
+        os.environ["RUN_SCHEDULER"] = "false"
+
+    # PORT before DASHBOARD_PORT, and 0.0.0.0 inside a container: a container
+    # host assigns the port and expects the process to bind every interface.
+    # Both decisions live in web/app.py so the module entry point
+    # (`uvicorn towbook_agent.web.app:app`) and this one cannot disagree.
+    from .web.app import resolve_host, resolve_port
+
+    port = resolve_port(args.port)
+    host = resolve_host(getattr(args, "host", None))
     level = (_flag(args, "log_level") or os.environ.get("LOG_LEVEL") or "INFO").lower()
 
+    from .core.scheduler import run_scheduler_enabled
+
     print(f"Dashboard on http://{host}:{port}  (Ctrl-C to stop)")
+    if run_scheduler_enabled():
+        print("  Scheduler: running in this process (RUN_SCHEDULER is not false).")
+    else:
+        print("  Scheduler: OFF. Something else must run `python -m towbook_agent schedule`.")
+    # NO workers= ARGUMENT. The scheduler runs inside this process, so N workers
+    # would be N schedulers. See web/app.serve() and core/leader.py.
     uvicorn.run(
         f"{module_name}:app",
         host=host,
@@ -1073,6 +1138,38 @@ def cmd_serve(args: argparse.Namespace) -> int:
         reload=bool(getattr(args, "reload", False)),
         log_level=level if level in {"critical", "error", "warning", "info", "debug", "trace"} else "info",
     )
+    return 0
+
+
+# ==========================================================================
+# migrate
+# ==========================================================================
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """``alembic upgrade head``, with the same URL resolution as everything else.
+
+    The deployment boot step, exposed as a command so it can be run by hand
+    against a hosted database without installing alembic's CLI or working out
+    what DATABASE_URL should look like. The web process runs the same function
+    on startup, so this is a convenience and a diagnostic, not a required step.
+    """
+    from .core.db import healthcheck, upgrade_to_head, warn_if_ephemeral_sqlite
+
+    warning = warn_if_ephemeral_sqlite()
+    if warning:
+        print(f"WARNING: {warning}")
+
+    result = upgrade_to_head()
+    info = healthcheck()
+
+    print(f"Database: {info.get('url')} ({info.get('backend')})")
+    if not result["ok"]:
+        print(f"MIGRATION FAILED - {result['error']}")
+        return 1
+    print(f"  revision: {result['revision'] or 'unknown'} ({result['action']})")
+    tables = [name for name in info["tables"] if not name.startswith("sqlite_")]
+    print(f"  tables:   {', '.join(tables) if tables else '(none)'}")
     return 0
 
 

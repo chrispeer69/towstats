@@ -1,0 +1,408 @@
+{% import "macros.html" as m %}
+{#- ==========================================================================
+    Shared body of the WEEKLY and MONTHLY tabs.
+
+    A week and a month differ only in where their boundaries fall, so they get
+    one body. Writing this twice would guarantee the two tabs eventually
+    disagreed about the same numbers.
+
+    THE COMPARISON IS LIKE-FOR-LIKE. On a Tuesday, "this week" is two days old.
+    Every delta on this page is against the SAME NUMBER OF ELAPSED DAYS of the
+    previous period; the full previous period is shown beside it, labelled, and
+    never instead of it.
+    ========================================================================== -#}
+
+{% macro trend_cell(delta, invert=false) -%}
+  {%- set worse = (delta.direction == 'up') if not invert else (delta.direction == 'down') -%}
+  {%- set better = (delta.direction == 'down') if not invert else (delta.direction == 'up') -%}
+  <span class="delta {{ 'delta-up' if worse else ('delta-down' if better else 'delta-flat') }}">
+    {%- if delta.difference > 0 %}+{% endif %}{{ delta.difference|num if delta.difference != 0 else '0' }}
+  </span>
+  <span class="muted small">was {{ delta.previous|num }}</span>
+{%- endmacro %}
+
+{% if period.is_partial %}
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>
+    <strong>This {{ period.label }} is {{ period.elapsed_days }} day{{ '' if period.elapsed_days == 1 else 's' }} old.</strong>
+    Every comparison below is against the first {{ period.comparable_days }}
+    day{{ '' if period.comparable_days == 1 else 's' }} of last {{ period.label }}
+    ({{ period.previous_first|day("%b %d") }} &ndash; {{ period.previous_last|day("%b %d") }}),
+    not against the whole of it, so a {{ period.label }} that has barely started does not read as a
+    collapse. The full previous {{ period.label }} ran to
+    {{ period.previous_full_last|day("%b %d") }} and its totals are in the &ldquo;full last
+    {{ period.label }}&rdquo; column.
+  </span>
+</div>
+{% endif %}
+
+{# ------------------------------------------------------------- headline #}
+
+<div class="stats stats-headline">
+  <div class="stat stat-lead">
+    <div class="label">Recoverable &mdash; ours to fix</div>
+    <div class="value hero" style="color: var(--critical)">{{ period.recoverable.current|num }}</div>
+    <div class="sub">
+      <span class="dim">jobs of {{ period.offers.current|num }} offered.</span>
+      {{ trend_cell(period.recoverable) }}
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Offered</div>
+    <div class="value">{{ period.offers.current|num }}</div>
+    <div class="sub">{{ trend_cell(period.offers, invert=true) }}</div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Acceptance rate</div>
+    <div class="value band band-{{ band_for(period.acceptance_rate.current) }}">{{ period.acceptance_rate.current|pct }}</div>
+    <div class="sub">
+      {{ m.delta(period.acceptance_rate.points) }}
+      <span class="muted small">was {{ period.acceptance_rate.previous|pct }}</span>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Never answered</div>
+    <div class="value band band-{{ miss_band_for(period.no_response_rate.current) }}">{{ period.no_response_rate.current|pct }}</div>
+    <div class="sub">
+      {{ m.delta(period.no_response_rate.points, invert=true) }}
+      <span class="muted small">was {{ period.no_response_rate.previous|pct }}</span>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="label">Blind spots</div>
+    <div class="value">{{ period.blind_spots.count|num }}</div>
+    <div class="sub">
+      <span class="dim">hour-of-week slots over threshold &middot; was
+        {{ period.blind_spots.previous_count|num }}</span>
+    </div>
+  </div>
+</div>
+
+{# ---------------------------------------------------- what to do about it #}
+
+<section class="card">
+  <header>
+    <h2>What to do about it</h2>
+    <span class="hint">
+      Ranked by how much work each one is worth. Every line carries the count that
+      justifies it &mdash; nothing here is generated prose, and a claim with no number
+      behind it is not printed.
+    </span>
+  </header>
+
+  {% if period.recommendations %}
+  <ol class="reco-list">
+    {% for entry in period.recommendations %}
+    <li class="reco reco-{{ entry.priority }}">
+      <div class="reco-head">
+        <span class="pill pill-{{ 'high' if entry.priority == 'high' else ('medium' if entry.priority == 'medium' else 'low') }}">{{ entry.priority }}</span>
+        <strong>{{ entry.action }}</strong>
+      </div>
+      <div class="reco-detail">{{ entry.detail }}</div>
+      <div class="small muted">
+        {% if entry.evidence %}{{ entry.evidence }} &middot; {% endif %}{{ entry.where }}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+    {{ m.empty_inline('No threshold in rules.yaml was crossed this ' ~ period.label ~ '. Nothing to recommend is not the same as nothing to look at — the tables below are still the record.') }}
+  {% endif %}
+
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+</section>
+
+{# ---------------------------------------------------------- the buckets #}
+
+<section class="card">
+  <header>
+    <h2>Where every offer ended up</h2>
+    <span class="hint">
+      This {{ period.label }} against the same days last {{ period.label }}, with the whole
+      of last {{ period.label }} beside it.
+    </span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Outcome</th>
+          <th class="num">This {{ period.label }}</th>
+          <th class="num">Same days last {{ period.label }}</th>
+          <th class="num">Change</th>
+          <th class="num">Full last {{ period.label }}</th>
+          <th>What it means</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in period.headline_buckets %}
+        <tr>
+          <td><strong>{{ row.label }}</strong></td>
+          <td class="num">{{ row.counts.current|num }}</td>
+          <td class="num">{{ row.counts.previous|num }}</td>
+          <td class="num">{{ trend_cell(row.counts, invert=(row.bucket == 'won')) }}</td>
+          <td class="num muted">{{ row.previous_full|num }}</td>
+          <td class="muted small">{{ row.note }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+</section>
+
+{# ----------------------------------------------------- the coverage split #}
+
+{% if period.coverage.available %}
+<section class="card">
+  <header>
+    <h2>Covered hours vs uncovered hours</h2>
+    <span class="hint">
+      The staffed window comes from <code>rules.yaml &rarr; missed_work &rarr; coverage</code>
+      {%- for window in period.coverage.definitions %} &mdash; <strong>{{ window.label }}</strong>
+      {%- endfor %}. Both rows always: one of these numbers means nothing without the other.
+    </span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Window</th>
+          <th class="num">Offers</th>
+          <th class="num">Unanswered</th>
+          <th class="num">Miss rate</th>
+          <th class="num">vs last {{ period.label }}</th>
+          <th class="num">Recoverable</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in period.coverage.rows %}
+        <tr class="{{ 'row-flag' if row.is_headline }}">
+          <td>
+            <strong>{{ row.title }}</strong>
+            {% if row.is_headline %}<div class="small muted">nobody rostered</div>{% endif %}
+          </td>
+          <td class="num">{{ row.offers.current|num }}
+            <div class="small muted">was {{ row.offers.previous|num }}</div>
+          </td>
+          <td class="num"><strong>{{ row.no_response.current|num }}</strong>
+            <div class="small muted">was {{ row.no_response.previous|num }}</div>
+          </td>
+          <td class="num">{{ m.miss(row.no_response_rate.current) }}</td>
+          <td class="num">{{ m.delta(row.no_response_rate.points, invert=true) }}</td>
+          <td class="num"><strong>{{ row.recoverable.current|num }}</strong>
+            <div class="small muted">was {{ row.recoverable.previous|num }}</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if period.coverage.contrast.summary %}
+  <div class="notice notice-error" style="margin-top: 12px">
+    <span class="ico">&#9888;</span>
+    <span>
+      <strong>{{ period.coverage.contrast.summary }}</strong>
+      {% if period.coverage.contrast.multiple %}
+        Offers arriving outside the staffed window go unanswered
+        <strong>{{ period.coverage.contrast.multiple }}&times;</strong> as often
+        ({{ period.coverage.contrast.spread_pp }} points).
+      {% endif %}
+      {{ period.coverage.finding }}
+    </span>
+  </div>
+  {% endif %}
+
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+</section>
+{% endif %}
+
+{# ----------------------------------------------------------- the causes #}
+
+<section class="card">
+  <header>
+    <h2>Cause, and whether it is growing</h2>
+    <span class="hint">
+      Every cause present in either {{ period.label }}. The remedy class and the question it
+      answers both come from <code>rules.yaml &rarr; missed_work &rarr; remedies</code>.
+    </span>
+  </header>
+
+  {% if period.causes %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Cause</th>
+          <th class="num">Missed</th>
+          <th class="num">Change</th>
+          <th class="num">Recoverable</th>
+          <th>Remedy</th>
+          <th>Who it was</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in period.causes %}
+        <tr>
+          <td>
+            <strong>{{ row.cause|nice }}</strong>
+            {% if row.question %}<div class="small muted">{{ row.question }}</div>{% endif %}
+          </td>
+          <td class="num">{{ row.missed.current|num }}
+            <div class="small muted">{{ row.share|pct }} of missed</div>
+          </td>
+          <td class="num">{{ trend_cell(row.missed) }}</td>
+          <td class="num">{{ row.recoverable.current|num }}</td>
+          <td>{{ row.remedy|nice }}</td>
+          <td class="wrap-text small">
+            {%- for client in row.top_clients[:3] %}
+            <a href="/clients/{{ client.slug|urlencode }}">{{ client.client|midtrunc(22) }}</a>
+            <span class="muted">{{ client.missed|num }}</span>{% if not loop.last %} &middot; {% endif %}
+            {%- else -%}
+            <span class="muted">{{ DASH }}</span>
+            {%- endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+  {% else %}
+    {{ m.empty_inline('Nothing was missed in either ' ~ period.label ~ '.') }}
+  {% endif %}
+</section>
+
+{# --------------------------------------------------- client trajectories #}
+
+<section class="card">
+  <header>
+    <h2>Client trajectories</h2>
+    <span class="hint">
+      Volume, acceptance and unanswered per client, this {{ period.label }} against the same
+      days last {{ period.label }}. The unanswered column is the one to read: a gap between
+      clients on the same trucks and the same staff is a process difference, not a workload.
+    </span>
+  </header>
+
+  {% if period.clients %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Client</th>
+          <th class="num">Offers</th>
+          <th class="num">Change</th>
+          <th class="num">Accepted</th>
+          <th class="num">Rate</th>
+          <th class="num">Rate change</th>
+          <th class="num">Unanswered</th>
+          <th class="num">Miss rate</th>
+          <th class="num">Miss change</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in period.clients[:25] %}
+        <tr>
+          <td>
+            <a href="/clients/{{ row.slug|urlencode }}">{{ row.client|midtrunc(28) }}</a>
+            {% if row.is_new %}<span class="pill pill-pending">new</span>{% endif %}
+            {% if row.is_gone %}<span class="pill pill-canceled">stopped</span>{% endif %}
+          </td>
+          <td class="num">{{ row.offers.current|num }}</td>
+          <td class="num">{{ trend_cell(row.offers, invert=true) }}</td>
+          <td class="num">{{ row.accepted.current|num }}</td>
+          <td class="num">{{ m.rate(row.rate.current) }}</td>
+          <td class="num">{{ m.delta(row.rate.points) }}</td>
+          <td class="num">{{ row.no_response.current|num }}</td>
+          <td class="num">{{ m.miss(row.no_response_rate.current) }}</td>
+          <td class="num">{{ m.delta(row.no_response_rate.points, invert=true) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+  {% else %}
+    {{ m.empty_inline('No client sent an offer in either ' ~ period.label ~ '.') }}
+  {% endif %}
+</section>
+
+{# ----------------------------------------------- did the close-offs work #}
+
+<section class="card">
+  <header>
+    <h2>Did the close-offs work?</h2>
+    <span class="hint">
+      Every service type flagged as a close-off candidate in either {{ period.label }}.
+      One that has stopped arriving is a conversation that landed; one still arriving at the
+      same volume is one that did not happen.
+    </span>
+  </header>
+
+  {% if period.closeoff.rows %}
+  <div class="stats">
+    {{ m.stat('Stopped completely', period.closeoff.stopped|num,
+              sub='flagged last ' ~ period.label ~ ', not offered once this one') }}
+    {{ m.stat('Still arriving', period.closeoff.still_arriving|num,
+              sub='still over the offers threshold and under the rate threshold') }}
+    <div class="stat">
+      <div class="label">Never-answered rate overall</div>
+      <div class="value band band-{{ miss_band_for(period.closeoff.no_response_rate.current) }}">{{ period.closeoff.no_response_rate.current|pct }}</div>
+      <div class="sub">
+        {{ m.delta(period.closeoff.no_response_rate.points, invert=true) }}
+        <span class="muted small">was {{ period.closeoff.no_response_rate.previous|pct }}</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="small muted">
+    MISSED_WORK_MODEL.md section 5 predicts that closing these off improves the tow response
+    rate, because each one competes for the same three-minute decision window. That prediction
+    is tracked, not asserted: the overall never-answered rate above is the number it would move,
+    and it is shown whether it moved or not.
+  </p>
+
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Service type</th>
+          <th>Class</th>
+          <th class="num">Offers this {{ period.label }}</th>
+          <th class="num">Same days last {{ period.label }}</th>
+          <th class="num">Change</th>
+          <th class="num">Accepted</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in period.closeoff.rows[:20] %}
+        <tr>
+          <td>{{ row.service_type_raw|midtrunc(34) }}</td>
+          <td class="muted small">{{ row.service_class|nice }}</td>
+          <td class="num">{{ row.offers.current|num }}</td>
+          <td class="num">{{ row.offers.previous|num }}</td>
+          <td class="num">{{ trend_cell(row.offers) }}</td>
+          <td class="num">{{ row.accepted.current|num }}</td>
+          <td>
+            {% if row.stopped %}<span class="pill pill-accepted">stopped</span>
+            {% elif row.still_flagged %}<span class="pill pill-denied">still arriving</span>
+            {% else %}<span class="pill pill-pending">below threshold</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="rank-note"><span class="ico">&#8505;</span> {{ period.basis_note }}</p>
+  {% else %}
+    {{ m.empty_inline('No service type crossed the close-off thresholds in either ' ~ period.label ~ '. See /close-off for the full list over 30 days.') }}
+  {% endif %}
+</section>

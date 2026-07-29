@@ -128,7 +128,8 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy.orm import Session
 
-from ..core.config_loader import get_rules, rules_version
+from ..core import companies as _companies
+from ..core.config_loader import rules_version
 from ..core.db import get_session
 from ..core.models import MetricsMissedWork, utcnow
 from . import metrics as _metrics
@@ -236,19 +237,40 @@ _rate = _metrics.rate_or_none
 # ==========================================================================
 
 
-def _rules(rules: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+def _rules(
+    rules: Mapping[str, Any] | None = None, company_id: str | None = None
+) -> Mapping[str, Any]:
     """The rules to use, re-reading rules.yaml when none was given.
 
     Same hot-reload contract as agents/classifier.py: the default path asks the
     config loader every call, so saving rules.yaml takes effect on the next run
     with no restart. Callers that need one consistent snapshot across a batch
     pass ``rules`` explicitly -- which is what :func:`compute_missed_work` does.
+
+    The rules returned are THIS COMPANY's: global rules.yaml with the company's
+    coverage window, job values and thresholds merged over it. That matters
+    most here, because the coverage block is the one every headline in this
+    module rests on and it is the override a new tenant sets first.
+    ``company_id=None`` means the company currently active
+    (``core.companies.use_company``), which the entry points below set.
     """
     if rules is None:
-        return get_rules() or {}
+        return _companies.rules_for(company_id) or {}
     if not isinstance(rules, Mapping):
         raise TypeError(f"rules must be a mapping, got {type(rules).__name__}")
     return rules
+
+
+def _company(company_id: str | None, account_id: str | None = None):
+    """Activate the company this call is about, accepting either argument name.
+
+    ``company_id`` is the current name, ``account_id`` the one the
+    single-company build used; whichever was given wins. Activating rather than
+    only resolving is what makes ``_metrics.to_local`` -- and therefore every
+    ``local_weekday`` / ``local_hour`` the coverage windows and the 7 x 24 grid
+    are cut on -- use this company's own clock.
+    """
+    return _companies.use_company(company_id if company_id is not None else account_id)
 
 
 def _block(rules: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -751,10 +773,18 @@ def _load_views(
     start_utc: datetime,
     end_utc: datetime,
     rules: Mapping[str, Any],
-    account_id: str | None,
+    company_id: str | None,
 ) -> list[dict[str, Any]]:
+    """Every row this company was offered in the window, as bucketed views.
+
+    The company filter lives in ``metrics._load_rows`` and is not optional
+    there: ``company_id=None`` resolves to the default company, never to "all
+    companies". Every public function in this module loads through here, so
+    there is exactly one place a tenant filter could go missing and it does
+    not.
+    """
     _, default_class = _metrics._service_class_order(rules)
-    rows = _metrics._load_rows(session, start_utc, end_utc, account_id)
+    rows = _metrics._load_rows(session, start_utc, end_utc, company_id)
     return [_view(row, rules, default_class) for row in rows]
 
 
@@ -1008,6 +1038,7 @@ def blind_spots(
     window_end: Any,
     rules: Mapping[str, Any] | None = None,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
 ) -> dict[str, Any]:
     """The 7 x 24 hour-of-week grid of when offers go unanswered (section 4).
@@ -1020,22 +1051,31 @@ def blind_spots(
     This is the highest-value output in the system: it turns "we are missing
     work" into "nobody is covering 17:00-21:00 and 01:00-04:00", which is a
     staffing conversation with evidence attached.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = _rules(rules)
-    window = _window(window_start, window_end, None)
+    with _company(company_id, account_id) as company:
+        resolved = _rules(rules, company)
+        window = _window(window_start, window_end, None)
 
-    def work(sess: Session) -> dict[str, Any]:
-        views = _load_views(
-            sess, window["_start_utc"], window["_end_utc"], resolved, account_id
-        )
-        document = _blind_spots_from(views, resolved)
-        document["window"] = _public_window(window)
-        return document
+        def work(sess: Session) -> dict[str, Any]:
+            views = _load_views(
+                sess, window["_start_utc"], window["_end_utc"], resolved, company
+            )
+            document = _blind_spots_from(views, resolved)
+            # NOTE no company_id here. This is a FRAGMENT of the missed-work
+            # document, and compute_missed_work() embeds an identical copy of
+            # it. Two tests assert the standalone and the embedded copies are
+            # the same object; a key on one and not the other would make the
+            # dashboard and the report disagree in a way nobody would notice.
+            # The company is on the enclosing document, and on the request.
+            document["window"] = _public_window(window)
+            return document
 
-    if session is not None:
-        return work(session)
-    with get_session(commit=False) as owned:
-        return work(owned)
+        if session is not None:
+            return work(session)
+        with get_session(commit=False) as owned:
+            return work(owned)
 
 
 # ==========================================================================
@@ -1207,6 +1247,7 @@ def closeoff_candidates(
     window_end: Any,
     rules: Mapping[str, Any] | None = None,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
 ) -> dict[str, Any]:
     """Work we do not want, being offered anyway -- grouped by client (section 5).
@@ -1220,22 +1261,31 @@ def closeoff_candidates(
     Output is grouped by client because the action is a conversation with that
     client, and each row carries the share of that client's total offers it
     represents so the ask can be sized.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = _rules(rules)
-    window = _window(window_start, window_end, None)
+    with _company(company_id, account_id) as company:
+        resolved = _rules(rules, company)
+        window = _window(window_start, window_end, None)
 
-    def work(sess: Session) -> dict[str, Any]:
-        views = _load_views(
-            sess, window["_start_utc"], window["_end_utc"], resolved, account_id
-        )
-        document = _closeoff_from(views, resolved)
-        document["window"] = _public_window(window)
-        return document
+        def work(sess: Session) -> dict[str, Any]:
+            views = _load_views(
+                sess, window["_start_utc"], window["_end_utc"], resolved, company
+            )
+            document = _closeoff_from(views, resolved)
+            # NOTE no company_id here. This is a FRAGMENT of the missed-work
+            # document, and compute_missed_work() embeds an identical copy of
+            # it. Two tests assert the standalone and the embedded copies are
+            # the same object; a key on one and not the other would make the
+            # dashboard and the report disagree in a way nobody would notice.
+            # The company is on the enclosing document, and on the request.
+            document["window"] = _public_window(window)
+            return document
 
-    if session is not None:
-        return work(session)
-    with get_session(commit=False) as owned:
-        return work(owned)
+        if session is not None:
+            return work(session)
+        with get_session(commit=False) as owned:
+            return work(owned)
 
 
 # ==========================================================================
@@ -1375,6 +1425,7 @@ def client_comparison(
     window_end: Any,
     rules: Mapping[str, Any] | None = None,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
 ) -> dict[str, Any]:
     """Per-client buckets, and the gap between clients that should match (section 6).
@@ -1383,22 +1434,31 @@ def client_comparison(
     withdrew, no_response_rate -- plus ``findings``: an explicit statement when
     the spread in ``no_response_rate`` between two clients big enough to matter
     exceeds ``client_comparison.gap_pp``.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = _rules(rules)
-    window = _window(window_start, window_end, None)
+    with _company(company_id, account_id) as company:
+        resolved = _rules(rules, company)
+        window = _window(window_start, window_end, None)
 
-    def work(sess: Session) -> dict[str, Any]:
-        views = _load_views(
-            sess, window["_start_utc"], window["_end_utc"], resolved, account_id
-        )
-        document = _client_comparison_from(views, resolved)
-        document["window"] = _public_window(window)
-        return document
+        def work(sess: Session) -> dict[str, Any]:
+            views = _load_views(
+                sess, window["_start_utc"], window["_end_utc"], resolved, company
+            )
+            document = _client_comparison_from(views, resolved)
+            # NOTE no company_id here. This is a FRAGMENT of the missed-work
+            # document, and compute_missed_work() embeds an identical copy of
+            # it. Two tests assert the standalone and the embedded copies are
+            # the same object; a key on one and not the other would make the
+            # dashboard and the report disagree in a way nobody would notice.
+            # The company is on the enclosing document, and on the request.
+            document["window"] = _public_window(window)
+            return document
 
-    if session is not None:
-        return work(session)
-    with get_session(commit=False) as owned:
-        return work(owned)
+        if session is not None:
+            return work(session)
+        with get_session(commit=False) as owned:
+            return work(owned)
 
 
 # ==========================================================================
@@ -1656,6 +1716,7 @@ def coverage_analysis(
     window_end: Any,
     rules: Mapping[str, Any] | None = None,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
 ) -> dict[str, Any]:
     """Offers, answers and losses per operating window (section 7).
@@ -1668,24 +1729,38 @@ def coverage_analysis(
     The contrast is the deliverable. On real data the same trucks and the same
     volume produce a 5.8% miss rate inside the staffed window and 61.7% outside
     it; quoting either number alone loses the argument.
+
+    The windows are THIS COMPANY's -- ``companies.yaml -> coverage`` when the
+    entry declares one, ``rules.yaml -> missed_work.coverage`` otherwise. A
+    company in Texas is staffed different hours than one in Ohio, and a shared
+    window would report both of them against somebody else's shift.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = _rules(rules)
-    window = _window(window_start, window_end, None)
-    book = _price_book(resolved)
-    priced_classes = _priced_classes(resolved)
+    with _company(company_id, account_id) as company:
+        resolved = _rules(rules, company)
+        window = _window(window_start, window_end, None)
+        book = _price_book(resolved)
+        priced_classes = _priced_classes(resolved)
 
-    def work(sess: Session) -> dict[str, Any]:
-        views = _load_views(
-            sess, window["_start_utc"], window["_end_utc"], resolved, account_id
-        )
-        document = _coverage_from(views, resolved, book, priced_classes)
-        document["window"] = _public_window(window)
-        return document
+        def work(sess: Session) -> dict[str, Any]:
+            views = _load_views(
+                sess, window["_start_utc"], window["_end_utc"], resolved, company
+            )
+            document = _coverage_from(views, resolved, book, priced_classes)
+            # NOTE no company_id here. This is a FRAGMENT of the missed-work
+            # document, and compute_missed_work() embeds an identical copy of
+            # it. Two tests assert the standalone and the embedded copies are
+            # the same object; a key on one and not the other would make the
+            # dashboard and the report disagree in a way nobody would notice.
+            # The company is on the enclosing document, and on the request.
+            document["window"] = _public_window(window)
+            return document
 
-    if session is not None:
-        return work(session)
-    with get_session(commit=False) as owned:
-        return work(owned)
+        if session is not None:
+            return work(session)
+        with get_session(commit=False) as owned:
+            return work(owned)
 
 
 # ==========================================================================
@@ -1978,6 +2053,7 @@ def compute_missed_work(
     rules: Mapping[str, Any] | None = None,
     *,
     period_type: str | None = None,
+    company_id: str | None = None,
     account_id: str | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
@@ -1995,9 +2071,40 @@ def compute_missed_work(
 
     One snapshot of ``rules.yaml`` is taken for the whole computation, so a
     human saving the file mid-run cannot produce a document whose halves were
-    classified under different rules.
+    classified under different rules. It is THIS COMPANY's snapshot: global
+    rules.yaml with the company's coverage window, job values and thresholds
+    merged over it.
+
+    The upsert key is ``(company_id, window_start, window_end, period_type)``.
+    Without the company in it, the second tenant to compute Tuesday would
+    overwrite the first one's Tuesday with its own numbers and nothing on the
+    dashboard would look wrong.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = dict(_rules(rules))
+    with _company(company_id, account_id) as company:
+        return _compute_missed_work(
+            session,
+            window_start,
+            window_end,
+            rules,
+            period_type=period_type,
+            company_id=company,
+            persist=persist,
+        )
+
+
+def _compute_missed_work(
+    session: Session | None,
+    window_start: Any,
+    window_end: Any,
+    rules: Mapping[str, Any] | None,
+    *,
+    period_type: str | None,
+    company_id: str,
+    persist: bool,
+) -> dict[str, Any]:
+    resolved = dict(_rules(rules, company_id))
     version = rules_version()
     window = _window(window_start, window_end, period_type)
     book = _price_book(resolved)
@@ -2006,7 +2113,7 @@ def compute_missed_work(
 
     def work(sess: Session) -> dict[str, Any]:
         views = _load_views(
-            sess, window["_start_utc"], window["_end_utc"], resolved, account_id
+            sess, window["_start_utc"], window["_end_utc"], resolved, company_id
         )
 
         totals, by_bucket, bucket_sources = _totals_from(views, resolved)
@@ -2052,6 +2159,7 @@ def compute_missed_work(
 
         document: dict[str, Any] = {
             "report_type": "missed_work",
+            "company_id": company_id,
             "window": _public_window(window),
             "period_type": window["period_type"],
             "timezone": window["timezone"],
@@ -2113,6 +2221,7 @@ def compute_missed_work(
                 sess,
                 MetricsMissedWork,
                 {
+                    "company_id": company_id,
                     "window_start": window["_start_utc"],
                     "window_end": window["_end_utc"],
                     "period_type": window["period_type"],
@@ -2164,15 +2273,19 @@ def get_stored_missed_work(
     period_type: str | None = None,
     *,
     session: Session | None = None,
+    company_id: str | None = None,
+    account_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Read back a persisted missed-work document, or None."""
+    """Read back one company's persisted missed-work document, or None."""
     from sqlalchemy import select
 
-    window = _window(window_start, window_end, period_type)
+    with _company(company_id, account_id) as company:
+        window = _window(window_start, window_end, period_type)
 
     def read(sess: Session) -> dict[str, Any] | None:
         row = sess.scalars(
             select(MetricsMissedWork)
+            .where(MetricsMissedWork.company_id == company)
             .where(MetricsMissedWork.window_start == window["_start_utc"])
             .where(MetricsMissedWork.window_end == window["_end_utc"])
             .where(MetricsMissedWork.period_type == window["period_type"])
@@ -2181,6 +2294,7 @@ def get_stored_missed_work(
         if row is None:
             return None
         document = dict(row.metrics or {})
+        document["company_id"] = row.company_id
         document["rules_version"] = row.rules_version
         document["computed_at"] = (
             row.computed_at.isoformat(sep="T") if row.computed_at else None
@@ -2203,6 +2317,7 @@ def alert_contexts(
     window_end: Any,
     rules: Mapping[str, Any] | None = None,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
     report_type: str = "missed_work",
 ) -> list[tuple[str, str, dict[str, Any]]]:
@@ -2227,8 +2342,27 @@ def alert_contexts(
     Nothing is evaluated or emitted here. metrics owns ``_fire_alerts``, the
     ``alerts_fired`` dedupe read and the event bus, and two writers on that path
     would corrupt the notifier's rate limit.
+
+    Every trailing window below is loaded for one company only, and the dedupe
+    that metrics applies to the result is scoped to the same one.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
-    resolved = _rules(rules)
+    company = _companies.resolve_company_id(
+        company_id if company_id is not None else account_id
+    )
+    with _companies.use_company(company):
+        return _alert_contexts(session, window_end, rules, company, report_type)
+
+
+def _alert_contexts(
+    session: Session,
+    window_end: Any,
+    rules: Mapping[str, Any] | None,
+    company_id: str,
+    report_type: str,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    resolved = _rules(rules, company_id)
     cfg = _cfg(resolved, "alerts")
     end_local = _metrics.parse_local_datetime(window_end)
     end_utc = _metrics.to_utc(end_local)
@@ -2246,7 +2380,7 @@ def alert_contexts(
     # the report, where the extra resolution is worth having.
     spot_days = max(1, int(cfg["blind_spot_window_days"]))
     spot_views = _load_views(
-        session, end_utc - timedelta(days=spot_days), end_utc, resolved, account_id
+        session, end_utc - timedelta(days=spot_days), end_utc, resolved, company_id
     )
     for entry in _blind_spots_from(spot_views, resolved)["by_hour"]:
         if not entry["offers"]:
@@ -2275,8 +2409,8 @@ def alert_contexts(
     recent_start = end_utc - timedelta(hours=hours)
     baseline_start = recent_start - timedelta(days=baseline_days)
 
-    recent = _load_views(session, recent_start, end_utc, resolved, account_id)
-    baseline = _load_views(session, baseline_start, recent_start, resolved, account_id)
+    recent = _load_views(session, recent_start, end_utc, resolved, company_id)
+    baseline = _load_views(session, baseline_start, recent_start, resolved, company_id)
 
     missed_buckets = _name_set(resolved, "missed_buckets")
     recent_causes = Counter(
@@ -2314,7 +2448,7 @@ def alert_contexts(
     # ---- closeoff_candidate ------------------------------------------------
     closeoff_days = max(1, int(cfg["closeoff_window_days"]))
     closeoff_start = end_utc - timedelta(days=closeoff_days)
-    trailing = _load_views(session, closeoff_start, end_utc, resolved, account_id)
+    trailing = _load_views(session, closeoff_start, end_utc, resolved, company_id)
 
     closeoff_cfg = _cfg(resolved, "closeoff")
     wanted, _ = _metrics._policy_classes(resolved)

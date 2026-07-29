@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Hourly{% endblock %}
+
+{#- ==========================================================================
+    TAB 1 -- HOURLY. This screen IS the hourly text message now.
+
+    Nothing is texted any more, so every line that message carried has to be
+    here or it is gone. It is reproduced verbatim at the top of the page, built
+    by the same agents/notifier.py helpers that built the SMS, and then expanded
+    into the hour-by-hour table below it.
+
+    The body refreshes itself every 60 seconds. A tab left open on a wall screen
+    has to stay current on its own; the message used to arrive without anybody
+    asking for it, and so does this.
+    ========================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Hourly &mdash; {{ hourly.date|day("%A, %B %d") }}</h1>
+    <div class="sub">
+      Today hour by hour. This replaces the hourly text message: every line it carried is
+      below, and the page refreshes itself every {{ HOURLY_REFRESH_SECONDS }} seconds.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not hourly.model_available %}
+  {{ m.model_unavailable('agents/missed_work.py could not be imported, so unanswered offers
+     cannot be separated from the other ways an offer ends.') }}
+{% endif %}
+
+{% if not hourly.has_data %}
+  {{ m.empty_state('Nothing to show yet',
+                   'No requests have been ingested for today or the previous 28 days.') }}
+{% else %}
+<div id="hourly-body"
+     hx-get="/partials/hourly{{ qs(company=company_id) }}"
+     hx-trigger="every {{ HOURLY_REFRESH_SECONDS }}s"
+     hx-target="this"
+     hx-swap="innerHTML">
+  {% include "partials/hourly_body.html" %}
+</div>
+{% endif %}
+{% endblock %}

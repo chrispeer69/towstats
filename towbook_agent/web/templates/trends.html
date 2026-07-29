@@ -2,6 +2,22 @@
 {% import "macros.html" as m %}
 {% block title %}Trends{% endblock %}
 
+{#- ==========================================================================
+    TAB 4 -- TRENDS. The important-trends tab.
+
+    Five things, in the order they answer "is this getting better or worse":
+
+      1. the 7 x 24 blind-spot grid  -- WHICH hours leak
+      2. the coverage gap week by week -- is the leak closing
+      3. client trajectories          -- who is drifting
+      4. offer volume                 -- against what baseline
+      5. close-off candidates         -- what we should stop being sent
+
+    The grid and the close-off list are the SAME snapshots /blind-spots and
+    /close-off render, over this tab's window. They are not recomputed a second
+    way: one of the two would eventually be wrong and nobody could tell which.
+    ========================================================================== -#}
+
 {% block content %}
 <div class="page-head">
   <div>
@@ -14,7 +30,7 @@
   <div class="controls">
     <span class="seg">
       {% for option in week_options %}
-      <a href="/trends{{ qs(weeks=option, account=account) }}"
+      <a href="/trends{{ qs(weeks=option, company=company_id) }}"
          {% if trends.weeks == option %}aria-current="true"{% endif %}>{{ option }}w</a>
       {% endfor %}
     </span>
@@ -39,11 +55,128 @@
     <div class="sub"><span class="dim">{{ trends.totals.accepted|num }} of {{ trends.totals.offered|num }}</span></div>
   </div>
   {{ m.stat('Busiest hour', trends.peak_offered|num, sub='Offers in the busiest hour-of-week slot') }}
+  <div class="stat{{ ' stat-flag' if spots.blind_spot_count }}">
+    <div class="label">Blind spots</div>
+    <div class="value">{{ spots.blind_spot_count|num }}</div>
+    <div class="sub"><span class="dim">hour-of-week slots over threshold &middot;
+      {{ spots.blind_spot_no_response|num }} jobs lost in them</span></div>
+  </div>
 </div>
+
+{# ------------------------------------------------- 1. the blind-spot grid #}
 
 <section class="card">
   <header>
-    <h2>Hour of week</h2>
+    <h2>Blind spots &mdash; when offers go unanswered</h2>
+    <span class="hint">
+      Darker means more offers went unanswered. Ringed cells are over
+      {{ spots.thresholds.threshold|pct }} on at least {{ spots.thresholds.min_offers }} offers.
+      Hatched cells had fewer than {{ spots.thresholds.min_offers }} offers &mdash; too few to read
+      as a pattern. The full argument, hour by hour, is on <a href="/blind-spots">Blind spots</a>.
+    </span>
+  </header>
+
+  {% if not spots.available %}
+    {{ m.model_unavailable(spots.error) }}
+  {% else %}
+  <div class="table-scroll">
+    <div class="heatmap heatmap-miss">
+      <div class="hm-corner"></div>
+      {% for hour in spots.hours %}
+      <div class="hm-hour">{{ '%02d'|format(hour) }}</div>
+      {% endfor %}
+
+      {% for row in spots.grid %}
+      <div class="hm-day">{{ row.label }}</div>
+        {% for cell in row.cells %}
+        <div class="hm-cell {{ 'empty' if cell.step < 0 else 's' ~ cell.step }}{{ ' low' if cell.low_sample }}{{ ' flag' if cell.flag }}"
+             data-tip="{{ row.label }} {{ '%02d'|format(cell.hour) }}:00 · {{ cell.offers }} offered · {{ cell.no_response }} unanswered · {{ cell.no_response_rate|pct }} missed{% if cell.flag %} · BLIND SPOT{% endif %}"></div>
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="heat-legend" style="margin-top: 12px">
+    <span>Share of offers unanswered</span>
+    <span>0%</span>
+    <span class="ramp">
+      <i style="background: var(--seq-0)"></i>
+      <i style="background: var(--seq-1)"></i>
+      <i style="background: var(--seq-2)"></i>
+      <i style="background: var(--seq-3)"></i>
+      <i style="background: var(--seq-4)"></i>
+      <i style="background: var(--seq-5)"></i>
+      <i style="background: var(--seq-6)"></i>
+    </span>
+    <span>100%</span>
+    <span style="margin-left: 12px">
+      <i class="swatch-key" style="background: var(--seq-4); outline: 2px solid var(--critical); outline-offset: -2px"></i>
+      blind spot
+    </span>
+    <span>
+      <i class="swatch-key" style="border: 1px dashed var(--baseline)"></i>
+      no offers
+    </span>
+  </div>
+  {{ m.ranking_note() }}
+  {% endif %}
+</section>
+
+{# ------------------------------------------------ 2. is the gap closing? #}
+
+<section class="card">
+  <header>
+    <h2>Coverage gap, week by week</h2>
+    <span class="hint">
+      Offers that went unanswered inside the staffed window against offers that went
+      unanswered outside it. Both lines always: a falling uncovered rate could just be a
+      quiet fortnight, and only reads as progress next to a covered line that did not move.
+    </span>
+  </header>
+
+  {% if trends.coverage_weekly %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Week of</th>
+          <th class="num">Offers outside</th>
+          <th class="num">Unanswered outside</th>
+          <th class="num">Miss rate outside</th>
+          <th class="num">Offers inside</th>
+          <th class="num">Unanswered inside</th>
+          <th class="num">Miss rate inside</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in trends.coverage_weekly|reverse %}
+        <tr>
+          <td class="nowrap">{{ row.label }}</td>
+          <td class="num">{{ row.uncovered_offers|num }}</td>
+          <td class="num"><strong>{{ row.uncovered_no_response|num }}</strong></td>
+          <td class="num">{{ m.miss(row.uncovered_rate) }}</td>
+          <td class="num">{{ row.covered_offers|num }}</td>
+          <td class="num">{{ row.covered_no_response|num }}</td>
+          <td class="num">{{ m.miss(row.covered_rate) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted">
+    &ldquo;Inside&rdquo; is the staffed window declared in
+    <code>rules.yaml &rarr; missed_work &rarr; coverage</code>. Adding a shift is an edit there,
+    and the week after it lands is the week this table should move.
+  </p>
+  {{ m.ranking_note() }}
+  {% else %}
+    {{ m.empty_inline('No offers in this window.') }}
+  {% endif %}
+</section>
+
+<section class="card">
+  <header>
+    <h2>Hour of week &mdash; acceptance rate</h2>
     <span class="hint">
       Acceptance rate by weekday and hour, local time.
       Hatched cells had fewer than {{ trends.min_cell_sample }} offers &mdash; do not read them as a trend.
@@ -180,6 +313,54 @@
     </div>
   </section>
 </div>
+
+{# ------------------------------------------- 5. work we should not be sent #}
+
+<section class="card">
+  <header>
+    <h2>Close-off candidates</h2>
+    <span class="hint">
+      Service types we systematically refuse. They are not just noise: each one arrives in the
+      same three-minute decision window as a tow offer, so removing them is expected to improve
+      the response rate on the work we do want. The paste-ready note for each client is on
+      <a href="/close-off">Close-off</a>.
+    </span>
+  </header>
+
+  {% if not closeoff.available %}
+    {{ m.model_unavailable(closeoff.error) }}
+  {% elif closeoff.by_service_type %}
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Service type</th>
+          <th>Class</th>
+          <th class="num">Offers</th>
+          <th class="num">Accepted</th>
+          <th class="num">Rate</th>
+          <th class="num">Unanswered</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in closeoff.by_service_type[:15] %}
+        <tr>
+          <td>{{ row.service_type_raw|midtrunc(34) }}</td>
+          <td class="muted small">{{ row.service_class|nice }}</td>
+          <td class="num">{{ row.offers|num }}</td>
+          <td class="num">{{ row.accepted|num }}</td>
+          <td class="num">{{ m.rate(row.rate) }}</td>
+          <td class="num">{{ row.no_response|num }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ m.ranking_note() }}
+  {% else %}
+    {{ m.empty_inline('No service type crossed the close-off thresholds in this window.') }}
+  {% endif %}
+</section>
 
 {% endif %}
 {% endblock %}

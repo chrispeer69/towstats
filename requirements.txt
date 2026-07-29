@@ -24,11 +24,12 @@ openpyxl>=3.1
 # --- storage ---
 SQLAlchemy>=2.0
 alembic>=1.13
-
-# Postgres driver. REQUIRED on Railway and any other container host: the
-# filesystem there is ephemeral, so a SQLite file is destroyed on every
-# redeploy and the whole history silently resets to empty. SQLite remains the
-# default for local development and for the offline test suite.
+# PostgreSQL driver. SQLite stays the local/dev/test backend; every hosted
+# deployment MUST be Postgres, because a container filesystem is ephemeral and a
+# SQLite file on it is deleted on the next redeploy. `[binary]` ships prebuilt
+# wheels, so the container needs no libpq and no compiler. core/db.py rewrites
+# `postgres://` and bare `postgresql://` to `postgresql+psycopg://` so the URL
+# Railway hands you works unedited.
 psycopg[binary]>=3.1
 
 # --- dashboard ---

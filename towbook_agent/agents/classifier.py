@@ -570,28 +570,65 @@ def _chunks(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:
         yield items[start : start + size]
 
 
-def backfill(session: Any) -> int:
-    """Re-derive ``service_class`` for every stored row and return the count changed.
+def backfill(session: Any, company_id: str | None = None) -> int:
+    """Re-derive ``service_class`` for stored rows and return the count changed.
 
     This is the payoff of hard constraint #6. ``service_type_raw`` was stored
     verbatim and never mutated, so a rules.yaml edit -- a new match term, a
     reordered class -- can be applied retroactively to history instead of only
     to rows ingested from now on.
 
+    PER COMPANY, and not as a filter bolted on afterwards. A company entry in
+    config/companies.yaml may override ``service_classes``, so "what class is
+    this row" has a different answer for different tenants over the identical
+    verbatim string. Classifying one company's rows under another's rules would
+    corrupt the stored column silently and permanently.
+
+    ``company_id=None`` therefore does not mean "one pass over everything": it
+    runs one pass per company present in the data, each under its own rules.
+    On a single-company install that is exactly one pass and identical to the
+    behaviour before companies existed.
+
     Idempotent: it writes only rows whose class actually differs, so a second
     run over unchanged rules returns 0.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     from ..core.models import Request
 
-    rules = get_rules()  # one snapshot for the whole pass, deliberately
+    if company_id is None:
+        company_ids = [
+            row[0]
+            for row in session.execute(
+                select(Request.company_id).distinct().order_by(Request.company_id)
+            )
+            if row[0]
+        ]
+        if len(company_ids) > 1:
+            return sum(_backfill_company(session, one) for one in company_ids)
+        company_id = company_ids[0] if company_ids else None
+
+    return _backfill_company(session, company_id)
+
+
+def _backfill_company(session: Any, company_id: str | None) -> int:
+    """One reclassification pass over one company's rows, under its own rules."""
+    from sqlalchemy import select, update
+
+    from ..core import companies as _companies
+    from ..core.models import Request
+
+    # One snapshot for the whole pass, deliberately: a human saving rules.yaml
+    # mid-backfill must not produce a table classified under two rule sets.
+    rules = _companies.rules_for(company_id) or get_rules()
     fallback = default_service_class(rules)
 
     # Materialise the plan before writing anything: mutating rows while a
     # cursor is still streaming from the same table is asking for trouble on
     # SQLite, and the id/raw pairs are small.
     statement = select(Request.request_id, Request.service_type_raw, Request.service_class)
+    if company_id is not None:
+        statement = statement.where(Request.company_id == company_id)
     rows = session.execute(statement.execution_options(yield_per=_SCAN_BATCH)).all()
 
     pending: dict[str, list[str]] = {}
@@ -619,8 +656,9 @@ def backfill(session: Any) -> int:
         session.commit()
 
     logger.info(
-        "backfill scanned %d row(s), reclassified %d, default class %r",
+        "backfill scanned %d row(s) for company %s, reclassified %d, default class %r",
         scanned,
+        company_id or "(all)",
         changed,
         fallback,
     )

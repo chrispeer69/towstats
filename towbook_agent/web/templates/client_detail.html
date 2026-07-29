@@ -15,7 +15,7 @@
   <div class="controls">
     <span class="seg">
       {% for option in (7, 30, 90) %}
-      <a href="/clients/{{ client.slug|urlencode }}{{ qs(days=option, account=account) }}"
+      <a href="/clients/{{ client.slug|urlencode }}{{ qs(days=option, company=company_id) }}"
          {% if client.days == option %}aria-current="true"{% endif %}>{{ option }}d</a>
       {% endfor %}
     </span>

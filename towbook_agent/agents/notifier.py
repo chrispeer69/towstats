@@ -60,13 +60,14 @@ from datetime import datetime, time as _time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, TemplateNotFound, Undefined
 
 from ..core.config_loader import get_notifications, rules_version
 from ..core.db import get_session
 from ..core.logging_setup import get_logger
+from ..core import companies as _companies
 from ..core.models import AlertFired, utcnow
 from ..core.paths import CONFIG_DIR, PACKAGE_ROOT
 
@@ -1828,11 +1829,36 @@ def _rate_limit_window(notifications: dict | None = None) -> timedelta:
     return parse_duration(limits.get("same_alert_same_entity"))
 
 
-def _recently_delivered(alert_id: str, entity: str, window: timedelta) -> datetime | None:
+def _company_for(payload: dict | None = None, company_id: str | None = None) -> str:
+    """Which company a message is about.
+
+    The explicit argument first, then the payload -- metrics puts
+    ``company_id`` on every alert it emits, and the pipeline puts it on every
+    failure event -- then the company currently active. Never blank: an
+    ``alerts_fired`` row that belongs to nobody cannot be rate limited, shown
+    on a dashboard, or answered.
+    """
+    if company_id:
+        return _companies.resolve_company_id(company_id)
+    if isinstance(payload, dict):
+        for key in ("company_id", "account_id"):
+            value = payload.get(key)
+            if value:
+                return _companies.resolve_company_id(str(value))
+    return _companies.resolve_company_id(None)
+
+
+def _recently_delivered(
+    alert_id: str, entity: str, window: timedelta, company_id: str | None = None
+) -> datetime | None:
     """Last *delivered* firing of this alert for this entity inside the window.
 
     Suppressed rows are skipped on purpose: a message that was held back never
     reached anybody, so it must not start the cooldown on the next one.
+
+    Scoped to one company. Two tenants can both have an entity of
+    ``"agero (swoop)"``, and one company's delivered alert must not put the
+    other company's identical alert into cooldown.
     """
     if window <= timedelta(0):
         return None
@@ -1842,6 +1868,7 @@ def _recently_delivered(alert_id: str, entity: str, window: timedelta) -> dateti
             row = (
                 session.query(AlertFired)
                 .filter(
+                    AlertFired.company_id == _company_for(None, company_id),
                     AlertFired.alert_id == alert_id,
                     AlertFired.entity == (entity or ""),
                     AlertFired.fired_at >= cutoff,
@@ -1866,6 +1893,7 @@ def evaluate_suppression(
     severity: str | None = None,
     moment: datetime | None = None,
     notifications: dict | None = None,
+    company_id: str | None = None,
 ) -> Suppression:
     """Decide whether this message may be delivered right now."""
     notifications = notifications if notifications is not None else get_notifications()
@@ -1880,7 +1908,7 @@ def evaluate_suppression(
 
     if alert_id:
         window = _rate_limit_window(notifications)
-        last = _recently_delivered(alert_id, entity, window)
+        last = _recently_delivered(alert_id, entity, window, company_id)
         if last is not None:
             return Suppression(True, "rate_limit", False)
 
@@ -1899,8 +1927,13 @@ def _record(
     severity: str | None,
     payload: dict,
     suppressed_reason: str | None = None,
+    company_id: str | None = None,
 ) -> None:
     """Write the delivery (or the suppression) to alerts_fired.
+
+    Stamped with the company the alert is about, taken from the payload when
+    the emitter put one there. That column is what scopes the rate limit and
+    what lets /health show one company's alert history without the others'.
 
     Best effort: a database problem must not stop a text from going out.
     """
@@ -1908,6 +1941,7 @@ def _record(
         with get_session() as session:
             session.add(
                 AlertFired(
+                    company_id=_company_for(payload, company_id),
                     alert_id=str(alert_id)[:128],
                     entity=str(entity or "")[:255],
                     severity=(str(severity)[:32] if severity else None),
@@ -2138,33 +2172,85 @@ def _send_one(
     return True
 
 
+#: Values that turn a route off in notifications.yaml.
+_FALSEY = {"0", "false", "no", "off"}
+
+
+def route_enabled(route: Mapping[str, Any]) -> bool:
+    """Is this route switched on? ``enabled:``, default true.
+
+    THE SHIPPED CONFIG HAS EVERY ROUTE DISABLED. The dashboard is the delivery
+    mechanism now -- no SMS, no email -- and this flag is how that is expressed
+    without deleting the routing table. The routes, the recipients, the templates
+    and the quiet hours all stay in the file, correct and documented, so turning
+    a channel back on is ``enabled: true`` on one line: a YAML edit, no code
+    change, no redeploy (config/notifications.yaml is re-stat'd on every access).
+
+    Deleting the routes instead would have been the same behaviour and a much
+    worse artefact -- the next company to deploy this would have to reconstruct
+    a working notifications.yaml from the docs rather than flip a flag.
+    """
+    value = route.get("enabled")
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in _FALSEY
+
+
+def _route_matches(
+    route: Mapping[str, Any],
+    *,
+    report: str | None,
+    event: str | None,
+    severity: str | None,
+) -> bool:
+    """Does this route cover this report / event, ignoring whether it is enabled?"""
+    if report is not None:
+        return str(route.get("report") or "") == report
+    if event is None:
+        return False
+    if str(route.get("event") or "") != event:
+        return False
+    wanted = route.get("severity")
+    if wanted is None:
+        return True
+    wanted_set = {wanted} if isinstance(wanted, str) else set(wanted)
+    wanted_set = {str(item).strip().lower() for item in wanted_set}
+    return str(severity or "").strip().lower() in wanted_set
+
+
 def _matching_routes(notifications: dict, *, report: str | None = None, event: str | None = None,
                      severity: str | None = None) -> list[dict]:
+    """Enabled routes covering this report or event, in file order."""
+    return [
+        route
+        for route in _candidate_routes(notifications, report=report, event=event, severity=severity)
+        if route_enabled(route)
+    ]
+
+
+def _candidate_routes(notifications: dict, *, report: str | None = None, event: str | None = None,
+                      severity: str | None = None) -> list[dict]:
+    """Every route covering this report or event, enabled or not.
+
+    The distinction matters: "no route is configured for the daily report" is a
+    misconfiguration worth shouting about, and "the daily route exists and is
+    switched off because the board is the delivery" is the intended state. They
+    must not produce the same log line, or the intended state trains everyone to
+    ignore the real one.
+    """
     routes = notifications.get("routes") or []
     if not isinstance(routes, list):
         logger.error("notifications.yaml routes must be a list")
         return []
 
-    matches: list[dict] = []
-    for route in routes:
-        if not isinstance(route, dict):
-            continue
-        if report is not None:
-            if str(route.get("report") or "") != report:
-                continue
-        elif event is not None:
-            if str(route.get("event") or "") != event:
-                continue
-            wanted = route.get("severity")
-            if wanted is not None:
-                wanted_set = {wanted} if isinstance(wanted, str) else set(wanted)
-                wanted_set = {str(item).strip().lower() for item in wanted_set}
-                if str(severity or "").strip().lower() not in wanted_set:
-                    continue
-        else:
-            continue
-        matches.append(route)
-    return matches
+    return [
+        route
+        for route in routes
+        if isinstance(route, dict)
+        and _route_matches(route, report=report, event=event, severity=severity)
+    ]
 
 
 def _route_template_name(route: dict, event_type: str, channel: str, notifications: dict) -> str:
@@ -2206,6 +2292,26 @@ def dispatch_report(
 
     routes = _matching_routes(notifications, report=report_type)
     if not routes:
+        candidates = _candidate_routes(notifications, report=report_type)
+        if candidates:
+            # The intended shipped state: the routes exist and are switched off
+            # because the dashboard is the delivery mechanism. Logged at INFO and
+            # recorded with an honest reason, so /health can show that the report
+            # was produced and deliberately not sent.
+            logger.info(
+                "report %s produced; all %d configured route(s) are disabled "
+                "(notifications.yaml -> enabled: false). The dashboard is the delivery.",
+                report_type,
+                len(candidates),
+            )
+            _record(
+                alert_id=f"report_{report_type}",
+                entity="",
+                severity=None,
+                payload={"report_type": report_type, "routes_disabled": len(candidates)},
+                suppressed_reason="delivery_disabled",
+            )
+            return
         # Not a crash, but not silence either: a report nobody is routed to is
         # a configuration mistake worth shouting about.
         logger.warning("no notification route matches report %r", report_type)
@@ -2297,6 +2403,29 @@ def dispatch_event(
 
     routes = _matching_routes(notifications, event=event_type, severity=severity)
     if not routes:
+        candidates = _candidate_routes(notifications, event=event_type, severity=severity)
+        if candidates:
+            # Switched off on purpose. The row below is not bookkeeping -- it is
+            # the delivery: web/queries.pipeline_banner() reads alerts_fired and
+            # puts a pipeline_failure on a red banner across every tab of the
+            # board, which is the channel that replaced the SMS. A failure whose
+            # only trace was a log file inside a container would be invisible.
+            level = logger.critical if non_suppressible else logger.info
+            level(
+                "%s recorded; all %d configured route(s) are disabled. It will appear on "
+                "the dashboard banner, which is the delivery mechanism. payload=%r",
+                event_type,
+                len(candidates),
+                payload,
+            )
+            _record(
+                alert_id=alert_id,
+                entity=entity,
+                severity=severity,
+                payload={**payload, "routes_disabled": len(candidates)},
+                suppressed_reason="delivery_disabled",
+            )
+            return
         level = logger.critical if non_suppressible else logger.warning
         level(
             "no notification route matches event %s severity %s; payload=%r",
@@ -2321,6 +2450,7 @@ def dispatch_event(
         entity=entity,
         severity=severity,
         notifications=notifications,
+        company_id=_company_for(payload),
     )
     if suppression.suppressed:
         logger.info(

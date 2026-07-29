@@ -87,6 +87,10 @@ _POSTGRES_SCHEMES: frozenset[str] = frozenset({"postgres", "postgresql"})
 _engine: Engine | None = None
 _engine_url: str | None = None
 
+#: The ephemeral-storage warning is returned on every call (the board renders it
+#: as a banner) but logged only once per process. See warn_if_ephemeral_sqlite.
+_ephemeral_warning_logged: bool = False
+
 
 # --------------------------------------------------------------------------
 # URL handling
@@ -209,7 +213,10 @@ def warn_if_ephemeral_sqlite() -> str | None:
     CRITICAL log line and a banner on the board rather than a comment in a
     README.
 
-    Returns the warning text when the situation applies, otherwise None.
+    Returns the warning text when the situation applies, otherwise None. The
+    text is returned on every call -- the dashboard renders it as a banner on
+    every page -- but only *logged* the first time, because the board calls this
+    on each render and a CRITICAL per page view buries the rest of the log.
     """
     if not is_sqlite():
         return None
@@ -229,13 +236,16 @@ def warn_if_ephemeral_sqlite() -> str | None:
     )
     if not hosted:
         return None
+    global _ephemeral_warning_logged
     message = (
         "DATABASE_URL is SQLite on a container host with an EPHEMERAL filesystem. "
         "Every offer, metric and run record will be DELETED on the next redeploy, "
         "with no error. Add a PostgreSQL database to this project and set "
         "DATABASE_URL to its connection string."
     )
-    logger.critical(message)
+    if not _ephemeral_warning_logged:
+        _ephemeral_warning_logged = True
+        logger.critical(message)
     return message
 
 
@@ -478,15 +488,159 @@ def init_db(echo: bool | None = None) -> Engine:
     return engine
 
 
+def _current_revision(engine: Engine) -> str | None:
+    """The revision the database currently claims, or None if it has never run.
+
+    Read straight off ``alembic_version`` rather than through alembic's own
+    MigrationContext so it costs one query and cannot raise on a database that
+    has no such table yet.
+    """
+    try:
+        if "alembic_version" not in set(sa_inspect(engine).get_table_names()):
+            return None
+        with engine.connect() as connection:
+            rows = [
+                row[0] for row in connection.exec_driver_sql("SELECT version_num FROM alembic_version")
+            ]
+    except Exception:  # pragma: no cover - reported by the caller instead
+        return None
+    return rows[0] if len(rows) == 1 else None
+
+
+def upgrade_to_head(echo: bool | None = None) -> dict[str, Any]:
+    """Bring the database to the alembic head. The boot step, and idempotent.
+
+    Called before anything serves a request or fires a job, from
+    ``python -m towbook_agent migrate`` and from the web app's startup hook. It
+    has to be correct in three states, because a deployment will hit all three:
+
+    1. **A fresh, empty database** -- what Railway hands you the first time.
+       ``alembic upgrade head`` replays every migration and writes the version
+       row. Nothing is created twice.
+    2. **A database already at head** -- every redeploy after the first.
+       ``upgrade head`` is a no-op that costs one query.
+    3. **A database with tables but no ``alembic_version``** -- what
+       ``init_db()`` produced before it learned to stamp itself, which includes
+       the owner's original SQLite file. Replaying 0001 against it dies on
+       "table requests already exists", permanently. It is detected and stamped
+       at the head it demonstrably matches when the table set is exactly the
+       ORM's; anything else is genuinely ambiguous and is reported, not guessed.
+
+    **Never raises.** A deploy whose migration failed must still come up far
+    enough to *say* that it failed -- the board is the only delivery channel, so
+    a container that exits on boot tells the owner nothing at all. The failure
+    is returned, logged as CRITICAL, and surfaced on the board's banner.
+
+    Returns ``{"ok", "action", "revision", "previous_revision", "error"}``.
+    ``action`` is one of ``created`` (an empty database was built from scratch),
+    ``upgraded`` (migrations were applied), ``up_to_date`` (nothing to do) or
+    ``create_all`` (the alembic directory was missing). It is derived from the
+    version row before and after, not guessed from whether tables existed --
+    "there were tables, therefore nothing ran" is exactly wrong on the deploy
+    that ships a new migration, which is the one deploy worth reading the log of.
+    """
+    outcome: dict[str, Any] = {
+        "ok": False,
+        "action": "none",
+        "revision": None,
+        "previous_revision": None,
+        "error": None,
+    }
+
+    ensure_dirs()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine = get_engine(echo=echo)
+        url = engine.url.render_as_string(hide_password=False)
+        config = _alembic_config(url)
+        if config is None:
+            outcome["error"] = (
+                "alembic.ini or the alembic/ directory is missing, so migrations cannot run. "
+                "Falling back to create_all()."
+            )
+            logger.error(outcome["error"])
+            init_db(echo=echo)
+            outcome.update(ok=True, action="create_all")
+            return outcome
+
+        head = _alembic_head(config)
+        outcome["revision"] = head
+
+        existing = set(sa_inspect(engine).get_table_names())
+        expected = set(Base.metadata.tables)
+
+        if existing and "alembic_version" not in existing:
+            if head is not None and expected <= existing:
+                # Every ORM table is already there and none of them is versioned:
+                # this is a create_all() database, and create_all() builds the
+                # head. Stamping is the only thing that makes it migratable ever
+                # again, and it changes no data.
+                from alembic import command
+
+                command.stamp(config, head)
+                logger.warning(
+                    "%s had the full schema but no alembic_version row (a database "
+                    "created by init_db before stamping existed). Stamped at %s.",
+                    engine.url.render_as_string(hide_password=True),
+                    head,
+                )
+            else:
+                outcome["error"] = (
+                    f"{engine.url.render_as_string(hide_password=True)} has tables "
+                    f"({', '.join(sorted(existing)[:6])}...) but no alembic_version row, and "
+                    "its schema does not match the models, so which revision it "
+                    "corresponds to cannot be determined. Repair by hand: "
+                    "`alembic stamp <revision>` then `alembic upgrade head`."
+                )
+                logger.critical(outcome["error"])
+                return outcome
+
+        from alembic import command
+
+        before = _current_revision(engine)
+        outcome["previous_revision"] = before
+        command.upgrade(config, "head")
+        after = _current_revision(engine)
+        outcome["revision"] = after or head
+
+        if not existing:
+            action = "created"
+        elif before != after:
+            action = "upgraded"
+        else:
+            action = "up_to_date"
+        outcome.update(ok=True, action=action)
+        logger.info(
+            "database at alembic head %s (%s, %s)",
+            outcome["revision"] or "unknown",
+            action,
+            engine.url.render_as_string(hide_password=True),
+        )
+        return outcome
+
+    except Exception as exc:  # pragma: no cover - depends on the environment
+        outcome["error"] = f"{type(exc).__name__}: {exc}"
+        logger.critical("alembic upgrade head failed: %s", outcome["error"], exc_info=True)
+        return outcome
+
+
 def healthcheck() -> dict[str, Any]:
     """Return a small dict describing database reachability.
 
     Used by the dashboard and by ``login-check`` style diagnostics. Never
     raises: it reports the failure instead, because a health probe that throws
     is a health probe nobody calls.
+
+    The table list comes from SQLAlchemy's inspector rather than ``sqlite_master``
+    so that it says something true on PostgreSQL too -- on a hosted deployment
+    "how many tables does the database have" is the first question asked when the
+    board renders empty, and answering it only for SQLite answers it only where
+    nobody is looking.
     """
     result: dict[str, Any] = {
         "url": None,
+        "backend": None,
         "ok": False,
         "tables": [],
         "error": None,
@@ -494,13 +648,10 @@ def healthcheck() -> dict[str, Any]:
     try:
         engine = get_engine()
         result["url"] = engine.url.render_as_string(hide_password=True)
+        result["backend"] = engine.url.get_backend_name()
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-            if engine.url.get_backend_name().startswith("sqlite"):
-                rows = connection.execute(
-                    text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-                )
-                result["tables"] = [row[0] for row in rows]
+        result["tables"] = sorted(sa_inspect(engine).get_table_names())
         result["ok"] = True
     except Exception as exc:  # pragma: no cover - depends on environment
         result["error"] = f"{type(exc).__name__}: {exc}"

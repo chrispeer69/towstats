@@ -1,0 +1,148 @@
+# ==========================================================================
+# companies.yaml -- the tenant roster.
+#
+# One entry per towing company this install reports on. The dashboard shows a
+# company switcher as soon as there is more than one enabled entry, the
+# scheduler runs the pipeline once per enabled company, and every row, every
+# metric and every query is filtered by `id`.
+#
+# ---------------------------------------------------------------------------
+# CREDENTIALS NEVER GO IN THIS FILE.
+#
+# This file is committed to git. It carries only the NAME of the environment
+# variable prefix that holds a company's login:
+#
+#     credentials_env: ROADSIDE
+#         ->  TOWBOOK_ROADSIDE_USER
+#             TOWBOOK_ROADSIDE_PASS
+#
+# Leave `credentials_env` blank and the entry falls back to the plain
+# TOWBOOK_USER / TOWBOOK_PASS pair, which is what an existing single-company
+# install already has. Hard constraint #1 is unchanged: credentials come from
+# the environment only, and the logging filter scrubs them from every log line.
+# ---------------------------------------------------------------------------
+# `id` IS STORED ON EVERY ROW.
+#
+# It is written to `requests.company_id`, `metrics_daily.company_id` and every
+# other table. Changing it on a company that already has data orphans that
+# data -- there is no rename path and there deliberately is not one, because a
+# silent re-keying is indistinguishable from mixing two tenants together.
+#
+# The first entry below is deliberately `default`, not `roadside-towing`:
+# `default` is the id every row written before this file existed already
+# carries, so the original install keeps all of its history. Pick a real slug
+# for any company you add from here on.
+# ---------------------------------------------------------------------------
+# OVERRIDE PRECEDENCE (later wins)
+#
+#     1. config/rules.yaml               the global default for every company
+#     2. coverage:              ->  rules.yaml missed_work.coverage
+#     3. job_value_by_client:   ->  rules.yaml missed_work.job_value_by_client
+#     4. rules:                 ->  deep-merged over all of the above
+#
+# 2 and 3 REPLACE the global block outright rather than merging into it. A
+# half-inherited staffed window or a half-inherited price list is a number
+# nobody can defend. 4 merges mapping by mapping; a list or a scalar replaces,
+# because `match_any` and `coverage.windows` are ordered decision tables and
+# appending to them would change which rule fires first.
+#
+# DELETING THIS FILE IS SAFE. With no roster the system runs as a single
+# company whose id is `default` and whose credentials are TOWBOOK_USER /
+# TOWBOOK_PASS -- exactly the behaviour before this file existed.
+# ==========================================================================
+
+version: 1
+
+# Which company the dashboard opens on and the CLI assumes when `--company` is
+# not given. Must name an id below; an unknown value falls back to the first
+# enabled entry and logs an error.
+default_company: default
+
+companies:
+  # ------------------------------------------------------------------------
+  # The original install. Verified live 2026-07-28: Towbook companyId 61343,
+  # 2,996 offers over 30 days.
+  # ------------------------------------------------------------------------
+  - id: default
+    name: Roadside Towing and Recovery Inc
+    towbook_company_id: 61343
+    # Blank -> TOWBOOK_USER / TOWBOOK_PASS, so nothing has to change in .env
+    # for the install this system was built on.
+    credentials_env: ""
+    timezone: America/Detroit
+    enabled: true
+
+    # Per-company staffed window. Omit the block to inherit rules.yaml.
+    # Measured on this account's real traffic: 5.8% of offers expire inside
+    # this window, 61.7% outside it.
+    coverage:
+      windows:
+        - name: covered
+          days: [mon, tue, wed, thu, fri]
+          start: "06:00"
+          end: "18:00"
+          note: >-
+            Owner's stated staffed window, verified against 30 days of real
+            Agero traffic.
+      default_label: uncovered
+
+    # Per-company average job values, keyed on the casefolded client name.
+    # GROSS revenue, not margin. Supplied by the owner from invoice data --
+    # Towbook's offerAmount is empty on 100% of records and no dollar figure is
+    # ever derived from the feed.
+    job_value_by_client:
+      agero (swoop): 65
+      allstate: 65
+      nsd: 85
+      allied dispatch solutions: 65
+      urgent.ly: 65          # ASSUMPTION: not supplied by owner, flagged in reports
+
+  # ------------------------------------------------------------------------
+  # TEMPLATE for the next tenant. Copy it, give it a real id, set
+  # TOWBOOK_<PREFIX>_USER / _PASS in the environment, and flip `enabled`.
+  #
+  # Everything not named here is inherited from config/rules.yaml, so a new
+  # company works on day one and is tuned afterwards.
+  # ------------------------------------------------------------------------
+  - id: example-towing
+    name: Example Towing & Recovery
+    towbook_company_id: ""
+    credentials_env: EXAMPLE      # TOWBOOK_EXAMPLE_USER / TOWBOOK_EXAMPLE_PASS
+    timezone: America/Chicago
+    enabled: false
+
+    # A Texas company is staffed different hours than an Ohio one. This is the
+    # single most important per-company override: the coverage contrast is the
+    # headline of every report, and it is wrong if the window is wrong.
+    coverage:
+      windows:
+        - name: covered
+          days: [mon, tue, wed, thu, fri, sat]
+          start: "07:00"
+          end: "19:00"
+        - name: covered_overnight
+          days: [fri, sat]
+          start: "22:00"
+          end: "06:00"
+      default_label: uncovered
+
+    job_value_by_client:
+      agero (swoop): 80
+      allstate: 75
+
+    # Anything else in rules.yaml, deep-merged. Thresholds are the usual
+    # reason: a low-volume company needs a lower min_offers before a blind
+    # spot is real, and a different rate is "good" in a different market.
+    rules:
+      missed_work:
+        blind_spot:
+          min_offers: 3
+          threshold: 0.30
+        closeoff:
+          min_offers: 4
+        client_comparison:
+          min_offers: 10
+      dashboard:
+        rate_thresholds:
+          good: 0.70
+          warn: 0.55

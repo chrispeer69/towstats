@@ -80,6 +80,24 @@ Ranked by **job count**, descending, filtered to `service_class` in
 > average job value, configurable at `missed_work.job_value_by_client`. Until that is set,
 > every report states that it is counting jobs, not money. It must never imply otherwise.
 
+### Per company
+
+Every threshold and every window in this document is **per towing company**.
+`config/rules.yaml` is the default; a company entry in `config/companies.yaml` may replace
+its `coverage` window and its `job_value_by_client` table outright, and deep-merge anything
+else under `rules:`. The two that matter:
+
+* **`coverage`** — §7's inside/outside split is a claim about whether a human was at a desk,
+  so it is only meaningful in that company's own staffed hours *and* its own timezone. A
+  company in Texas and one in Ohio measured against one window are both being measured
+  against a shift neither of them works.
+* **`job_value_by_client`** — replaces rather than merges, so a company that lists two
+  clients does not silently inherit the other three from `rules.yaml` and price work it has
+  never been offered.
+
+Precedence, later winning: `rules.yaml` → `coverage:` → `job_value_by_client:` → `rules:`.
+See the Multiple companies section of README.md.
+
 ---
 
 ## 4. Blind spots — when we fail to respond

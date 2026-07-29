@@ -15,11 +15,18 @@ keywords = ["towbook", "towing", "dispatch", "automation", "metrics"]
 # NOTE: pandas and numpy are deliberately absent. Wheel availability on
 # Python 3.14 is a real risk and neither is needed -- XLSX is handled by
 # openpyxl and all aggregation is plain Python and SQL.
+# Playwright is NOT here. It is an extra (`.[ui]`), because the default
+# acquisition path is `source: api` -- plain HTTP through httpx, no browser --
+# and every playwright import in agents/acquisition.py is lazy or behind
+# TYPE_CHECKING. A container without browsers therefore runs the whole system.
 dependencies = [
-    "playwright>=1.44",
     "openpyxl>=3.1",
     "SQLAlchemy>=2.0",
     "alembic>=1.13",
+    # PostgreSQL driver for hosted deployments. SQLite remains the local and
+    # test backend; a container filesystem is ephemeral, so Postgres is not
+    # optional anywhere the process can be redeployed. See core/db.py.
+    "psycopg[binary]>=3.1",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "jinja2>=3.1",
@@ -39,6 +46,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+]
+# The Playwright fallback acquisition path (`--source ui`). Needs the browser
+# binaries as well as the wheel:
+#     pip install ".[ui]" && python -m playwright install chromium
+# On Railway that means adding the Playwright buildpack; see README -> Deploying
+# to Railway. Nothing else in the system requires it.
+ui = [
+    "playwright>=1.44",
 ]
 
 [project.scripts]

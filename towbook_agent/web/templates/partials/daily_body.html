@@ -2,7 +2,7 @@
 {#- Body of the Daily view. Swapped in wholesale when the date picker changes
     or a client-table column header is clicked. Self-contained: no <script>. -#}
 
-{% set sort_url = '/partials/daily?date=' ~ daily.date ~ (('&account=' ~ account) if account else '') %}
+{% set sort_url = '/partials/daily?date=' ~ daily.date ~ (('&company=' ~ company_id) if company_id else '') %}
 
 {% if not daily.has_data %}
   {% if has_data is defined and not has_data %}

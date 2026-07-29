@@ -41,6 +41,24 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+#: Every spelling of the same boolean, folded to one token. SQLite stores
+#: ``acknowledged BOOLEAN DEFAULT '0'`` and reflects back ``'0'``; PostgreSQL
+#: accepts the same DDL, casts it, and reflects back ``false``. Both are the
+#: model's ``server_default="0"`` and neither is a schema change.
+_BOOLEAN_LITERALS: dict[str, str] = {
+    "0": "false",
+    "f": "false",
+    "false": "false",
+    "no": "false",
+    "off": "false",
+    "1": "true",
+    "t": "true",
+    "true": "true",
+    "yes": "true",
+    "on": "true",
+}
+
+
 def _literal(default: object) -> str | None:
     """Reduce a server default to bare text: ``('')`` and ``''`` both -> ``""``."""
     if default is None:
@@ -50,6 +68,9 @@ def _literal(default: object) -> str | None:
         text = text[1:-1].strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1]
+    # PostgreSQL reflects a boolean default with an explicit cast.
+    if text.lower().endswith("::boolean"):
+        text = text[: -len("::boolean")].strip().strip("'")
     return text
 
 
@@ -68,6 +89,13 @@ def compare_server_default(
     difference that does not exist and every ``alembic check`` fails on a clean
     database. Returning False means "these are the same"; returning None hands
     a genuine difference back to alembic's own logic.
+
+    The same problem, differently spelled, exists on PostgreSQL: the model says
+    ``server_default="0"`` on a Boolean, PostgreSQL accepts that DDL and reflects
+    it back as ``false``. Without the boolean folding below, ``alembic check``
+    would report drift on a database that matches the models exactly -- and the
+    obvious "fix", autogenerating a migration for it, produces a no-op migration
+    that then disagrees with SQLite.
     """
     inspected = _literal(inspected_default)
     declared = _literal(
@@ -75,6 +103,11 @@ def compare_server_default(
     )
     if inspected == declared:
         return False
+    if inspected is not None and declared is not None:
+        folded_inspected = _BOOLEAN_LITERALS.get(inspected.strip().lower())
+        folded_declared = _BOOLEAN_LITERALS.get(declared.strip().lower())
+        if folded_inspected is not None and folded_inspected == folded_declared:
+            return False
     return None
 
 

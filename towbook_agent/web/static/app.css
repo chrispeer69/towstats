@@ -1004,6 +1004,146 @@ table.data tbody tr.row-flag:hover {
 
 .closeoff-client > header h2 { font-size: 18px; }
 
+/* --------------------------------------------------------------------------
+   The four tabs, and the detail row beneath them
+
+   Top-level navigation is HOURLY / WEEKLY / MONTHLY / TRENDS. They are visually
+   heavier than the detail links below them because they are the board; the
+   detail views are where you go when a tab raises a question.
+   -------------------------------------------------------------------------- */
+
+nav.main.tabs a {
+  padding: 9px 16px;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+nav.main.tabs a[aria-current="page"] {
+  background: var(--surface-3);
+  box-shadow: inset 0 -2px 0 var(--series-1);
+}
+
+.subbar {
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--plane) 55%, transparent);
+}
+.subbar nav.detail {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 5px 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.subbar-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-right: 8px;
+}
+.subbar nav.detail a {
+  padding: 4px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.subbar nav.detail a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.subbar nav.detail a[aria-current="page"] { color: var(--text); background: var(--surface-2); font-weight: 600; }
+
+/* An hour that has not happened yet. Dimmed, never zeroed. */
+table.data tbody tr.dim-row td { opacity: 0.45; }
+
+/* --------------------------------------------------------------------------
+   Recommendations (the weekly / monthly "what to do about it" list)
+   -------------------------------------------------------------------------- */
+
+.reco-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+
+.reco {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 11px 13px;
+  box-shadow: inset 3px 0 0 var(--baseline);
+}
+.reco-high   { box-shadow: inset 3px 0 0 var(--critical); }
+.reco-medium { box-shadow: inset 3px 0 0 var(--warning); }
+.reco-low    { box-shadow: inset 3px 0 0 var(--muted); }
+
+.reco-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.reco-head strong { font-size: 15px; }
+.reco-detail { color: var(--text-2); margin: 5px 0 4px; }
+
+/* --------------------------------------------------------------------------
+   Login
+
+   Its own page, not the dashboard shell: there is no navigation to show
+   somebody who is not signed in, and rendering the tab bar behind a login form
+   invites them to click it.
+   -------------------------------------------------------------------------- */
+
+.btn-primary {
+  border-color: color-mix(in srgb, var(--series-1) 55%, transparent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--series-1) 22%, var(--surface-2));
+  font-weight: 600;
+}
+.btn-primary:hover { background: color-mix(in srgb, var(--series-1) 34%, var(--surface-2)); }
+
+.login-wrap {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 8vh 20px 40px;
+}
+
+.login-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-weight: 650;
+  font-size: 17px;
+  margin-bottom: 16px;
+}
+
+.login-form {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.login-form label { font-size: 13px; color: var(--text-2); }
+.login-form input[type="password"] {
+  font: inherit;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+.login-form button { justify-self: start; padding: 8px 20px; }
+
+/* The banner is the point of the page when the password is still the default,
+   so it is allowed to be long and it is allowed to be loud. */
+.login-warning { align-items: flex-start; }
+.login-note { margin: 10px 0 0; }
+
+.login-foot {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 18px;
+}
+
 footer.foot {
   max-width: 1440px;
   margin: 0 auto;

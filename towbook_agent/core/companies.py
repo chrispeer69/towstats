@@ -403,7 +403,14 @@ def default_company_id() -> str:
 
 
 def resolve_company(company_id: str | None = None) -> Company:
-    """The company to use for a request that named ``company_id``, or the default.
+    """The company to use for a request that named ``company_id``.
+
+    ``None`` resolves to the ACTIVE company -- the one :func:`use_company` is
+    currently scoped to -- and only then to the roster default. That ordering
+    is what makes the tenant filter safe by construction: a helper deep inside
+    a computation that forgot to take a ``company_id`` argument still filters to
+    the company the request is about, instead of quietly reading the default
+    tenant's rows into another tenant's report.
 
     An unknown id resolves to the default rather than raising -- a stale
     bookmark or a company removed from the roster must not 500 the dashboard --
@@ -415,9 +422,9 @@ def resolve_company(company_id: str | None = None) -> Company:
         if found is not None:
             return found
         logger.warning(
-            "unknown company %r; falling back to %r", company_id, default_company_id()
+            "unknown company %r; falling back to %r", company_id, active_company_id()
         )
-    fallback = get_company(default_company_id())
+    fallback = get_company(active_company_id())
     return fallback if fallback is not None else _fallback_company()
 
 
@@ -443,7 +450,7 @@ def company_choices() -> list[Company]:
 
 def timezone_for(company_id: str | None = None) -> str | None:
     """This company's IANA zone, or None to mean "use the TZ variable"."""
-    company = get_company(company_id) if company_id else get_company(active_company_id())
+    company = get_company(company_id or active_company_id())
     return company.timezone if company is not None else None
 
 
@@ -469,19 +476,33 @@ def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[st
     return merged
 
 
-def _company_rule_patch(company: Company) -> dict[str, Any]:
-    """The company's overrides, expressed as a rules.yaml-shaped fragment."""
-    patch: dict[str, Any] = {}
-    missed: dict[str, Any] = {}
-    if company.coverage is not None:
-        missed["coverage"] = company.coverage
-    if company.job_value_by_client is not None:
-        missed["job_value_by_client"] = company.job_value_by_client
-    if missed:
-        patch["missed_work"] = missed
-    if company.rules_overrides:
-        patch = _deep_merge(patch, company.rules_overrides)
-    return patch
+#: The two shorthand blocks, and where they land in rules.yaml. Both REPLACE
+#: the global block outright instead of merging into it -- see :func:`rules_for`.
+_REPLACED_BLOCKS: tuple[tuple[str, str, str], ...] = (
+    ("coverage", "missed_work", "coverage"),
+    ("job_value_by_client", "missed_work", "job_value_by_client"),
+)
+
+
+def _apply_replacements(merged: dict[str, Any], company: Company) -> dict[str, Any]:
+    """Set the shorthand blocks wholesale, after everything else has merged.
+
+    ``coverage`` and ``job_value_by_client`` REPLACE rather than merge, and
+    that is the whole point of them. rules.yaml ships five clients' job values;
+    a company that lists two would otherwise silently inherit the other three
+    and price work it has never been offered. A staffed window is worse: merged
+    key by key, a company that declares ``start: "12:00"`` would keep the
+    global ``days`` and ``end``, and the coverage contrast -- the headline of
+    every report -- would be measured against a shift nobody works.
+    """
+    for attribute, section, key in _REPLACED_BLOCKS:
+        value = getattr(company, attribute)
+        if value is None:
+            continue
+        block = dict(merged.get(section) or {})
+        block[key] = value
+        merged[section] = block
+    return merged
 
 
 def rules_for(company_id: str | None = None) -> dict[str, Any]:
@@ -498,8 +519,12 @@ def rules_for(company_id: str | None = None) -> dict[str, Any]:
         base = {}
 
     company = resolve_company(company_id)
-    patch = _company_rule_patch(company)
-    if not patch:
+    has_overrides = bool(
+        company.rules_overrides
+        or company.coverage is not None
+        or company.job_value_by_client is not None
+    )
+    if not has_overrides:
         return base
 
     try:
@@ -512,7 +537,11 @@ def rules_for(company_id: str | None = None) -> dict[str, Any]:
         cached = _cached_rules.get(company.id)
         if cached is not None and cached[0] == stamp:
             return cached[1]
-        merged = _deep_merge(base, patch)
+        # Deep merge first, wholesale replacements second, so that a company
+        # naming BOTH `coverage:` and a `rules:` block touching missed_work
+        # still ends up with its own coverage rather than a half-merged one.
+        merged = _deep_merge(base, company.rules_overrides)
+        merged = _apply_replacements(merged, company)
         _cached_rules[company.id] = (stamp, merged)
         return merged
 

@@ -28,30 +28,55 @@
 
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="/">
+    <a class="brand" href="/hourly">
       Job Acceptance
       <span class="brand-sub">Towbook</span>
     </a>
-    <nav class="main" aria-label="Main">
-      {% for key, label, href in NAV %}
+    {#- THE FOUR TABS. Top-level navigation: hourly, weekly, monthly, trends. -#}
+    <nav class="main tabs" aria-label="Board">
+      {% for key, label, href in TABS %}
       <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <div class="topbar-meta">
-      {% if accounts %}
-      <form method="get" style="display:inline">
-        <label for="account-select" class="visually-hidden">Account</label>
-        <select id="account-select" name="account" onchange="this.form.submit()">
-          <option value="">All accounts</option>
-          {% for item in accounts %}
-          <option value="{{ item }}"{% if account == item %} selected{% endif %}>{{ item }}</option>
+      {#- THE COMPANY SWITCHER.
+
+          Rendered only when more than one towing company is configured in
+          config/companies.yaml: `companies` is empty on a single-company
+          install, and a dropdown with one option is furniture on every page.
+
+          The selection persists in a cookie, so it survives the next click on
+          any tab. `next` sends the operator back to the page they were on
+          rather than to the front page. -#}
+      {% if companies %}
+      <form method="get" action="/company" class="company-switch" style="display:inline"
+            onchange="window.location = '/company/' + this.company.value + '?next=' + encodeURIComponent(window.location.pathname + window.location.search); return false;">
+        <label for="company-select" class="visually-hidden">Company</label>
+        <select id="company-select" name="company">
+          {% for item in companies %}
+          <option value="{{ item.id }}"{% if company_id == item.id %} selected{% endif %}>{{ item.label }}</option>
           {% endfor %}
         </select>
+        <noscript><button type="submit" class="icon-btn">Switch</button></noscript>
       </form>
+      {% elif company and company.name %}
+      <span class="company-name" title="Reporting on {{ company.name }}">{{ company.label }}</span>
       {% endif %}
       <span title="Presentation timezone">{{ now|dt("%a %b %d, %I:%M %p") }} {{ timezone }}</span>
       <button type="button" class="icon-btn" id="theme-toggle">&#9728; Light</button>
+      <form method="post" action="/logout" style="display:inline">
+        <button type="submit" class="icon-btn" title="End this session">Sign out</button>
+      </form>
     </div>
+  </div>
+  {#- The detail views the tabs summarise. Every one on the URL it always had. -#}
+  <div class="subbar">
+    <nav class="detail" aria-label="Detail views">
+      <span class="subbar-label">Detail</span>
+      {% for key, label, href in DETAIL_NAV %}
+      <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
   </div>
 </header>
 
@@ -76,16 +101,14 @@
   </div>
   {% endif %}
 
-  {% if last_run and last_run.status == 'failed' %}
-  <div class="notice notice-error">
-    <span class="ico">&#9888;</span>
-    <span>
-      <strong>The last pipeline run failed.</strong>
-      {{ last_run.error_message|default('No error message was recorded.', true)|midtrunc(180) }}
-      Numbers below are incomplete until it succeeds &mdash; see <a href="/health">Health</a>.
-    </span>
-  </div>
-  {% endif %}
+  {#-
+    THE ALARM, ON EVERY TAB. There is no SMS and no email: notifications.yaml
+    ships with every route disabled and this board is the delivery mechanism, so
+    a failed run, an overdue report or a container about to lose its history has
+    to be visible from whichever tab happens to be open. Do not delete this
+    include without first re-enabling a notification channel.
+  -#}
+  {% include "partials/pipeline_banner.html" %}
 
   {% block content %}{% endblock %}
 </main>

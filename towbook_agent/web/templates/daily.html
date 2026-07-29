@@ -12,17 +12,17 @@
     </div>
   </div>
   <div class="controls">
-    <a class="btn btn-sm" href="/daily{{ qs(date=daily.prev_date, account=account, sort=daily.sort, dir=daily.direction) }}"
+    <a class="btn btn-sm" href="/daily{{ qs(date=daily.prev_date, company=company_id, sort=daily.sort, dir=daily.direction) }}"
        title="Previous day">&#8592; {{ daily.prev_date|day("%b %d") }}</a>
     <label for="daily-date">Date</label>
     <input type="date" id="daily-date" name="date" value="{{ daily.date }}"
            max="{{ now.date() }}"
-           hx-get="/partials/daily{{ qs(account=account, sort=daily.sort, dir=daily.direction) }}"
+           hx-get="/partials/daily{{ qs(company=company_id, sort=daily.sort, dir=daily.direction) }}"
            hx-target="#daily-body"
            hx-swap="innerHTML"
            hx-trigger="change"
            hx-indicator="#daily-body">
-    <a class="btn btn-sm" href="/daily{{ qs(date=daily.next_date, account=account, sort=daily.sort, dir=daily.direction) }}"
+    <a class="btn btn-sm" href="/daily{{ qs(date=daily.next_date, company=company_id, sort=daily.sort, dir=daily.direction) }}"
        title="Next day">{{ daily.next_date|day("%b %d") }} &#8594;</a>
     {{ m.band_legend(thresholds) }}
   </div>

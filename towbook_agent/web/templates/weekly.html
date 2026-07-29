@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Weekly{% endblock %}
+
+{#- TAB 2 -- WEEKLY. This week against last: the coverage split, the causes
+    behind the missed work, and what to do about them. The body is shared with
+    the Monthly tab (partials/period_body.html) because a week and a month
+    differ only in where their boundaries fall. -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>This week</h1>
+    <div class="sub">
+      {{ period.current_first|day("%b %d") }} &ndash; {{ period.current_last|day("%b %d, %Y") }},
+      against {{ period.previous_first|day("%b %d") }} &ndash;
+      {{ period.previous_last|day("%b %d") }}. Weeks start Monday, local time.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.band_legend(thresholds) }}
+  </div>
+</div>
+
+{% if not period.available %}
+  {{ m.model_unavailable(period.error) }}
+{% elif not period.has_data %}
+  {{ m.empty_state('Nothing offered this week or last',
+                   'No requests were offered between ' ~ period.previous_first ~ ' and ' ~ period.current_last ~ '.') }}
+{% else %}
+  {% include "partials/period_body.html" %}
+{% endif %}
+{% endblock %}

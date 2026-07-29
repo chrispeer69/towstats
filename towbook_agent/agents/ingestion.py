@@ -221,10 +221,13 @@ _CANONICAL_FIELDS: tuple[str, ...] = (
 #: outcome. Their absence is header drift, not a tolerable gap.
 _REQUIRED_FIELDS: tuple[str, ...] = ("request_id", "offered_at", "status")
 
-#: Every column written by the upsert, in insert order.
+#: Every column written by the upsert, in insert order. These are TABLE COLUMN
+#: NAMES, not ORM attribute names -- the insert goes through the Core -- so
+#: this reads ``company_id``, the real column, and not its ``account_id``
+#: synonym.
 _UPSERT_COLUMNS: tuple[str, ...] = (
     "request_id",
-    "account_id",
+    "company_id",
     "client_name",
     "client_key",
     "offered_at",
@@ -1116,7 +1119,7 @@ def _parse_sheet(
     schema: Mapping[str, Any],
     rules: Mapping[str, Any],
     run_id: str,
-    account_id: str,
+    company_id: str,
 ) -> _Parsed:
     """Stream the payload and build canonical records. Reads, never writes.
 
@@ -1258,7 +1261,7 @@ def _parse_sheet(
                 unknown_action=unknown_action,
                 rules=rules,
                 default_class=default_class,
-                account_id=account_id,
+                company_id=company_id,
                 run_id=run_id,
                 ingested_at=ingested_at,
                 parsed=parsed,
@@ -1308,7 +1311,7 @@ def _build_record(
     unknown_action: str,
     rules: Mapping[str, Any],
     default_class: str,
-    account_id: str,
+    company_id: str,
     run_id: str,
     ingested_at: datetime,
     parsed: _Parsed,
@@ -1318,7 +1321,10 @@ def _build_record(
 ) -> tuple[dict[str, Any], str | None]:
     """Turn one sheet row into a canonical record, or explain why it cannot be."""
     record: dict[str, Any] = {name: None for name in _UPSERT_COLUMNS}
-    record["account_id"] = account_id
+    # Which towing company was offered this job. Stamped on every row at the
+    # moment of ingest, because it is the only point in the system that still
+    # knows which login the payload was pulled with.
+    record["company_id"] = company_id
     record["source_run_id"] = run_id
     record["ingested_at"] = ingested_at
 
@@ -1571,8 +1577,13 @@ def ingest(
     xlsx_path: Path | str,
     run_id: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
+    company_id: str | None = None,
 ) -> IngestResult:
-    """Ingest one archived Request Log export. Idempotent.
+    """Ingest one archived Request Log export for one company. Idempotent.
+
+    ``company_id`` stamps every row and the runs row, so a multi-company
+    install can pull two tenants into one database and keep them apart
+    afterwards. ``account_id`` is the old name for it and still works.
 
     Raises :class:`HeaderValidationError` when the export's headers no longer
     match config/schema.yaml (nothing is stored), and :class:`IngestionError`
@@ -1580,6 +1591,9 @@ def ingest(
     ``pipeline_failure`` event first -- silence is never treated as success.
     """
     global _schema_ready
+
+    company_id = company_id if company_id is not None else account_id
+    account_id = company_id
 
     path = Path(xlsx_path)
     started_at = utcnow()
@@ -1607,7 +1621,7 @@ def ingest(
 
         schema = get_schema()
         rules = get_rules()
-        parsed = _parse_sheet(path, schema, rules, run_id, account_id)
+        parsed = _parse_sheet(path, schema, rules, run_id, company_id)
 
         result.rows_read = parsed.rows_read
         result.rows_rejected = parsed.rows_rejected

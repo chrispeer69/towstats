@@ -327,7 +327,7 @@
     <section class="card">
       <header>
         <h2>Blind spots</h2>
-        <span class="hint"><a href="/blind-spots{{ qs(days=missed.days, account=account) }}">Open the grid &rarr;</a></span>
+        <span class="hint"><a href="/blind-spots{{ qs(days=missed.days, company=company_id) }}">Open the grid &rarr;</a></span>
       </header>
       <div class="stats" style="margin-bottom: 12px">
         <div class="stat">
@@ -367,7 +367,7 @@
     <section class="card">
       <header>
         <h2>Close-off candidates</h2>
-        <span class="hint"><a href="/close-off{{ qs(days=missed.days, account=account) }}">By client &rarr;</a></span>
+        <span class="hint"><a href="/close-off{{ qs(days=missed.days, company=company_id) }}">By client &rarr;</a></span>
       </header>
       <div class="stats" style="margin-bottom: 12px">
         <div class="stat">

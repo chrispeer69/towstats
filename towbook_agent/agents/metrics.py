@@ -99,8 +99,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..core import companies as _companies
 from ..core import events
-from ..core.config_loader import get_notifications, get_rules, rules_version
+from ..core.config_loader import get_notifications, rules_version
 from ..core.db import get_session
 from ..core.models import (
     STATUS_VALUES,
@@ -186,7 +187,18 @@ _ZONE_CACHE: dict[str, ZoneInfo] = {}
 
 
 def local_timezone_name() -> str:
-    """Return the configured local timezone name (``TZ``, default Detroit)."""
+    """The local timezone: this company's, then ``TZ``, then Detroit.
+
+    A coverage window is a claim about when a human was at a desk, so it is
+    only meaningful in that company's own clock. A Texas tenant and an Ohio
+    tenant reporting out of one install must not share one zone, and neither
+    can be asked to depend on the process-wide ``TZ`` variable. The company is
+    the one taking precedence; ``TZ`` remains the answer for a single-company
+    install, which declares no zone of its own.
+    """
+    company = _companies.timezone_for()
+    if company:
+        return company
     return (os.environ.get("TZ") or "").strip() or DEFAULT_TIMEZONE
 
 
@@ -391,8 +403,14 @@ def _pp(a: float | None, b: float | None) -> float | None:
 # ==========================================================================
 
 
-def _rules() -> dict[str, Any]:
-    return get_rules() or {}
+def _rules(company_id: str | None = None) -> dict[str, Any]:
+    """config/rules.yaml with this company's overrides merged over it.
+
+    Global rules.yaml stays the default for everyone; a company entry in
+    config/companies.yaml may replace its coverage window, its job values and
+    any threshold. See ``core.companies.rules_for`` for the precedence.
+    """
+    return _companies.rules_for(company_id) or {}
 
 
 def _metrics_cfg(rules: dict[str, Any], section: str) -> dict[str, Any]:
@@ -629,22 +647,27 @@ def _load_rows(
     session: Session,
     start_utc: datetime,
     end_utc: datetime,
-    account_id: str | None = None,
+    company_id: str | None = None,
 ) -> list[Request]:
     """Requests whose ``offered_at`` falls in ``[start_utc, end_utc)``.
+
+    ALWAYS filtered by company. ``company_id=None`` means "the default
+    company", never "every company" -- this function is the single gate every
+    computation in this module and in agents/missed_work.py loads its rows
+    through, so an unfiltered branch here would put one tenant's offers into
+    another tenant's report with nothing on screen to show it happened.
 
     Ordered deterministically so that every list in the JSON output is stable
     across recomputation -- which is what makes the stored blob comparable.
     """
     stmt = (
         select(Request)
+        .where(Request.company_id == _companies.resolve_company_id(company_id))
         .where(Request.offered_at.is_not(None))
         .where(Request.offered_at >= start_utc)
         .where(Request.offered_at < end_utc)
+        .order_by(Request.offered_at, Request.request_id)
     )
-    if account_id:
-        stmt = stmt.where(Request.account_id == account_id)
-    stmt = stmt.order_by(Request.offered_at, Request.request_id)
     return list(session.scalars(stmt))
 
 
@@ -669,7 +692,10 @@ def _row_view(request: Request, rules: dict[str, Any], default_class: str) -> di
 
     return {
         "request_id": request.request_id,
-        "account_id": request.account_id,
+        "company_id": request.company_id,
+        #: Deprecated alias, same value. Kept so that alert expressions and
+        #: fixtures written against the single-company build still resolve.
+        "account_id": request.company_id,
         "client": name or key or "(unknown)",
         "client_name": name,
         "client_key": key,
@@ -967,7 +993,8 @@ def _row_context(
     """
     context: dict[str, Any] = {
         "request_id": view["request_id"],
-        "account_id": view["account_id"],
+        "company_id": view.get("company_id") or view.get("account_id"),
+        "account_id": view.get("account_id") or view.get("company_id"),
         "client": view["client"],
         "client_key": view["client_key"],
         "status": view["status"],
@@ -1019,18 +1046,18 @@ def _client_contexts(
     default_class: str,
     report_type: str,
     version: str,
-    account_id: str | None,
+    company_id: str | None,
     window_hours: int,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Per-client trailing-24h contexts for client_acceptance_drop.
 
     Deliberately a real trailing window ending at the report window end, not
     "the calendar day": the rule is named ``*_24h`` and must mean 24 hours even
-    on a 23 or 25 hour DST day.
+    on a 23 or 25 hour DST day. Scoped to one company, like every other read.
     """
     hours = max(1, int(window_hours))
     start_utc = end_utc - timedelta(hours=hours)
-    views = _views(_load_rows(session, start_utc, end_utc, account_id), rules, default_class)
+    views = _views(_load_rows(session, start_utc, end_utc, company_id), rules, default_class)
 
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for view in views:
@@ -1114,8 +1141,13 @@ def _already_fired(
     kind: str,
     row_dedupe: str,
     window: timedelta,
+    company_id: str | None = None,
 ) -> bool:
     """Has this alert already been handed to the notifier for this entity?
+
+    Scoped to one company. Two tenants both work for Agero, so
+    ``("client_acceptance_drop", "agero (swoop)")`` is a different fact for
+    each of them and one company's alert must never silence the other's.
 
     ``alerts_fired`` is written by agents/notifier.py -- it records every alert
     it handled, delivered or suppressed, and its own ``same_alert_same_entity``
@@ -1134,7 +1166,9 @@ def _already_fired(
     a new reason to reconsider it.
     """
     stmt = select(AlertFired.id).where(
-        AlertFired.alert_id == alert_id, AlertFired.entity == entity
+        AlertFired.company_id == _companies.resolve_company_id(company_id),
+        AlertFired.alert_id == alert_id,
+        AlertFired.entity == entity,
     )
     if kind != "row" or str(row_dedupe).strip().casefold() != "forever":
         stmt = stmt.where(AlertFired.fired_at >= utcnow() - window)
@@ -1154,6 +1188,7 @@ def _fire_alerts(
     rules: dict[str, Any],
     version: str,
     dedupe: bool = True,
+    company_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate the rules over each context and return what should be emitted.
 
@@ -1166,6 +1201,7 @@ def _fire_alerts(
 
     window = _parse_duration(alert_cfg.get("dedupe_window") or None, _rate_limit_window())
     row_dedupe = str(alert_cfg.get("row_dedupe") or "forever")
+    company = _companies.resolve_company_id(company_id)
 
     fired: list[dict[str, Any]] = []
     for entity, context in contexts:
@@ -1183,7 +1219,7 @@ def _fire_alerts(
             entity_key = str(entity or raw.get("entity") or "")
 
             if dedupe and _already_fired(
-                session, alert_id, entity_key, kind, row_dedupe, window
+                session, alert_id, entity_key, kind, row_dedupe, window, company
             ):
                 logger.debug("alert %s for %r already fired; not re-emitting", alert_id, entity_key)
                 continue
@@ -1197,6 +1233,10 @@ def _fire_alerts(
                     "when": raw.get("when") or raw.get("expression") or "",
                     "detail": _alert_detail(context, kind),
                     "rules_version": version,
+                    # Rides on the event payload so agents/notifier.py stamps
+                    # the alerts_fired row with the company it belongs to, and
+                    # so a message body can name which company it is about.
+                    "company_id": company,
                     "context": _jsonable(context),
                 }
             )
@@ -1210,7 +1250,7 @@ def _missed_work_pass(
     period_type: str,
     rules: dict[str, Any],
     version: str,
-    account_id: str | None,
+    company_id: str | None,
     persist: bool,
     emit_alerts: bool,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -1242,7 +1282,7 @@ def _missed_work_pass(
             end_local,
             rules,
             period_type=period_type,
-            account_id=account_id,
+            company_id=company_id,
             persist=persist,
         )
     except Exception as exc:
@@ -1256,7 +1296,7 @@ def _missed_work_pass(
                 session,
                 end_local,
                 rules,
-                account_id=account_id,
+                company_id=company_id,
                 report_type=period_type,
             )
         except Exception as exc:
@@ -1267,7 +1307,16 @@ def _missed_work_pass(
         for kind, entity, context in triples:
             by_kind[kind].append((entity, context))
         for kind in sorted(by_kind):
-            pending.extend(_fire_alerts(session, by_kind[kind], kind, rules, version))
+            pending.extend(
+                _fire_alerts(
+                    session,
+                    by_kind[kind],
+                    kind,
+                    rules,
+                    version,
+                    company_id=company_id,
+                )
+            )
 
     embedded = {
         key: value for key, value in document.items() if key not in _VOLATILE_KEYS
@@ -1324,6 +1373,19 @@ def _persistable(document: dict[str, Any]) -> dict[str, Any]:
 
 
 def _upsert(session: Session, model: Any, filters: dict[str, Any], values: dict[str, Any]) -> Any:
+    """Find-or-create on ``filters``, then apply ``values``.
+
+    ``filters`` must carry ``company_id`` for every table that has one: it is
+    part of each metrics unique key, and an upsert that omitted it would find
+    the OTHER company's row for the same window and overwrite it. Asserted
+    rather than silently defaulted, because the failure is invisible in the
+    result -- the number returned is correct, and the row it replaced is gone.
+    """
+    if "company_id" in model.__table__.c and "company_id" not in filters:
+        raise ValueError(
+            f"_upsert({model.__name__}) needs company_id in its filters; "
+            "without it one company's row overwrites another's"
+        )
     stmt = select(model)
     for column, value in filters.items():
         stmt = stmt.where(getattr(model, column) == value)
@@ -1338,12 +1400,28 @@ def _upsert(session: Session, model: Any, filters: dict[str, Any], values: dict[
 
 
 def _persist_client_daily(
-    session: Session, day: _date, by_client: Sequence[dict[str, Any]], version: str
+    session: Session,
+    day: _date,
+    by_client: Sequence[dict[str, Any]],
+    version: str,
+    company_id: str | None = None,
 ) -> int:
-    """Upsert one row per client and drop rows no longer supported by the data."""
+    """Upsert one row per client and drop rows no longer supported by the data.
+
+    Scoped to one company on BOTH halves. The read that finds existing rows is
+    filtered, so this company cannot adopt another's Agero row; and the sweep
+    that deletes unsupported rows is filtered, so it cannot delete one either.
+    The delete is the dangerous half: unscoped, a quiet Tuesday for one tenant
+    would wipe every other tenant's Tuesday.
+    """
+    company = _companies.resolve_company_id(company_id)
     existing = {
         row.client_key: row
-        for row in session.scalars(select(ClientDaily).where(ClientDaily.date == day))
+        for row in session.scalars(
+            select(ClientDaily)
+            .where(ClientDaily.company_id == company)
+            .where(ClientDaily.date == day)
+        )
     }
     seen: set[str] = set()
     stamp = utcnow()
@@ -1353,7 +1431,7 @@ def _persist_client_daily(
         seen.add(key)
         row = existing.get(key)
         if row is None:
-            row = ClientDaily(date=day, client_key=key)
+            row = ClientDaily(company_id=company, date=day, client_key=key)
             session.add(row)
         row.client_name = entry["client"]
         row.offered = entry["offered"]
@@ -1377,6 +1455,23 @@ def _persist_client_daily(
 # ==========================================================================
 # Session plumbing
 # ==========================================================================
+
+
+def _company_scope(company_id: str | None, account_id: str | None = None):
+    """Activate the company a ``compute_*`` call is about.
+
+    Takes the pair of argument names every public entry point accepts:
+    ``company_id`` is the current one, ``account_id`` the name the
+    single-company build used. Whichever was given wins; ``company_id`` first
+    if somehow both were.
+
+    Activating rather than only resolving matters because the LOCAL TIMEZONE
+    is read all over this module -- ``_local_midnight_utc``, ``to_local``,
+    ``parse_local_date`` -- and cannot be threaded through every one of them.
+    The scope is entered before the window is parsed, so "Tuesday" is that
+    company's Tuesday from the first line.
+    """
+    return _companies.use_company(company_id if company_id is not None else account_id)
 
 
 def _run(
@@ -1411,6 +1506,7 @@ def compute_hourly(
     window_start: datetime | _date | str,
     *,
     session: Session | None = None,
+    company_id: str | None = None,
     account_id: str | None = None,
     persist: bool = True,
     emit_alerts: bool | None = None,
@@ -1418,10 +1514,31 @@ def compute_hourly(
     """Metrics for the clock hour ``[window_start, window_start + 1h)``.
 
     ``window_start`` is local time (naive is assumed local, aware is converted).
-    Persists to ``metrics_hourly``, unique on ``window_start``, and returns the
-    document. The running-day figures cover local midnight up to the window end,
-    because that is what the hourly SMS reports on the second line.
+    Persists to ``metrics_hourly``, unique on ``(company_id, window_start)``,
+    and returns the document. The running-day figures cover local midnight up
+    to the window end, because that is what the hourly SMS reports on the
+    second line.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
+    with _company_scope(company_id, account_id) as company:
+        return _compute_hourly(
+            window_start,
+            session=session,
+            company_id=company,
+            persist=persist,
+            emit_alerts=emit_alerts,
+        )
+
+
+def _compute_hourly(
+    window_start: datetime | _date | str,
+    *,
+    session: Session | None,
+    company_id: str,
+    persist: bool,
+    emit_alerts: bool | None,
+) -> dict[str, Any]:
     if isinstance(window_start, datetime) and window_start.tzinfo is not None:
         # An aware input names an exact instant, so use it directly. On the
         # fall-back night local 01:00 happens twice; a naive "01:00" can only
@@ -1444,7 +1561,7 @@ def compute_hourly(
     day_start_utc = _local_midnight_utc(day)
 
     emit_alerts = persist if emit_alerts is None else emit_alerts
-    rules = _rules()
+    rules = _rules(company_id)
     version = rules_version()
     _, default_class = _service_class_order(rules)
     detail_cfg = _metrics_cfg(rules, "detail")
@@ -1454,7 +1571,7 @@ def compute_hourly(
 
     def work(sess: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         # One query for the whole day so far; the window is a slice of it.
-        day_rows = _load_rows(sess, day_start_utc, end_utc, account_id)
+        day_rows = _load_rows(sess, day_start_utc, end_utc, company_id)
         day_views = _views(day_rows, rules, default_class)
         window_views = [
             view
@@ -1484,13 +1601,14 @@ def compute_hourly(
             "hourly",
             rules,
             version,
-            account_id,
+            company_id,
             persist,
             False,
         )
 
         document: dict[str, Any] = {
             "report_type": "hourly",
+            "company_id": company_id,
             "timezone": local_timezone_name(),
             "rules_version": version,
             "computed_at": utcnow().isoformat(sep="T"),
@@ -1540,7 +1658,7 @@ def compute_hourly(
             _upsert(
                 sess,
                 MetricsHourly,
-                {"window_start": start_utc},
+                {"company_id": company_id, "window_start": start_utc},
                 {
                     "offered": window_totals["offered"],
                     "accepted": window_totals["accepted"],
@@ -1560,7 +1678,11 @@ def compute_hourly(
                 (view["request_id"], _row_context(view, "hourly", version, rules))
                 for view in window_views
             ]
-            pending.extend(_fire_alerts(sess, row_contexts, "row", rules, version))
+            pending.extend(
+                _fire_alerts(
+                    sess, row_contexts, "row", rules, version, company_id=company_id
+                )
+            )
             pending.extend(
                 _fire_alerts(
                     sess,
@@ -1571,12 +1693,13 @@ def compute_hourly(
                         default_class,
                         "hourly",
                         version,
-                        account_id,
+                        company_id,
                         int(alert_cfg["client_window_hours"]),
                     ),
                     "client",
                     rules,
                     version,
+                    company_id=company_id,
                 )
             )
         document["alerts"] = pending
@@ -1606,23 +1729,45 @@ def compute_daily(
     day: datetime | _date | str,
     *,
     session: Session | None = None,
+    company_id: str | None = None,
     account_id: str | None = None,
     persist: bool = True,
     emit_alerts: bool | None = None,
 ) -> dict[str, Any]:
-    """Metrics for one local calendar day.
+    """Metrics for one local calendar day, for one company.
 
-    Persists the JSON document to ``metrics_daily`` (unique on ``date``) and one
-    row per client to ``client_daily`` (unique on ``date`` + ``client_key``).
-    Clients that no longer appear for the day are deleted, so a corrected
-    re-ingest cannot leave a stale row behind.
+    Persists the JSON document to ``metrics_daily`` (unique on
+    ``(company_id, date)``) and one row per client to ``client_daily`` (unique
+    on ``company_id`` + ``date`` + ``client_key``). Clients that no longer
+    appear for the day are deleted -- for this company only -- so a corrected
+    re-ingest cannot leave a stale row behind or remove another tenant's.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
+    with _company_scope(company_id, account_id) as company:
+        return _compute_daily(
+            day,
+            session=session,
+            company_id=company,
+            persist=persist,
+            emit_alerts=emit_alerts,
+        )
+
+
+def _compute_daily(
+    day: datetime | _date | str,
+    *,
+    session: Session | None,
+    company_id: str,
+    persist: bool,
+    emit_alerts: bool | None,
+) -> dict[str, Any]:
     target = parse_local_date(day)
     start_utc = _local_midnight_utc(target)
     end_utc = _local_midnight_utc(target + timedelta(days=1))
 
     emit_alerts = persist if emit_alerts is None else emit_alerts
-    rules = _rules()
+    rules = _rules(company_id)
     version = rules_version()
     _, default_class = _service_class_order(rules)
     detail_cfg = _metrics_cfg(rules, "detail")
@@ -1632,7 +1777,7 @@ def compute_daily(
     zero_pct = _notifications_formatting().get("zero_offers_rate_pct", 0)
 
     def work(sess: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        views = _views(_load_rows(sess, start_utc, end_utc, account_id), rules, default_class)
+        views = _views(_load_rows(sess, start_utc, end_utc, company_id), rules, default_class)
         totals = _status_totals(views)
         by_client = _by_client(views, max_examples)
 
@@ -1646,13 +1791,14 @@ def compute_daily(
             "daily",
             rules,
             version,
-            account_id,
+            company_id,
             persist,
             bool(emit_alerts),
         )
 
         document: dict[str, Any] = {
             "report_type": "daily",
+            "company_id": company_id,
             "date": target.isoformat(),
             "weekday": _WEEKDAY_LABELS[target.weekday()],
             "timezone": local_timezone_name(),
@@ -1687,21 +1833,25 @@ def compute_daily(
             _upsert(
                 sess,
                 MetricsDaily,
-                {"date": target},
+                {"company_id": company_id, "date": target},
                 {
                     "metrics": _persistable(document),
                     "rules_version": version,
                     "computed_at": utcnow(),
                 },
             )
-            _persist_client_daily(sess, target, by_client, version)
+            _persist_client_daily(sess, target, by_client, version, company_id)
 
         pending: list[dict[str, Any]] = list(missed_alerts)
         if emit_alerts:
             row_contexts = [
                 (view["request_id"], _row_context(view, "daily", version, rules)) for view in views
             ]
-            pending.extend(_fire_alerts(sess, row_contexts, "row", rules, version))
+            pending.extend(
+                _fire_alerts(
+                    sess, row_contexts, "row", rules, version, company_id=company_id
+                )
+            )
             pending.extend(
                 _fire_alerts(
                     sess,
@@ -1712,12 +1862,13 @@ def compute_daily(
                         default_class,
                         "daily",
                         version,
-                        account_id,
+                        company_id,
                         int(alert_cfg["client_window_hours"]),
                     ),
                     "client",
                     rules,
                     version,
+                    company_id=company_id,
                 )
             )
         document["alerts"] = pending
@@ -2070,6 +2221,7 @@ def compute_weekly(
     week_start: datetime | _date | str,
     *,
     session: Session | None = None,
+    company_id: str | None = None,
     account_id: str | None = None,
     persist: bool = True,
     emit_alerts: bool | None = None,
@@ -2078,8 +2230,29 @@ def compute_weekly(
 
     ``week_start`` is normalised to the Monday of the week it falls in, so the
     scheduler and a human typing a Wednesday both land on the same row.
-    Persists the JSON document to ``metrics_weekly`` (unique on ``week_start``).
+    Persists the JSON document to ``metrics_weekly`` (unique on
+    ``(company_id, week_start)``).
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
+    with _company_scope(company_id, account_id) as company:
+        return _compute_weekly(
+            week_start,
+            session=session,
+            company_id=company,
+            persist=persist,
+            emit_alerts=emit_alerts,
+        )
+
+
+def _compute_weekly(
+    week_start: datetime | _date | str,
+    *,
+    session: Session | None,
+    company_id: str,
+    persist: bool,
+    emit_alerts: bool | None,
+) -> dict[str, Any]:
     start_day = week_start_for(week_start)
     end_day = start_day + timedelta(days=7)  # exclusive
     prior_start_day = start_day - timedelta(days=7)
@@ -2089,7 +2262,7 @@ def compute_weekly(
     prior_start_utc = _local_midnight_utc(prior_start_day)
 
     emit_alerts = persist if emit_alerts is None else emit_alerts
-    rules = _rules()
+    rules = _rules(company_id)
     version = rules_version()
     _, default_class = _service_class_order(rules)
     detail_cfg = _metrics_cfg(rules, "detail")
@@ -2102,7 +2275,7 @@ def compute_weekly(
     def work(sess: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         # One 14-day query, split locally: two round trips would be two
         # snapshots, and a request ingested between them would skew the delta.
-        rows = _load_rows(sess, prior_start_utc, end_utc, account_id)
+        rows = _load_rows(sess, prior_start_utc, end_utc, company_id)
         all_views = _views(rows, rules, default_class)
         current = [
             view
@@ -2131,7 +2304,7 @@ def compute_weekly(
             "weekly",
             rules,
             version,
-            account_id,
+            company_id,
             persist,
             bool(emit_alerts),
         )
@@ -2142,7 +2315,7 @@ def compute_weekly(
             "weekly",
             rules,
             version,
-            account_id,
+            company_id,
             # The prior week is context for this week's trend, not a report in
             # its own right: it is neither persisted again nor re-alerted, so a
             # weekly run cannot re-text last week.
@@ -2152,6 +2325,7 @@ def compute_weekly(
 
         document: dict[str, Any] = {
             "report_type": "weekly",
+            "company_id": company_id,
             "week_start": start_day.isoformat(),
             "week_end": (end_day - timedelta(days=1)).isoformat(),
             "prior_week_start": prior_start_day.isoformat(),
@@ -2207,7 +2381,7 @@ def compute_weekly(
             _upsert(
                 sess,
                 MetricsWeekly,
-                {"week_start": start_day},
+                {"company_id": company_id, "week_start": start_day},
                 {
                     "metrics": _persistable(document),
                     "rules_version": version,
@@ -2223,7 +2397,11 @@ def compute_weekly(
             row_contexts = [
                 (view["request_id"], _row_context(view, "weekly", version, rules)) for view in current
             ]
-            pending.extend(_fire_alerts(sess, row_contexts, "row", rules, version))
+            pending.extend(
+                _fire_alerts(
+                    sess, row_contexts, "row", rules, version, company_id=company_id
+                )
+            )
             pending.extend(
                 _fire_alerts(
                     sess,
@@ -2234,12 +2412,13 @@ def compute_weekly(
                         default_class,
                         "weekly",
                         version,
-                        account_id,
+                        company_id,
                         int(alert_cfg["client_window_hours"]),
                     ),
                     "client",
                     rules,
                     version,
+                    company_id=company_id,
                 )
             )
         document["alerts"] = pending
@@ -2405,6 +2584,7 @@ def compute_monthly(
     month_start: datetime | _date | str,
     *,
     session: Session | None = None,
+    company_id: str | None = None,
     account_id: str | None = None,
     persist: bool = True,
     emit_alerts: bool | None = None,
@@ -2425,7 +2605,27 @@ def compute_monthly(
     ``emit_alerts`` defaults to following ``persist``, but the row-scoped alerts
     are deduped on (alert_id, request_id) forever, so a monthly run re-raises
     nothing the hourly and daily runs already sent.
+
+    ``account_id`` is the old name for ``company_id`` and still works.
     """
+    with _company_scope(company_id, account_id) as company:
+        return _compute_monthly(
+            month_start,
+            session=session,
+            company_id=company,
+            persist=persist,
+            emit_alerts=emit_alerts,
+        )
+
+
+def _compute_monthly(
+    month_start: datetime | _date | str,
+    *,
+    session: Session | None,
+    company_id: str,
+    persist: bool,
+    emit_alerts: bool | None,
+) -> dict[str, Any]:
     start_day = month_start_for(month_start)
     end_day = month_end_for(start_day)  # exclusive
     prior_start_day = month_start_for(start_day - timedelta(days=1))
@@ -2438,7 +2638,7 @@ def compute_monthly(
     prior_days_in_month = (start_day - prior_start_day).days
 
     emit_alerts = persist if emit_alerts is None else emit_alerts
-    rules = _rules()
+    rules = _rules(company_id)
     version = rules_version()
     _, default_class = _service_class_order(rules)
     detail_cfg = _metrics_cfg(rules, "detail")
@@ -2451,7 +2651,7 @@ def compute_monthly(
     def work(sess: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         # One two-month query, split locally. Two round trips would be two
         # snapshots, and a row ingested between them would skew the delta.
-        rows = _load_rows(sess, prior_start_utc, end_utc, account_id)
+        rows = _load_rows(sess, prior_start_utc, end_utc, company_id)
         all_views = _views(rows, rules, default_class)
         current = [
             view
@@ -2480,7 +2680,7 @@ def compute_monthly(
             "monthly",
             rules,
             version,
-            account_id,
+            company_id,
             persist,
             bool(emit_alerts),
         )
@@ -2491,7 +2691,7 @@ def compute_monthly(
             "monthly",
             rules,
             version,
-            account_id,
+            company_id,
             # Context for this month's trend, not a report of its own: neither
             # persisted again nor re-alerted, so a monthly run cannot re-text
             # last month.
@@ -2599,7 +2799,11 @@ def compute_monthly(
                 (view["request_id"], _row_context(view, "monthly", version, rules))
                 for view in current
             ]
-            pending.extend(_fire_alerts(sess, row_contexts, "row", rules, version))
+            pending.extend(
+                _fire_alerts(
+                    sess, row_contexts, "row", rules, version, company_id=company_id
+                )
+            )
             pending.extend(
                 _fire_alerts(
                     sess,
@@ -2610,12 +2814,13 @@ def compute_monthly(
                         default_class,
                         "monthly",
                         version,
-                        account_id,
+                        company_id,
                         int(alert_cfg["client_window_hours"]),
                     ),
                     "client",
                     rules,
                     version,
+                    company_id=company_id,
                 )
             )
         document["alerts"] = pending
@@ -2642,20 +2847,28 @@ def compute_monthly(
 
 
 def get_stored_hourly(
-    window_start: datetime | _date | str, *, session: Session | None = None
+    window_start: datetime | _date | str,
+    *,
+    session: Session | None = None,
+    company_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Read back a persisted hourly row as a dict, or None."""
-    start_utc = to_utc(
-        parse_local_datetime(window_start).replace(minute=0, second=0, microsecond=0)
-    )
+    """Read back a persisted hourly row for one company as a dict, or None."""
+    with _company_scope(company_id) as company:
+        start_utc = to_utc(
+            parse_local_datetime(window_start).replace(minute=0, second=0, microsecond=0)
+        )
 
     def read(sess: Session) -> dict[str, Any] | None:
         row = sess.scalars(
-            select(MetricsHourly).where(MetricsHourly.window_start == start_utc).limit(1)
+            select(MetricsHourly)
+            .where(MetricsHourly.company_id == company)
+            .where(MetricsHourly.window_start == start_utc)
+            .limit(1)
         ).first()
         if row is None:
             return None
         return {
+            "company_id": row.company_id,
             "window_start": to_local(row.window_start).isoformat(sep="T"),
             "window_start_utc": row.window_start.isoformat(sep="T"),
             "offered_window": row.offered,
@@ -2676,14 +2889,20 @@ def get_stored_hourly(
         return read(owned)
 
 
-def _stored_blob(model: Any, column: str, value: _date, session: Session | None):
+def _stored_blob(
+    model: Any, column: str, value: _date, session: Session | None, company_id: str
+):
     def read(sess: Session) -> dict[str, Any] | None:
         row = sess.scalars(
-            select(model).where(getattr(model, column) == value).limit(1)
+            select(model)
+            .where(model.company_id == company_id)
+            .where(getattr(model, column) == value)
+            .limit(1)
         ).first()
         if row is None:
             return None
         document = dict(row.metrics or {})
+        document["company_id"] = row.company_id
         document["rules_version"] = row.rules_version
         document["computed_at"] = row.computed_at.isoformat(sep="T") if row.computed_at else None
         return document
@@ -2695,46 +2914,66 @@ def _stored_blob(model: Any, column: str, value: _date, session: Session | None)
 
 
 def get_stored_daily(
-    day: datetime | _date | str, *, session: Session | None = None
+    day: datetime | _date | str,
+    *,
+    session: Session | None = None,
+    company_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Read back a persisted daily document, or None."""
-    return _stored_blob(MetricsDaily, "date", parse_local_date(day), session)
+    """Read back a persisted daily document for one company, or None."""
+    with _company_scope(company_id) as company:
+        return _stored_blob(MetricsDaily, "date", parse_local_date(day), session, company)
 
 
 def get_stored_weekly(
-    week_start: datetime | _date | str, *, session: Session | None = None
+    week_start: datetime | _date | str,
+    *,
+    session: Session | None = None,
+    company_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Read back a persisted weekly document, or None."""
-    return _stored_blob(MetricsWeekly, "week_start", week_start_for(week_start), session)
+    """Read back a persisted weekly document for one company, or None."""
+    with _company_scope(company_id) as company:
+        return _stored_blob(
+            MetricsWeekly, "week_start", week_start_for(week_start), session, company
+        )
 
 
 def get_stored_monthly(
-    month_start: datetime | _date | str, *, session: Session | None = None
+    month_start: datetime | _date | str,
+    *,
+    session: Session | None = None,
+    company_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Read back a persisted monthly document, or None."""
-    return _stored_blob(MetricsMonthly, "month_start", month_start_for(month_start), session)
+    """Read back a persisted monthly document for one company, or None."""
+    with _company_scope(company_id) as company:
+        return _stored_blob(
+            MetricsMonthly, "month_start", month_start_for(month_start), session, company
+        )
 
 
 def recompute_days(
     start: datetime | _date | str,
     end: datetime | _date | str,
     *,
+    company_id: str | None = None,
     account_id: str | None = None,
     emit_alerts: bool = False,
 ) -> list[dict[str, Any]]:
-    """Recompute every local day in ``[start, end]`` inclusive.
+    """Recompute every local day in ``[start, end]`` inclusive, for one company.
 
     Used by ``seed`` and by backfills. Alerts default OFF here: replaying a
     month of history should not replay a month of text messages.
     """
-    first = parse_local_date(start)
-    last = parse_local_date(end)
-    if last < first:
-        first, last = last, first
+    with _company_scope(company_id, account_id) as company:
+        first = parse_local_date(start)
+        last = parse_local_date(end)
+        if last < first:
+            first, last = last, first
 
-    out: list[dict[str, Any]] = []
-    day = first
-    while day <= last:
-        out.append(compute_daily(day, account_id=account_id, emit_alerts=emit_alerts))
-        day += timedelta(days=1)
-    return out
+        out: list[dict[str, Any]] = []
+        day = first
+        while day <= last:
+            out.append(
+                compute_daily(day, company_id=company, emit_alerts=emit_alerts)
+            )
+            day += timedelta(days=1)
+        return out

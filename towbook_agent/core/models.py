@@ -10,15 +10,34 @@ pass either form without corrupting the data. Use :func:`utcnow` to stamp rows.
 Local time (America/Detroit by default) belongs to the presentation layer --
 the dashboard, the SMS body and the report windows -- never to storage.
 
+Multi-company
+-------------
+Every table carries ``company_id``, and it is part of every metrics unique key.
+This is not decoration: the system is given to other US Tow Alliance towing
+companies, so one install reports on several tenants out of one database.
+
+* ``company_id`` is the id from ``config/companies.yaml``, defaulting to
+  ``"default"`` -- the value every row written before the roster existed
+  already carries, which is why a single-company install needs no data change.
+* **Every metrics unique key leads with it.** ``metrics_daily`` keyed on
+  ``date`` alone would have two companies upserting over one another's Tuesday
+  and the second one to run would win. Keyed on ``(company_id, date)`` they are
+  independent rows.
+* ``Request.account_id`` and ``Run.account_id`` remain as SQLAlchemy synonyms
+  of ``company_id``. They are the old name for the same thing; keeping them
+  means existing callers, fixtures and the ``--account`` CLI flag go on working
+  against the renamed column.
+
 Idempotency
 -----------
 Hard constraint #4: re-running the same window yields the same result.
 
 * ``requests`` is keyed on ``request_id`` and is upserted.
-* every metrics table carries a UNIQUE key on its window column
-  (``metrics_hourly.window_start``, ``metrics_daily.date``,
-  ``metrics_weekly.week_start``, ``client_daily(date, client_key)``), so a
-  recompute upserts rather than duplicates.
+* every metrics table carries a UNIQUE key on its company and window columns
+  (``metrics_hourly(company_id, window_start)``, ``metrics_daily(company_id,
+  date)``, ``metrics_weekly(company_id, week_start)``,
+  ``client_daily(company_id, date, client_key)``), so a recompute upserts
+  rather than duplicates.
 
 Immutability
 ------------
@@ -47,7 +66,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, synonym
 from sqlalchemy.types import TypeDecorator
 
 __all__ = [
@@ -56,6 +75,7 @@ __all__ = [
     "utcnow",
     "to_utc_naive",
     "client_key_for",
+    "company_column",
     "Request",
     "Run",
     "MetricsHourly",
@@ -67,6 +87,7 @@ __all__ = [
     "AlertFired",
     "STATUS_VALUES",
     "DEFAULT_ACCOUNT_ID",
+    "DEFAULT_COMPANY_ID",
 ]
 
 #: The controlled status vocabulary. Source strings are mapped onto it by
@@ -74,7 +95,33 @@ __all__ = [
 #: split apart later without a migration.
 STATUS_VALUES: tuple[str, ...] = ("accepted", "denied", "expired", "canceled", "pending")
 
-DEFAULT_ACCOUNT_ID: str = "default"
+#: The company every row belongs to when no roster is configured. Kept equal to
+#: ``core.companies.DEFAULT_COMPANY_ID``; core/companies.py cannot be imported
+#: here because it imports the config loader, and models must stay dependency
+#: free. tests/test_companies.py asserts the two are the same string.
+DEFAULT_COMPANY_ID: str = "default"
+
+#: The old name for the same value. ``account_id`` was what a single-Towbook
+#: -login install called it; it survives as an alias so that existing callers,
+#: fixtures and the ``--account`` CLI flag keep working.
+DEFAULT_ACCOUNT_ID: str = DEFAULT_COMPANY_ID
+
+
+def company_column() -> Mapped[str]:
+    """The ``company_id`` column, identical on every table that carries one.
+
+    Declared once because a tenant column that is NOT NULL on six tables and
+    nullable on the seventh is how a row ends up belonging to nobody, and
+    because the ``server_default`` is what lets the migration add the column to
+    a populated database without a backfill pass.
+    """
+    return mapped_column(
+        String(64),
+        nullable=False,
+        default=DEFAULT_COMPANY_ID,
+        server_default=DEFAULT_COMPANY_ID,
+        index=False,
+    )
 
 
 def to_utc_naive(value: datetime | None) -> datetime | None:
@@ -146,9 +193,14 @@ class Request(Base):
     __tablename__ = "requests"
 
     request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    account_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, default=DEFAULT_ACCOUNT_ID, server_default=DEFAULT_ACCOUNT_ID
-    )
+    #: Which towing company this offer was made to -- an id from
+    #: config/companies.yaml. Every read path filters on it.
+    company_id: Mapped[str] = company_column()
+    #: Deprecated alias for :attr:`company_id`, kept because it is the name the
+    #: single-company build used everywhere. A synonym, not a second column:
+    #: ``Request.account_id == x`` and ``Request(account_id=x)`` both resolve to
+    #: ``company_id``, so no caller had to change.
+    account_id = synonym("company_id")
     client_name: Mapped[Optional[str]] = mapped_column(String(255))
     #: trimmed + casefolded client_name -- see client_key_for()
     client_key: Mapped[Optional[str]] = mapped_column(String(255))
@@ -199,8 +251,10 @@ class Request(Base):
         # The missed-work model buckets on the numeric code first and the
         # verbatim label second, and it does so over whole 7 and 30 day windows.
         Index("ix_requests_status_code", "status_code"),
-        # Additive: multi-account windows and run-level reconciliation.
-        Index("ix_requests_account_offered_at", "account_id", "offered_at"),
+        # THE MULTI-COMPANY INDEX. Every dashboard query and every metrics
+        # window is "this company, this time range", in that order, so the
+        # composite is the one that actually gets used.
+        Index("ix_requests_company_offered_at", "company_id", "offered_at"),
         Index("ix_requests_source_run_id", "source_run_id"),
     )
 
@@ -228,9 +282,10 @@ class Run(Base):
     __tablename__ = "runs"
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    account_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, default=DEFAULT_ACCOUNT_ID, server_default=DEFAULT_ACCOUNT_ID
-    )
+    #: Which towing company this run pulled for.
+    company_id: Mapped[str] = company_column()
+    #: Deprecated alias for :attr:`company_id`; see :class:`Request`.
+    account_id = synonym("company_id")
     #: hourly | daily | weekly | manual | seed | backfill
     report_type: Mapped[Optional[str]] = mapped_column(String(32))
     window_start: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
@@ -250,6 +305,9 @@ class Run(Base):
         Index("ix_runs_started_at", "started_at"),
         Index("ix_runs_report_type_window_start", "report_type", "window_start"),
         Index("ix_runs_status", "status"),
+        # /health answers "did MY company's pipeline run", so the run history
+        # is read per company and ordered by time.
+        Index("ix_runs_company_started_at", "company_id", "started_at"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -273,7 +331,8 @@ class MetricsHourly(Base):
     __tablename__ = "metrics_hourly"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    #: start of the hour, naive UTC, unique -> recompute upserts
+    company_id: Mapped[str] = company_column()
+    #: start of the hour, naive UTC; unique WITH company_id -> recompute upserts
     window_start: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     offered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     accepted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -286,8 +345,9 @@ class MetricsHourly(Base):
     computed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("window_start", name="uq_metrics_hourly_window_start"),
+        UniqueConstraint("company_id", "window_start", name="uq_metrics_hourly_window_start"),
         Index("ix_metrics_hourly_window_start", "window_start"),
+        Index("ix_metrics_hourly_company_window_start", "company_id", "window_start"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -305,15 +365,20 @@ class MetricsDaily(Base):
     __tablename__ = "metrics_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    #: local calendar date (TZ env var, default America/Detroit)
+    company_id: Mapped[str] = company_column()
+    #: local calendar date, in THIS COMPANY's timezone (companies.yaml, falling
+    #: back to the TZ env var). Two companies in different zones legitimately
+    #: disagree about where Tuesday ends, which is another reason the unique key
+    #: cannot be the date alone.
     date: Mapped[_date] = mapped_column(Date, nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     rules_version: Mapped[Optional[str]] = mapped_column(String(64))
     computed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("date", name="uq_metrics_daily_date"),
+        UniqueConstraint("company_id", "date", name="uq_metrics_daily_date"),
         Index("ix_metrics_daily_date", "date"),
+        Index("ix_metrics_daily_company_date", "company_id", "date"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -326,6 +391,7 @@ class MetricsWeekly(Base):
     __tablename__ = "metrics_weekly"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = company_column()
     #: Monday of the week, local calendar date
     week_start: Mapped[_date] = mapped_column(Date, nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -333,8 +399,9 @@ class MetricsWeekly(Base):
     computed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("week_start", name="uq_metrics_weekly_week_start"),
+        UniqueConstraint("company_id", "week_start", name="uq_metrics_weekly_week_start"),
         Index("ix_metrics_weekly_week_start", "week_start"),
+        Index("ix_metrics_weekly_company_week_start", "company_id", "week_start"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -358,6 +425,7 @@ class MetricsMonthly(Base):
     __tablename__ = "metrics_monthly"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = company_column()
     #: first day of the month, local calendar date
     month_start: Mapped[_date] = mapped_column(Date, nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -365,8 +433,9 @@ class MetricsMonthly(Base):
     computed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("month_start", name="uq_metrics_monthly_month_start"),
+        UniqueConstraint("company_id", "month_start", name="uq_metrics_monthly_month_start"),
         Index("ix_metrics_monthly_month_start", "month_start"),
+        Index("ix_metrics_monthly_company_month_start", "company_id", "month_start"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -400,6 +469,7 @@ class MetricsMissedWork(Base):
     __tablename__ = "metrics_missed_work"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = company_column()
     #: inclusive start of the window, naive UTC
     window_start: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     #: EXCLUSIVE end of the window, naive UTC
@@ -412,6 +482,7 @@ class MetricsMissedWork(Base):
 
     __table_args__ = (
         UniqueConstraint(
+            "company_id",
             "window_start",
             "window_end",
             "period_type",
@@ -421,6 +492,11 @@ class MetricsMissedWork(Base):
         Index(
             "ix_metrics_missed_work_period_type_window_start",
             "period_type",
+            "window_start",
+        ),
+        Index(
+            "ix_metrics_missed_work_company_window_start",
+            "company_id",
             "window_start",
         ),
     )
@@ -438,6 +514,7 @@ class ClientDaily(Base):
     __tablename__ = "client_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = company_column()
     date: Mapped[_date] = mapped_column(Date, nullable=False)
     client_key: Mapped[str] = mapped_column(String(255), nullable=False)
     #: preserved for display; client_key is the join key
@@ -452,9 +529,15 @@ class ClientDaily(Base):
     computed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("date", "client_key", name="uq_client_daily_date_client"),
+        UniqueConstraint(
+            "company_id", "date", "client_key", name="uq_client_daily_date_client"
+        ),
         Index("ix_client_daily_date", "date"),
         Index("ix_client_daily_client_key_date", "client_key", "date"),
+        # Two companies both send work to Agero. Without company_id in the key
+        # the second one to compute Tuesday would overwrite the first one's
+        # Agero row -- same client_key, same date, one row.
+        Index("ix_client_daily_company_date", "company_id", "date"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -479,6 +562,7 @@ class AlertFired(Base):
     __tablename__ = "alerts_fired"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = company_column()
     alert_id: Mapped[str] = mapped_column(String(128), nullable=False)
     entity: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     #: low | medium | high (free text; severities are data in rules.yaml)
@@ -497,6 +581,16 @@ class AlertFired(Base):
         Index("ix_alerts_fired_alert_entity_fired_at", "alert_id", "entity", "fired_at"),
         Index("ix_alerts_fired_fired_at", "fired_at"),
         Index("ix_alerts_fired_severity", "severity"),
+        # The dedupe read is per company: two tenants can both have an
+        # `entity` of "agero (swoop)", and one company's alert must never
+        # suppress the other's.
+        Index(
+            "ix_alerts_fired_company_alert_entity",
+            "company_id",
+            "alert_id",
+            "entity",
+            "fired_at",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

@@ -163,6 +163,12 @@ class ConfigLoader:
                 return cached.data
 
             if current is None and cached is not None:
+                if name in _OPTIONAL and not cached.digest:
+                    # An optional file that was absent last time and is absent
+                    # now. Not an event -- companies.yaml is legitimately
+                    # missing on every single-company install, and warning once
+                    # per config read would bury the log.
+                    return cached.data
                 # The file vanished mid-flight -- an editor writing atomically
                 # can produce this. Keep serving the last known good copy.
                 logger.warning(

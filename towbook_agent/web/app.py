@@ -1,6 +1,26 @@
 """The dashboard: FastAPI + Jinja2, server-rendered, no build step.
 
-Nine views, in the order an owner actually uses them:
+THE BOARD IS THE DELIVERY MECHANISM
+-----------------------------------
+Nothing is texted and nothing is emailed any more. The owner opens this in a
+browser several times a day, so anything that used to arrive as a message has
+to be on a screen here or it is gone. Top-level navigation is therefore four
+tabs, in the order they were asked for:
+
+    /hourly       HOURLY   -- today hour by hour. This replaces the hourly SMS
+                              outright, carries every line that text carried,
+                              and refreshes itself every 60 seconds.
+    /weekly       WEEKLY   -- this week against last: coverage split, causes,
+                              and what to do about them.
+    /monthly      MONTHLY  -- this month against last: trend per cause, client
+                              trajectories, and whether the close-offs worked.
+    /trends       TRENDS   -- the patterns a single period cannot show: the
+                              7 x 24 blind-spot grid, coverage over time,
+                              client trajectories, volume, close-off candidates.
+
+The detail views the four tabs summarise are all still here, unchanged, one
+click away in the second navigation row -- and every URL that existed before
+this restructuring still resolves to the same page:
 
     /             Missed work -- what we did NOT get, why, and what to do
     /blind-spots  Blind spots -- which hours go unanswered (the staffing case)
@@ -9,9 +29,18 @@ Nine views, in the order an owner actually uses them:
     /live         Live        -- what is happening right now
     /daily        Daily       -- what happened yesterday, and why
     /clients      Clients     -- who is sending work and how we treat them
-    /trends       Trends      -- when we are good and when we are not
     /rules        Rules       -- what the machine believes, and what it wants to
     /health       Health      -- whether any of the above can be trusted
+
+THE WHOLE BOARD IS BEHIND A PASSWORD
+------------------------------------
+A single shared password, default ``1234``, with a signed session cookie. It
+was asked for in exactly those terms and is implemented in exactly those terms.
+``1234`` is **not** adequate for real customer data, still less for several
+towing companies' data behind one login; that is stated here, in the README,
+and on the login page itself while the default is still in place. See
+:mod:`towbook_agent.web.auth`. ``/healthz`` is exempt so Railway's health check
+passes without credentials.
 
 WHY MISSED WORK IS THE FRONT PAGE
 ---------------------------------
@@ -47,9 +76,10 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import date as _date
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Query, Request as HTTPRequest
@@ -58,29 +88,49 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .. import __version__
+from ..core import companies as _companies
 from ..core.logging_setup import redact, setup_logging
 from ..core.paths import STATIC_DIR, TEMPLATES_DIR, ensure_dirs
+from . import auth
 from . import queries as q
 from . import rules_admin
+from .auth import PasswordGateMiddleware
 from .rules_admin import RulesWriteError
 
 __all__ = ["app", "create_app", "serve"]
 
 logger = logging.getLogger(__name__)
 
-NAV = (
+#: The four tabs, and the top-level navigation. Order is the order asked for.
+TABS = (
+    ("hourly", "Hourly", "/hourly"),
+    ("weekly", "Weekly", "/weekly"),
+    ("monthly", "Monthly", "/monthly"),
+    ("trends", "Trends", "/trends"),
+)
+
+#: The detail views the tabs summarise. Second row, one click away, every one
+#: of them on the URL it has always had -- no redirects, nothing renamed.
+DETAIL_NAV = (
     ("missed", "Missed work", "/"),
     ("blind_spots", "Blind spots", "/blind-spots"),
     ("closeoff", "Close-off", "/close-off"),
     ("live", "Live", "/live"),
     ("daily", "Daily", "/daily"),
     ("clients", "Clients", "/clients"),
-    ("trends", "Trends", "/trends"),
     ("rules", "Rules", "/rules"),
     ("health", "Health", "/health"),
 )
 
+#: Kept as the union so anything reading ``NAV`` still sees every destination.
+NAV = TABS + DETAIL_NAV
+
 SEED_COMMAND = "python -m towbook_agent seed"
+
+#: How often the Hourly tab pulls a fresh body. It is standing in for a text
+#: message that arrived once an hour, so a minute is generous; it is a partial
+#: HTML swap of one page, not a poll of the pipeline.
+HOURLY_REFRESH_SECONDS = 60
 
 #: How stale the most recent run may be before the header says so.
 STALE_RUN_HOURS = 3.0
@@ -207,6 +257,57 @@ def f_truncate_mid(value: Any, length: int = 60) -> str:
 # ==========================================================================
 
 
+#: What the startup hook did, for /health and /healthz. Populated by
+#: :func:`lifespan`; empty until the app has actually been served, which is the
+#: honest answer for a TestClient that never entered its context manager.
+BOOT: dict[str, Any] = {"migration": None, "scheduler": None, "storage_warning": None}
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Boot the deployment: migrate, then start scheduling. Then serve.
+
+    ORDER MATTERS AND SO DOES NOT CRASHING.
+
+    1. ``alembic upgrade head``. A container gets a fresh, empty Postgres the
+       first time it is deployed and an already-migrated one every time after,
+       so this has to be idempotent in both directions --
+       :func:`towbook_agent.core.db.upgrade_to_head` is where that is handled.
+       It is done here rather than in a release command because Railway has no
+       release phase: if the web process does not migrate, nothing does.
+
+    2. Start the scheduler **in this process**. The board is the only delivery
+       mechanism now, so "the web service is up but nothing is refreshing it" is
+       a silent failure that renders as confident, stale numbers. One service
+       that both serves and schedules cannot get into that state. See
+       :mod:`towbook_agent.core.scheduler` (``start_background_scheduler``) and
+       :mod:`towbook_agent.core.leader` for the double-run guard.
+
+    **A failure in either step does not stop the app from serving.** That is
+    deliberate and it is the whole point: a container that exits on boot tells
+    the owner nothing at all, whereas a container that comes up and puts a red
+    banner across every tab tells him exactly what broke. Both outcomes are
+    recorded in :data:`BOOT` and surfaced by ``/health``.
+    """
+    from ..core import db as core_db
+    from ..core import scheduler as core_scheduler
+
+    BOOT["storage_warning"] = core_db.warn_if_ephemeral_sqlite()
+    BOOT["migration"] = core_db.upgrade_to_head()
+    if not BOOT["migration"].get("ok"):
+        logger.critical(
+            "the database is NOT at the migration head: %s. The board will serve, but "
+            "expect errors and check /health.",
+            BOOT["migration"].get("error"),
+        )
+
+    BOOT["scheduler"] = core_scheduler.start_background_scheduler()
+    try:
+        yield
+    finally:
+        core_scheduler.stop_background_scheduler()
+
+
 def create_app() -> FastAPI:
     ensure_dirs()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -219,8 +320,26 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    # The password gate wraps everything except /healthz, /login and /static.
+    # Added here rather than per-route so a view added later is protected by
+    # default -- a dashboard where forgetting a decorator publishes a customer's
+    # numbers is a dashboard that will eventually publish a customer's numbers.
+    application.add_middleware(PasswordGateMiddleware)
+    if auth.password_is_default():
+        # Said on the login page too, but the login page is only read by
+        # somebody who was already going to sign in. This line is in the deploy
+        # log, which is what the person who put it on a public URL is looking at.
+        logger.warning(
+            "DASHBOARD_PASSWORD is not set, so the board is protected by the "
+            "default '%s'. That is four published digits guarding every client "
+            "name, volume and acceptance rate on it -- and every company's, if "
+            "this instance serves more than one. Set DASHBOARD_PASSWORD.",
+            auth.DEFAULT_PASSWORD,
+        )
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters.update(
@@ -241,6 +360,10 @@ def create_app() -> FastAPI:
     templates.env.globals.update(
         {
             "NAV": NAV,
+            "TABS": TABS,
+            "DETAIL_NAV": DETAIL_NAV,
+            "HOURLY_REFRESH_SECONDS": HOURLY_REFRESH_SECONDS,
+            "basis_note": q.basis_note,
             "SEED_COMMAND": SEED_COMMAND,
             "DASH": DASH,
             "APP_VERSION": __version__,
@@ -278,41 +401,158 @@ def _render(
     request: HTTPRequest, name: str, context: dict[str, Any], status_code: int = 200
 ) -> HTMLResponse:
     templates: Jinja2Templates = request.app.state.templates
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request, name=name, context=context, status_code=status_code
     )
+    # The chosen company sticks. Every tab reads it back out of the cookie, so
+    # switching once holds for the whole session instead of being lost on the
+    # first internal link that does not carry the query string.
+    return _remember_company(request, response, context.get("company_id"))
 
 
 def _shell(request: HTTPRequest, active: str, **extra: Any) -> dict[str, Any]:
-    """Context every full page needs: nav state, clock, staleness, empty state."""
-    last_run = extra.pop("last_run", None)
-    if last_run is None:
-        last_run = q.last_run_summary()
-    stale = bool(
-        last_run
-        and last_run.get("age_hours") is not None
-        and last_run["age_hours"] > STALE_RUN_HOURS
-    )
-    context: dict[str, Any] = {
-        "active": active,
-        "now": q.now_local(),
-        "timezone": str(q.local_tz()),
-        "thresholds": q.rate_thresholds(),
-        "has_data": q.has_any_data(),
-        "last_run": last_run,
-        "run_is_stale": stale,
-        "accounts": q.available_accounts(),
-        "account": extra.pop("account", None),
-        "notice": request.query_params.get("notice") or None,
-        "notice_level": request.query_params.get("level") or "info",
-    }
-    context.update(extra)
-    return context
+    """Context every full page needs: nav state, clock, staleness, empty state.
+
+    ``pipeline_banner`` is part of the shell rather than of any one view on
+    purpose. There is no SMS and no email any more -- config/notifications.yaml
+    ships with every route disabled and this board is the delivery mechanism --
+    so a failed or overdue run has to be impossible to miss from *whichever* tab
+    the owner happens to open. See :func:`towbook_agent.web.queries.pipeline_banner`.
+    """
+    company_id = extra.pop("company", None) or _company(request)
+    # EVERYTHING in the shell is scoped to the selected company, including the
+    # staleness banner and the pipeline-failure banner. Those two are the whole
+    # alarm system now that there is no SMS, and an alarm that reads another
+    # tenant's healthy run is worse than no alarm.
+    with _companies.use_company(company_id) as company_id:
+        last_run = extra.pop("last_run", None)
+        if last_run is None:
+            last_run = q.last_run_summary(company_id)
+        stale = bool(
+            last_run
+            and last_run.get("age_hours") is not None
+            and last_run["age_hours"] > STALE_RUN_HOURS
+        )
+        companies = q.company_options()
+        context: dict[str, Any] = {
+            "active": active,
+            "now": q.now_local(),
+            "timezone": str(q.local_tz()),
+            "thresholds": q.rate_thresholds(),
+            "has_data": q.has_any_data(company_id),
+            "last_run": last_run,
+            "run_is_stale": stale,
+            "pipeline_banner": q.pipeline_banner(company_id=company_id),
+            "storage_warning": _storage_warning(),
+            # The switcher. `companies` is EMPTY when only one is configured,
+            # and base.html renders nothing at all in that case -- a dropdown
+            # with one option is furniture on every page of the install this
+            # system was built for.
+            "companies": companies,
+            "company": q.current_company(),
+            "company_id": company_id,
+            "multi_company": bool(companies),
+            "notice": request.query_params.get("notice") or None,
+            "notice_level": request.query_params.get("level") or "info",
+        }
+        context.update(extra)
+        return context
 
 
-def _account(request: HTTPRequest) -> str | None:
-    value = (request.query_params.get("account") or "").strip()
-    return value or None
+def _storage_warning() -> str | None:
+    """"This deployment is about to lose all of its history", if that is true.
+
+    A container filesystem is ephemeral. ``sqlite:///data/towbook.db`` is the
+    default, so a Railway service with no DATABASE_URL set comes up perfectly
+    healthy and silently wipes thirty days of offers on the next redeploy. The
+    only moment anyone would notice is after it has already happened, so it is
+    said here, on every page, while it is still fixable.
+    """
+    try:
+        return q.core_db.warn_if_ephemeral_sqlite()
+    except Exception:  # pragma: no cover - defensive; the board must render
+        return None
+
+
+#: Cookie that remembers which company the operator last looked at. Not a
+#: secret and not a permission -- every company on this board belongs to the
+#: same operator -- so it is a plain cookie rather than a signed session value.
+#: It exists so that clicking through the tabs does not silently drop back to
+#: the default company on the first link that forgets the query string.
+COMPANY_COOKIE = "towbook_company"
+COMPANY_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def _company(request: HTTPRequest) -> str:
+    """Which company this request is about.
+
+    ``?company=`` (or the old ``?account=``) wins, then the remembered cookie,
+    then the roster's ``default_company``. An unknown id resolves to the
+    default rather than 404ing, because a stale bookmark must not be a dead
+    end -- ``core.companies.resolve_company`` logs it.
+    """
+    requested = (
+        request.query_params.get("company")
+        or request.query_params.get("account")
+        or ""
+    ).strip()
+    if not requested:
+        requested = (request.cookies.get(COMPANY_COOKIE) or "").strip()
+    return _companies.resolve_company_id(requested or None)
+
+
+def _remember_company(
+    request: HTTPRequest, response: Any, company_id: str | None = None
+) -> Any:
+    """Persist the selected company on the response, when there is a choice.
+
+    No cookie is written on a single-company install: there is nothing to
+    remember, and a cookie nobody needs is a cookie banner nobody wants.
+    """
+    if not _companies.is_multi_company():
+        return response
+    resolved = company_id or _company(request)
+    if request.cookies.get(COMPANY_COOKIE) != resolved:
+        response.set_cookie(
+            COMPANY_COOKIE,
+            resolved,
+            max_age=COMPANY_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+    return response
+
+
+def _account(request: HTTPRequest) -> str:
+    """Deprecated alias for :func:`_company`."""
+    return _company(request)
+
+
+@app.get("/company")
+def switch_company_form(request: HTTPRequest) -> RedirectResponse:
+    """The no-JavaScript path of the switcher: ``/company?company=<id>``.
+
+    The dropdown navigates directly when scripting is on; this is what its
+    ``<noscript>`` submit button hits. Same validation, same cookie.
+    """
+    return switch_company(request, request.query_params.get("company") or "")
+
+
+@app.get("/company/{company_id}")
+def switch_company(request: HTTPRequest, company_id: str) -> RedirectResponse:
+    """Select a company and go back where you were.
+
+    A GET rather than a POST because it changes nothing but a preference, and
+    because it has to work from a plain link when JavaScript is off. The
+    redirect target is validated as a same-site path -- an open redirect on a
+    board that is about to sit on a public URL is not worth the convenience.
+    """
+    resolved = _companies.resolve_company_id(company_id)
+    target = (request.query_params.get("next") or "/").strip()
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/"
+    response = RedirectResponse(url=target, status_code=303)
+    return _remember_company(request, response, resolved)
 
 
 def _days(request: HTTPRequest, default: int = q.MISSED_WORK_WINDOW_DAYS) -> int:
@@ -330,6 +570,142 @@ DAY_OPTIONS = (7, 14, 30, 60, 90)
 
 
 # ==========================================================================
+# Login -- the one pair of routes outside the password gate
+# ==========================================================================
+
+
+def _login_context(request: HTTPRequest, **extra: Any) -> dict[str, Any]:
+    return {
+        "next": auth.safe_next(request.query_params.get("next")),
+        "password_is_default": auth.password_is_default(),
+        "default_password": auth.DEFAULT_PASSWORD,
+        "session_days": auth.session_max_age() // 86400,
+        "session_secret_is_ephemeral": not (os.environ.get("SESSION_SECRET") or "").strip(),
+        "APP_VERSION": __version__,
+        "error": None,
+        **extra,
+    }
+
+
+@app.get("/login", response_class=HTMLResponse)
+def view_login(request: HTTPRequest) -> HTMLResponse:
+    """The login form. Exempt from the gate, for obvious reasons.
+
+    An already-authenticated visitor is sent on rather than shown a form they
+    do not need.
+    """
+    if auth.is_authenticated(request):
+        return RedirectResponse(
+            url=auth.safe_next(request.query_params.get("next")), status_code=303
+        )
+    return _render(request, "login.html", _login_context(request))
+
+
+@app.post("/login")
+def submit_login(
+    request: HTTPRequest,
+    password: str = Form(default=""),
+    next: str = Form(default="/"),
+) -> Any:
+    """Check the shared password and issue a signed session cookie.
+
+    A wrong password re-renders the form with a 401 and a deliberately vague
+    message. There is no rate limiting here and the docstring says so rather
+    than implying otherwise: with a single shared secret and no account to lock,
+    the honest mitigation is a long ``DASHBOARD_PASSWORD``, not a counter this
+    process would lose on every redeploy.
+    """
+    target = auth.safe_next(next)
+    if not auth.verify_password(password):
+        logger.warning("failed dashboard login from %s", request.client.host if request.client else "?")
+        return _render(
+            request,
+            "login.html",
+            _login_context(request, error="That password is not correct.", next=target),
+            status_code=401,
+        )
+    response = RedirectResponse(url=target, status_code=303)
+    return auth.set_session_cookie(response, request)
+
+
+@app.post("/logout")
+def submit_logout(request: HTTPRequest) -> RedirectResponse:
+    """Drop the session cookie. POST only, so a prefetched link cannot do it."""
+    response = RedirectResponse(url="/login", status_code=303)
+    return auth.clear_session_cookie(response, request)
+
+
+# ==========================================================================
+# Tab 1 -- HOURLY. The board that replaced the hourly text message.
+# ==========================================================================
+
+
+@app.get("/hourly", response_class=HTMLResponse)
+def view_hourly(request: HTTPRequest) -> HTMLResponse:
+    """Today, hour by hour. The screen the hourly SMS used to be.
+
+    Everything the message carried is here -- the hour line, the running day
+    line, and the unanswered warning when there is one -- reproduced verbatim
+    by the same notifier helpers that built the message, then expanded into the
+    table around them. The body re-fetches itself every 60 seconds so a tab left
+    open on a wall screen stays current without anybody reloading it.
+    """
+    company = _company(request)
+    data = q.hourly_snapshot(company_id=company)
+    return _render(
+        request,
+        "hourly.html",
+        _shell(request, "hourly", hourly=data, company=company, last_run=data.get("last_run")),
+    )
+
+
+@app.get("/partials/hourly", response_class=HTMLResponse)
+def partial_hourly(request: HTTPRequest) -> HTMLResponse:
+    """Body of the Hourly tab, for the HTMX polling refresh."""
+    company = _company(request)
+    data = q.hourly_snapshot(company_id=company)
+    return _render(
+        request,
+        "partials/hourly_body.html",
+        {
+            "hourly": data,
+            "company_id": company,
+            "thresholds": q.rate_thresholds(),
+            "now": q.now_local(),
+        },
+    )
+
+
+# ==========================================================================
+# Tabs 2 and 3 -- WEEKLY and MONTHLY
+# ==========================================================================
+
+
+@app.get("/weekly", response_class=HTMLResponse)
+def view_weekly(request: HTTPRequest) -> HTMLResponse:
+    """This week against last: the coverage split, the causes, the fixes."""
+    company = _company(request)
+    data = q.period_snapshot("week", company_id=company)
+    return _render(
+        request,
+        "weekly.html",
+        _shell(request, "weekly", period=data, company=company),
+    )
+
+
+@app.get("/monthly", response_class=HTMLResponse)
+def view_monthly(request: HTTPRequest) -> HTMLResponse:
+    """This month against last: cause trend, client trajectories, close-offs."""
+    company = _company(request)
+    data = q.period_snapshot("month", company_id=company)
+    return _render(
+        request,
+        "monthly.html",
+        _shell(request, "monthly", period=data, company=company),
+    )
+
+
+# ==========================================================================
 # View 0 -- Missed work (the primary view)
 # ==========================================================================
 
@@ -342,13 +718,13 @@ def view_missed_work(request: HTTPRequest) -> HTMLResponse:
     ``(service_class, cause)`` inventory with a remedy attached to each row.
     Acceptance rate appears once, as context, at the bottom of the tiles.
     """
-    account = _account(request)
+    company = _company(request)
     days = _days(request)
-    data = q.missed_work_snapshot(days=days, account_id=account)
+    data = q.missed_work_snapshot(days=days, company_id=company)
     return _render(
         request,
         "missed.html",
-        _shell(request, "missed", missed=data, account=account, day_options=DAY_OPTIONS),
+        _shell(request, "missed", missed=data, company=company, day_options=DAY_OPTIONS),
     )
 
 
@@ -359,13 +735,13 @@ def view_blind_spots(request: HTTPRequest) -> HTMLResponse:
     The staffing-decision view: it turns "we are missing work" into "nobody is
     covering these specific hours", which is an argument with evidence attached.
     """
-    account = _account(request)
+    company = _company(request)
     days = _days(request)
-    data = q.blind_spots_snapshot(days=days, account_id=account)
+    data = q.blind_spots_snapshot(days=days, company_id=company)
     return _render(
         request,
         "blind_spots.html",
-        _shell(request, "blind_spots", spots=data, account=account, day_options=DAY_OPTIONS),
+        _shell(request, "blind_spots", spots=data, company=company, day_options=DAY_OPTIONS),
     )
 
 
@@ -376,13 +752,13 @@ def view_closeoff(request: HTTPRequest) -> HTMLResponse:
     Grouped by client because the action is a conversation with that client, so
     each group carries a paste-ready summary of exactly that conversation.
     """
-    account = _account(request)
+    company = _company(request)
     days = _days(request)
-    data = q.closeoff_snapshot(days=days, account_id=account)
+    data = q.closeoff_snapshot(days=days, company_id=company)
     return _render(
         request,
         "closeoff.html",
-        _shell(request, "closeoff", closeoff=data, account=account, day_options=DAY_OPTIONS),
+        _shell(request, "closeoff", closeoff=data, company=company, day_options=DAY_OPTIONS),
     )
 
 
@@ -393,26 +769,26 @@ def view_closeoff(request: HTTPRequest) -> HTMLResponse:
 
 @app.get("/live", response_class=HTMLResponse)
 def view_live(request: HTTPRequest) -> HTMLResponse:
-    account = _account(request)
-    data = q.live_snapshot(account_id=account)
+    company = _company(request)
+    data = q.live_snapshot(company_id=company)
     return _render(
         request,
         "live.html",
-        _shell(request, "live", live=data, account=account, last_run=data.get("last_run")),
+        _shell(request, "live", live=data, company=company, last_run=data.get("last_run")),
     )
 
 
 @app.get("/partials/live", response_class=HTMLResponse)
 def partial_live(request: HTTPRequest) -> HTMLResponse:
     """Body of the Live view, for the HTMX polling refresh."""
-    account = _account(request)
-    data = q.live_snapshot(account_id=account)
+    company = _company(request)
+    data = q.live_snapshot(company_id=company)
     return _render(
         request,
         "partials/live_body.html",
         {
             "live": data,
-            "account": account,
+            "company_id": company,
             "thresholds": q.rate_thresholds(),
             "now": q.now_local(),
         },
@@ -426,17 +802,17 @@ def partial_live(request: HTTPRequest) -> HTMLResponse:
 
 def _daily_context(request: HTTPRequest) -> dict[str, Any]:
     params = request.query_params
-    account = _account(request)
+    company = _company(request)
     # Default to yesterday: the daily report is a post-mortem of a finished day.
     day = q.parse_date(params.get("date"), q.today_local() - timedelta(days=1))
     sort = params.get("sort") or "volume"
     direction = params.get("dir") or "desc"
-    data = q.daily_snapshot(day, account_id=account, sort=sort, direction=direction)
+    data = q.daily_snapshot(day, company_id=company, sort=sort, direction=direction)
     return {
         "daily": data,
-        "account": account,
+        "company_id": company,
         "thresholds": q.rate_thresholds(),
-        "has_data": q.has_any_data(),
+        "has_data": q.has_any_data(company),
         "SEED_COMMAND": SEED_COMMAND,
     }
 
@@ -460,15 +836,15 @@ def partial_daily(request: HTTPRequest) -> HTMLResponse:
 
 def _clients_context(request: HTTPRequest) -> dict[str, Any]:
     params = request.query_params
-    account = _account(request)
+    company = _company(request)
     sort = params.get("sort") or "volume"
     direction = params.get("dir") or "desc"
-    data = q.clients_overview(account_id=account, sort=sort, direction=direction)
+    data = q.clients_overview(company_id=company, sort=sort, direction=direction)
     return {
         "overview": data,
-        "account": account,
+        "company_id": company,
         "thresholds": q.rate_thresholds(),
-        "has_data": q.has_any_data(),
+        "has_data": q.has_any_data(company),
     }
 
 
@@ -486,17 +862,17 @@ def partial_clients(request: HTTPRequest) -> HTMLResponse:
 
 @app.get("/clients/{slug:path}", response_class=HTMLResponse)
 def view_client_detail(request: HTTPRequest, slug: str) -> HTMLResponse:
-    account = _account(request)
+    company = _company(request)
     slug = (slug or "").strip("/") or q.EMPTY_CLIENT_KEY
     try:
         days = max(1, min(int(request.query_params.get("days") or 30), 365))
     except ValueError:
         days = 30
-    data = q.client_detail(slug, days=days, account_id=account)
+    data = q.client_detail(slug, days=days, company_id=company)
     return _render(
         request,
         "client_detail.html",
-        _shell(request, "clients", client=data, account=account),
+        _shell(request, "clients", client=data, company=company),
     )
 
 
@@ -507,16 +883,37 @@ def view_client_detail(request: HTTPRequest, slug: str) -> HTMLResponse:
 
 @app.get("/trends", response_class=HTMLResponse)
 def view_trends(request: HTTPRequest) -> HTMLResponse:
-    account = _account(request)
+    """The important-trends tab: the patterns no single period can show.
+
+    Five things, in the order they answer "is this getting better or worse":
+    the 7 x 24 blind-spot grid, the coverage gap week by week, client
+    trajectories, offer volume, and the close-off candidates still arriving.
+
+    The blind-spot grid and the close-off list are the *same* snapshots
+    ``/blind-spots`` and ``/close-off`` render, over this tab's window. They
+    are not recomputed a second way -- one of the two would eventually be wrong
+    and nobody would be able to tell which.
+    """
+    company = _company(request)
     try:
         weeks = int(request.query_params.get("weeks") or 8)
     except ValueError:
         weeks = 8
-    data = q.trends_snapshot(weeks=weeks, account_id=account)
+    weeks = max(1, min(weeks, 26))
+    data = q.trends_snapshot(weeks=weeks, company_id=company)
+    days = min(weeks * 7, 365)
     return _render(
         request,
         "trends.html",
-        _shell(request, "trends", trends=data, account=account, week_options=(4, 8, 13, 26)),
+        _shell(
+            request,
+            "trends",
+            trends=data,
+            spots=q.blind_spots_snapshot(days=days, company_id=company),
+            closeoff=q.closeoff_snapshot(days=days, company_id=company),
+            company=company,
+            week_options=(4, 8, 13, 26),
+        ),
     )
 
 
@@ -527,7 +924,7 @@ def view_trends(request: HTTPRequest) -> HTMLResponse:
 
 @app.get("/rules", response_class=HTMLResponse)
 def view_rules(request: HTTPRequest) -> HTMLResponse:
-    data = q.rules_view()
+    data = q.rules_view(company_id=_company(request))
     data["backups"] = rules_admin.list_backups(limit=10)
     data["allowed_targets"] = sorted(rules_admin.ALLOWED_PATCH_TARGETS)
     return _render(request, "rules.html", _shell(request, "rules", rules=data))
@@ -586,19 +983,41 @@ def reject_rule_proposal(
 
 @app.get("/health", response_class=HTMLResponse)
 def view_health(request: HTTPRequest) -> HTMLResponse:
-    data = q.health_view()
+    data = q.health_view(company_id=_company(request))
     return _render(request, "health.html", _shell(request, "health", health=data))
 
 
 @app.get("/healthz")
 def liveness() -> JSONResponse:
-    """Machine-readable liveness probe. No secrets: the DB URL is masked."""
+    """Machine-readable liveness probe. No secrets: the DB URL is masked.
+
+    Railway's health check hits this, and :mod:`towbook_agent.web.auth` exempts
+    it from the password gate so it can. It reports the two boot steps as well as
+    the database, because "the container is running" and "the container migrated
+    and is scheduling" are different questions and only the second one matters.
+
+    It deliberately still returns 200 when the scheduler did not start: a board
+    that serves stale numbers *and says so* is more useful than a deploy that
+    fails its health check and rolls back to an equally broken previous version.
+    """
     database = q.core_db.healthcheck()
+    migration = BOOT.get("migration") or {}
+    scheduler = BOOT.get("scheduler") or {}
     payload = {
         "ok": bool(database.get("ok")),
         "version": __version__,
-        "database": {"ok": database.get("ok"), "tables": len(database.get("tables") or [])},
-        "has_data": q.has_any_data(),
+        "database": {
+            "ok": database.get("ok"),
+            "backend": database.get("backend"),
+            "tables": len(database.get("tables") or []),
+        },
+        "migration": {"ok": migration.get("ok"), "revision": migration.get("revision")},
+        "scheduler": {"running": scheduler.get("running"), "jobs": scheduler.get("jobs")},
+        "storage_warning": BOOT.get("storage_warning"),
+        # Roster-wide, not per company: this is a liveness probe, and "does
+        # ANY company have data" is the question a deploy check is asking.
+        "companies": len(_companies.enabled_companies()),
+        "has_data": bool(q.companies_with_data()),
         "timezone": str(q.local_tz()),
     }
     return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
@@ -612,9 +1031,9 @@ def liveness() -> JSONResponse:
 @app.get("/api/missed-work")
 def api_missed_work(
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
-    account: str | None = Query(default=None),
+    company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.missed_work_snapshot(days=days, account_id=account or None)
+    data = q.missed_work_snapshot(days=days, company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -647,9 +1066,9 @@ def api_missed_work(
 @app.get("/api/blind-spots")
 def api_blind_spots(
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
-    account: str | None = Query(default=None),
+    company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.blind_spots_snapshot(days=days, account_id=account or None)
+    data = q.blind_spots_snapshot(days=days, company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -673,9 +1092,9 @@ def api_blind_spots(
 @app.get("/api/close-off")
 def api_close_off(
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
-    account: str | None = Query(default=None),
+    company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.closeoff_snapshot(days=days, account_id=account or None)
+    data = q.closeoff_snapshot(days=days, company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -694,9 +1113,70 @@ def api_close_off(
     )
 
 
+@app.get("/api/hourly")
+def api_hourly(company: str | None = Query(default=None)) -> JSONResponse:
+    """The hourly board as JSON, including the exact text the SMS carried.
+
+    ``text_block`` is in the payload on purpose: this endpoint is the seam
+    where somebody will eventually re-attach a message transport, and it should
+    not have to be rebuilt from the parts to do it.
+    """
+    data = q.hourly_snapshot(company_id=company or None)
+    return JSONResponse(
+        q.jsonable(
+            {
+                "date": data["date"],
+                "generated_at": data["generated_at"],
+                "current_hour": data["current_hour"],
+                "current": data["current"],
+                "hours": data["hours"],
+                "totals": data["totals"],
+                "text_block": data["text_block"],
+                "day_alert_line": data["day_alert_line"],
+                "basis_note": data["basis_note"],
+                "has_data": data["has_data"],
+                "has_today": data["has_today"],
+            }
+        )
+    )
+
+
+@app.get("/api/period")
+def api_period(
+    kind: str = Query(default="week"),
+    company: str | None = Query(default=None),
+) -> JSONResponse:
+    """A period tab as JSON. ``kind`` is ``week`` or ``month``."""
+    data = q.period_snapshot(kind, company_id=company or None)
+    return JSONResponse(
+        q.jsonable(
+            {
+                "kind": data["kind"],
+                "available": data["available"],
+                "error": data["error"],
+                "current_first": data["current_first"],
+                "current_last": data["current_last"],
+                "previous_first": data["previous_first"],
+                "previous_last": data["previous_last"],
+                "is_partial": data["is_partial"],
+                "totals": data["totals"],
+                "headline_buckets": data["headline_buckets"],
+                "coverage": data["coverage"],
+                "causes": data["causes"],
+                "clients": data["clients"],
+                "closeoff": data["closeoff"],
+                "blind_spots": data["blind_spots"],
+                "recommendations": data["recommendations"],
+                "basis_note": data["basis_note"],
+                "has_data": data["has_data"],
+            }
+        )
+    )
+
+
 @app.get("/api/live")
-def api_live(account: str | None = Query(default=None)) -> JSONResponse:
-    data = q.live_snapshot(account_id=account or None)
+def api_live(company: str | None = Query(default=None)) -> JSONResponse:
+    data = q.live_snapshot(company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -716,10 +1196,10 @@ def api_live(account: str | None = Query(default=None)) -> JSONResponse:
 @app.get("/api/daily")
 def api_daily(
     date: str | None = Query(default=None),
-    account: str | None = Query(default=None),
+    company: str | None = Query(default=None),
 ) -> JSONResponse:
     day = q.parse_date(date, q.today_local() - timedelta(days=1))
-    data = q.daily_snapshot(day, account_id=account or None)
+    data = q.daily_snapshot(day, company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -745,8 +1225,8 @@ def api_daily(
 
 
 @app.get("/api/clients")
-def api_clients(account: str | None = Query(default=None)) -> JSONResponse:
-    data = q.clients_overview(account_id=account or None)
+def api_clients(company: str | None = Query(default=None)) -> JSONResponse:
+    data = q.clients_overview(company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -803,9 +1283,9 @@ def api_client_detail(slug: str, days: int = Query(default=30, ge=1, le=365)) ->
 @app.get("/api/trends")
 def api_trends(
     weeks: int = Query(default=8, ge=1, le=26),
-    account: str | None = Query(default=None),
+    company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.trends_snapshot(weeks=weeks, account_id=account or None)
+    data = q.trends_snapshot(weeks=weeks, company_id=company or None)
     return JSONResponse(
         q.jsonable(
             {
@@ -824,16 +1304,30 @@ def api_trends(
 
 
 @app.get("/api/health")
-def api_health() -> JSONResponse:
-    data = q.health_view()
+def api_health(request: HTTPRequest) -> JSONResponse:
+    data = q.health_view(company_id=_company(request))
     return JSONResponse(
         q.jsonable(
             {
                 "database": {
                     "ok": data["database"].get("ok"),
+                    "backend": data["database"].get("backend"),
                     "tables": data["database"].get("tables"),
                     "error": data["database"].get("error"),
                 },
+                # The board is the delivery mechanism, so "is anything scheduled
+                # in this container" and "has a report gone quiet" are part of
+                # health, not trivia.
+                "scheduler": data.get("scheduler") or {},
+                "overdue": [
+                    {
+                        "report_type": item.get("report_type"),
+                        "overdue_seconds": item.get("overdue_seconds"),
+                        "last_success": item.get("last_success"),
+                    }
+                    for item in (data.get("overdue") or [])
+                ],
+                "storage_warning": data.get("storage_warning"),
                 "counts": data["counts"],
                 "coverage": data["coverage"],
                 "last_success": {
@@ -902,16 +1396,67 @@ def unhandled(request: HTTPRequest, exc: Exception) -> HTMLResponse:
 # ==========================================================================
 
 
-def serve(host: str | None = None, port: int | None = None, reload: bool = False) -> None:
-    """Run the dashboard with uvicorn."""
+def resolve_port(explicit: int | None = None) -> int:
+    """Which TCP port to listen on.
+
+    ``PORT`` is checked before ``DASHBOARD_PORT`` because a container host
+    assigns the port and injects it as ``PORT``; a service that ignores it binds
+    somewhere the router is not looking and fails its health check with no
+    useful error. ``DASHBOARD_PORT`` stays for local use.
+    """
+    for candidate in (explicit, os.environ.get("PORT"), os.environ.get("DASHBOARD_PORT")):
+        if candidate in (None, ""):
+            continue
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            logger.warning("ignoring non-numeric port %r", candidate)
+    return 8080
+
+
+def resolve_host(explicit: str | None = None) -> str:
+    """Bind address. ``0.0.0.0`` inside a container, loopback on a laptop.
+
+    Binding to 127.0.0.1 in a container means the platform's router cannot reach
+    the process at all -- the deploy "succeeds" and every request 502s -- so a
+    detected container host flips the default. It is only a default: ``--host``
+    and ``DASHBOARD_HOST`` both still win.
+    """
+    if explicit:
+        return explicit
+    configured = (os.environ.get("DASHBOARD_HOST") or "").strip()
+    if configured:
+        return configured
+    containerised = any(
+        os.environ.get(name)
+        for name in ("RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_NAME", "RENDER", "FLY_APP_NAME", "DYNO")
+    )
+    return "0.0.0.0" if containerised else "127.0.0.1"
+
+
+def serve(
+    host: str | None = None,
+    port: int | None = None,
+    reload: bool = False,
+    run_scheduler: bool | None = None,
+) -> None:
+    """Run the dashboard with uvicorn.
+
+    ONE WORKER, DELIBERATELY. No ``workers=`` argument is passed and none should
+    be added: the scheduler runs inside this process (see :func:`lifespan`), and
+    N workers would be N schedulers. The advisory lock in
+    :mod:`towbook_agent.core.leader` catches it on PostgreSQL, but the simplest
+    correct configuration is the one where the situation never arises. This
+    dashboard is a handful of people reading server-rendered pages; one worker is
+    not the bottleneck and never will be.
+    """
     import uvicorn
 
-    host = host or os.environ.get("DASHBOARD_HOST", "127.0.0.1")
-    if port is None:
-        try:
-            port = int(os.environ.get("DASHBOARD_PORT", "8080"))
-        except ValueError:
-            port = 8080
+    if run_scheduler is not None:
+        os.environ["RUN_SCHEDULER"] = "true" if run_scheduler else "false"
+
+    host = resolve_host(host)
+    port = resolve_port(port)
     logger.info("dashboard starting on http://%s:%s", host, port)
     if reload:
         uvicorn.run("towbook_agent.web.app:app", host=host, port=port, reload=True)

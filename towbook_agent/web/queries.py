@@ -30,6 +30,7 @@ import logging
 import os
 import textwrap
 from collections import Counter, defaultdict
+from functools import wraps
 from datetime import date as _date
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -38,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
+from ..core import companies as _companies
 from ..core import db as core_db
 from ..core.config_loader import CONFIG, ConfigError
 from ..core.logging_setup import redact
@@ -65,6 +67,20 @@ __all__ = [
     "rate_band",
     "rate_thresholds",
     "has_any_data",
+    # -- multi-company ----------------------------------------------------
+    "company_options",
+    "current_company",
+    "for_company",
+    # -- the four board tabs (HOURLY / WEEKLY / MONTHLY / TRENDS) ---------
+    "hourly_snapshot",
+    "period_snapshot",
+    "period_bounds",
+    "PERIOD_KINDS",
+    "basis_note",
+    "bucket_of",
+    "coverage_of",
+    "rules_snapshot",
+    "uncovered_label",
     "live_snapshot",
     "daily_snapshot",
     "clients_overview",
@@ -73,6 +89,9 @@ __all__ = [
     "rules_view",
     "health_view",
     "sparkline_points",
+    # -- the board IS the delivery mechanism; this is the alarm --------------
+    "pipeline_banner",
+    "PIPELINE_FAILURE_BANNER_HOURS",
     # -- the missed-work model (MISSED_WORK_MODEL.md) --------------------
     "missed_work_snapshot",
     "blind_spots_snapshot",
@@ -90,6 +109,72 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEZONE = "America/Detroit"
+
+
+# ==========================================================================
+# Multi-company
+# ==========================================================================
+#
+# EVERY read in this module is scoped to one towing company. Two mechanisms,
+# and they are belt and braces on purpose because a missing tenant filter is
+# not a wrong number on a screen -- it is one company's customers, volumes and
+# refusal reasons shown to another company.
+#
+#   1. :func:`for_company` decorates every public entry point. It resolves the
+#      `company_id` / `account_id` argument pair and ACTIVATES that company for
+#      the duration of the call.
+#   2. Every statement that touches the datastore adds an explicit
+#      `company_id ==` clause, defaulting to the active company. There is no
+#      code path that reads rows for "all companies": `company_id=None` means
+#      the active one, never everything.
+#
+# Activating rather than only passing the id also fixes the timezone: a Texas
+# tenant's "today" is not an Ohio tenant's, and `local_tz()` below reads the
+# active company's zone.
+
+
+def for_company(func):
+    """Scope a public query to one company, accepting either argument name.
+
+    ``company_id`` is the current name and ``account_id`` the one the
+    single-company build used; whichever was given wins, and the resolved id is
+    passed on so the wrapped function can still filter explicitly.
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        legacy = kwargs.pop("account_id", None)
+        if kwargs.get("company_id") is None and legacy is not None:
+            kwargs["company_id"] = legacy
+        resolved = _companies.resolve_company_id(kwargs.get("company_id"))
+        kwargs["company_id"] = resolved
+        with _companies.use_company(resolved):
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+def current_company() -> dict[str, Any]:
+    """The company the current request is about, as template-safe data."""
+    return _companies.resolve_company(None).as_dict()
+
+
+def company_options() -> list[dict[str, Any]]:
+    """Companies to offer in the dashboard switcher.
+
+    EMPTY when only one company is configured. A switcher with a single option
+    is noise on every page of a single-company install, so it is not rendered
+    at all until there is a second tenant to switch to.
+    """
+    return [company.as_dict() for company in _companies.company_choices()]
+
+
+def company_rules() -> dict[str, Any]:
+    """config/rules.yaml with the active company's overrides applied."""
+    try:
+        return dict(_companies.rules_for(None) or {})
+    except Exception:
+        return {}
 
 #: Sentinel used in URLs for a request whose client_name was blank. A real
 #: client_key is a casefolded name, so it can never collide with this.
@@ -114,13 +199,20 @@ _UTC = timezone.utc
 
 
 def local_tz() -> ZoneInfo:
-    """The presentation timezone (TZ env var, default America/Detroit).
+    """The presentation timezone: the active company's, then TZ, then Detroit.
+
+    Per company, because a coverage window is a claim about when somebody was
+    at a desk and an Ohio shift read in a Texas clock is a different claim.
 
     Storage is naive UTC; every date, hour bucket and calendar day the operator
     sees is local. Falls back to UTC if the configured zone is unknown so a bad
     TZ value degrades instead of taking the dashboard down.
     """
-    name = (os.environ.get("TZ") or "").strip() or DEFAULT_TIMEZONE
+    name = (
+        (_companies.timezone_for() or "").strip()
+        or (os.environ.get("TZ") or "").strip()
+        or DEFAULT_TIMEZONE
+    )
     try:
         return ZoneInfo(name)
     except Exception:  # pragma: no cover - depends on the tzdata install
@@ -199,10 +291,15 @@ def ratio(numerator: int, denominator: int) -> float | None:
 
 
 def rate_thresholds() -> dict[str, float]:
-    """Good / warn cut-offs, from rules.yaml if present."""
+    """Good / warn cut-offs, from this company's rules if it overrides them.
+
+    A different market has a different idea of a good acceptance rate, so
+    ``dashboard.rate_thresholds`` is one of the blocks a company entry in
+    config/companies.yaml may override.
+    """
     thresholds = dict(DEFAULT_RATE_THRESHOLDS)
     try:
-        configured = (CONFIG.get_rules().get("dashboard") or {}).get("rate_thresholds") or {}
+        configured = (company_rules().get("dashboard") or {}).get("rate_thresholds") or {}
     except Exception:
         configured = {}
     for key in ("good", "warn"):
@@ -236,12 +333,19 @@ def _delta(current: float | None, baseline: float | None) -> float | None:
 
 _REQUEST_COLUMNS = (
     Request.request_id,
-    Request.account_id,
+    Request.company_id,
     Request.client_name,
     Request.client_key,
     Request.offered_at,
     Request.responded_at,
     Request.status,
+    # The two columns the missed-work model buckets on. `status` is a
+    # five-value controlled vocabulary and collapses "Expired" onto "Accept
+    # Failed"; the raw label and the numeric code keep them apart. Selected
+    # here so the dashboard can bucket a row exactly the way the agent does
+    # instead of approximating it -- see :func:`bucket_of`.
+    Request.status_raw,
+    Request.status_code,
     Request.denial_reason,
     Request.service_type_raw,
     Request.service_class,
@@ -259,6 +363,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     amount = data.get("amount")
     if isinstance(amount, Decimal):
         data["amount"] = float(amount)
+    # The stored value, before the display default is applied. A NULL status is
+    # a status the ingester could not read, and bucketing that as "pending"
+    # would report an unreadable row as "still deciding" forever -- exactly the
+    # trap agents/missed_work.py documents. Bucketing reads this key; every
+    # display path reads `status` below.
+    data["status_stored"] = (data.get("status") or "").strip().casefold()
     data["status"] = (data.get("status") or "pending").strip().casefold() or "pending"
     data["service_class"] = (data.get("service_class") or "unclassified").strip() or "unclassified"
     data["client_key"] = (data.get("client_key") or "").strip()
@@ -270,24 +380,28 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 def fetch_requests(
     start_utc: datetime,
     end_utc: datetime,
-    account_id: str | None = None,
+    company_id: str | None = None,
     client_key: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Requests offered in ``[start_utc, end_utc)``, newest last.
+    """One company's requests offered in ``[start_utc, end_utc)``, newest last.
+
+    THE TENANT FILTER IS NOT OPTIONAL. ``company_id=None`` means the active
+    company (see :func:`for_company`), never "every company". Every view in
+    this module reads its rows through here, so this is the one place the
+    filter could go missing -- and it cannot.
 
     Rows with a NULL ``offered_at`` cannot be placed on a timeline and are
     excluded here; :func:`health_view` counts them so they are never invisible.
     """
     statement = (
         select(*_REQUEST_COLUMNS)
+        .where(Request.company_id == _companies.resolve_company_id(company_id))
         .where(Request.offered_at.is_not(None))
         .where(Request.offered_at >= start_utc)
         .where(Request.offered_at < end_utc)
         .order_by(Request.offered_at.asc())
     )
-    if account_id:
-        statement = statement.where(Request.account_id == account_id)
     if client_key is not None:
         statement = statement.where(Request.client_key == client_key)
     if limit:
@@ -297,33 +411,44 @@ def fetch_requests(
         return [_row_to_dict(row) for row in session.execute(statement).mappings()]
 
 
-def has_any_data() -> bool:
-    """True once a single request row exists. Drives the empty state."""
+def has_any_data(company_id: str | None = None) -> bool:
+    """True once THIS COMPANY has a single request row. Drives the empty state.
+
+    Per company, so a newly added tenant sees "run the pipeline" rather than a
+    page of zeros that looks like a bad day.
+    """
     try:
         with core_db.get_session(commit=False) as session:
-            return bool(session.execute(select(func.count()).select_from(Request)).scalar_one())
+            return bool(
+                session.execute(
+                    select(func.count())
+                    .select_from(Request)
+                    .where(
+                        Request.company_id == _companies.resolve_company_id(company_id)
+                    )
+                ).scalar_one()
+            )
     except Exception:
         return False
 
 
-def available_accounts() -> list[str]:
-    """Distinct account ids present in the data.
+def companies_with_data() -> list[str]:
+    """Company ids that actually have rows. Diagnostics only, never a filter.
 
-    Returns an empty list for the single-account case so the account selector
-    stays off screen until multi-account is actually in use.
+    Used by /health to show an operator that a company in the roster has never
+    produced a request -- usually a credential prefix that was never set.
     """
     try:
         with core_db.get_session(commit=False) as session:
-            accounts = [
+            return [
                 row[0]
                 for row in session.execute(
-                    select(Request.account_id).distinct().order_by(Request.account_id)
+                    select(Request.company_id).distinct().order_by(Request.company_id)
                 )
                 if row[0]
             ]
     except Exception:
         return []
-    return accounts if len(accounts) > 1 else []
 
 
 # ==========================================================================
@@ -400,7 +525,7 @@ def _totals(rows: Iterable[dict[str, Any]]) -> Bucket:
 
 def _normalization_rules() -> list[dict[str, Any]]:
     try:
-        raw = CONFIG.get_rules().get("denial_reason_normalization") or []
+        raw = company_rules().get("denial_reason_normalization") or []
     except Exception:
         return []
     return [entry for entry in raw if isinstance(entry, dict)]
@@ -464,7 +589,7 @@ def policy_map() -> dict[str, str]:
     """
     mapping: dict[str, str] = {}
     try:
-        rules = CONFIG.get_rules()
+        rules = company_rules()
     except Exception:
         return mapping
 
@@ -649,6 +774,103 @@ def _missed_work_module():
     return module
 
 
+def _notifier_module():
+    """Import agents.notifier, or ``None``. Same contract as above."""
+    try:
+        from ..agents import notifier as module
+    except Exception as exc:  # pragma: no cover - import failure is environmental
+        logger.warning("agents.notifier unavailable: %s", exc)
+        return None
+    return module
+
+
+def basis_note(revenue_available: bool = False) -> str:
+    """What unit the numbers on a screen are in, in one sentence.
+
+    Delegates to ``agents/notifier.py -> ranking_note()`` so the board and the
+    reports cannot end up making different claims about the same figures. That
+    helper returns one of two true sentences: "these are jobs, not dollars"
+    while no average job values are configured, and "these dollars are
+    estimates from rules.yaml, gross not margin" once they are.
+
+    Falls back to :data:`RANKING_NOTE` if the notifier cannot be imported --
+    a caption is never allowed to be the reason a page fails to render, but a
+    ranked list with no stated unit is never shipped either.
+    """
+    module = _notifier_module()
+    if module is None or not hasattr(module, "ranking_note"):
+        return RANKING_NOTE
+    try:
+        return str(module.ranking_note(bool(revenue_available)))
+    except Exception:  # pragma: no cover - defensive
+        return RANKING_NOTE
+
+
+def rules_snapshot() -> dict[str, Any]:
+    """One read of rules.yaml, to be reused across a whole page render.
+
+    ``CONFIG`` re-stats the file on every access, which is the right behaviour
+    for a long-lived scheduler and the wrong one inside a loop over three
+    thousand rows. Callers that classify rows take a snapshot once and pass it
+    down, exactly as ``compute_missed_work`` does for the same reason.
+    """
+    return company_rules()
+
+
+def bucket_of(row: dict[str, Any], rules: dict[str, Any] | None = None) -> str:
+    """The missed-work bucket for one fetched request row.
+
+    Calls ``agents.missed_work.classify_bucket`` rather than re-deriving
+    anything: the dashboard and the reports must never disagree about whether
+    an offer was declined or nobody answered it. Returns ``""`` when the model
+    is unavailable, and every caller renders that as "unknown", not as zero.
+    """
+    module = _missed_work_module()
+    if module is None:
+        return ""
+    try:
+        return str(
+            module.classify_bucket(
+                {
+                    "status_code": row.get("status_code"),
+                    "status_raw": row.get("status_raw"),
+                    "status": row.get("status_stored") or row.get("status"),
+                },
+                rules if rules is not None else None,
+            )
+        )
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def coverage_of(row: dict[str, Any], rules: dict[str, Any] | None = None) -> str:
+    """Which operating window an offer arrived in, or the uncovered label."""
+    module = _missed_work_module()
+    if module is None:
+        return ""
+    try:
+        return str(
+            module.coverage_label(
+                {"offered_at_local": row.get("offered_local")},
+                rules if rules is not None else None,
+            )
+        )
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def uncovered_label(rules: dict[str, Any] | None = None) -> str:
+    """The label used for "nobody was rostered". Config, never hardcoded."""
+    module = _missed_work_module()
+    default = "uncovered"
+    if module is None:
+        return default
+    try:
+        return str(getattr(module, "UNCOVERED_LABEL", default) or default)
+    except Exception:  # pragma: no cover - defensive
+        return default
+
+
 def missed_work_window(days: int = MISSED_WORK_WINDOW_DAYS) -> dict[str, Any]:
     """The local, half-open window every missed-work view reports on.
 
@@ -669,7 +891,7 @@ def missed_work_window(days: int = MISSED_WORK_WINDOW_DAYS) -> dict[str, Any]:
 
 
 def _missed_work_call(
-    name: str, days: int, account_id: str | None
+    name: str, days: int, company_id: str | None
 ) -> dict[str, Any]:
     """Run one public agents.missed_work entry point over the standard window.
 
@@ -702,7 +924,7 @@ def _missed_work_call(
         envelope["error"] = f"agents.missed_work has no {name}()"
         return envelope
 
-    kwargs: dict[str, Any] = {"account_id": account_id or None}
+    kwargs: dict[str, Any] = {"company_id": _companies.resolve_company_id(company_id)}
     if name == "compute_missed_work":
         # persist=False is what keeps this module read-only. The agent opens its
         # own session with commit=False, so nothing reaches the datastore.
@@ -783,8 +1005,9 @@ def coverage_rows(coverage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@for_company
 def missed_work_snapshot(
-    days: int = MISSED_WORK_WINDOW_DAYS, account_id: str | None = None
+    days: int = MISSED_WORK_WINDOW_DAYS, company_id: str | None = None
 ) -> dict[str, Any]:
     """The inventory of work we did not get -- the primary view.
 
@@ -793,7 +1016,7 @@ def missed_work_snapshot(
     it. Blind spots and close-off candidates appear here as summaries with a
     link to their own page.
     """
-    envelope = _missed_work_call("compute_missed_work", days, account_id)
+    envelope = _missed_work_call("compute_missed_work", days, company_id)
     document = envelope["document"] or {}
     totals = dict(document.get("totals") or {})
     by_bucket = document.get("by_bucket") or {}
@@ -874,8 +1097,9 @@ def missed_work_snapshot(
     return envelope
 
 
+@for_company
 def blind_spots_snapshot(
-    days: int = MISSED_WORK_WINDOW_DAYS, account_id: str | None = None
+    days: int = MISSED_WORK_WINDOW_DAYS, company_id: str | None = None
 ) -> dict[str, Any]:
     """The 7 x 24 hour-of-week grid of when offers go unanswered.
 
@@ -884,7 +1108,7 @@ def blind_spots_snapshot(
     needs -- a colour step per cell, a hatch flag for a cell too small to read
     as a trend, and the hover text.
     """
-    envelope = _missed_work_call("blind_spots", days, account_id)
+    envelope = _missed_work_call("blind_spots", days, company_id)
     document = envelope["document"] or {}
 
     offers = document.get("offers") or [[0] * 24 for _ in range(7)]
@@ -1013,15 +1237,16 @@ def _closeoff_email(client: dict[str, Any], days: int) -> str:
     return "\n".join(lines)
 
 
+@for_company
 def closeoff_snapshot(
-    days: int = MISSED_WORK_WINDOW_DAYS, account_id: str | None = None
+    days: int = MISSED_WORK_WINDOW_DAYS, company_id: str | None = None
 ) -> dict[str, Any]:
     """Work we do not want, being offered anyway -- grouped by client.
 
     Grouped by client because the action is a conversation with that client,
     and each group carries a paste-ready summary for exactly that conversation.
     """
-    envelope = _missed_work_call("closeoff_candidates", days, account_id)
+    envelope = _missed_work_call("closeoff_candidates", days, company_id)
     document = envelope["document"] or {}
 
     clients: list[dict[str, Any]] = []
@@ -1051,8 +1276,9 @@ def closeoff_snapshot(
     return envelope
 
 
+@for_company
 def client_no_response(
-    days: int = MISSED_WORK_WINDOW_DAYS, account_id: str | None = None
+    days: int = MISSED_WORK_WINDOW_DAYS, company_id: str | None = None
 ) -> dict[str, Any]:
     """Per-client no-response counts, plus which of them are outliers.
 
@@ -1061,7 +1287,7 @@ def client_no_response(
     ``client_comparison.gap_pp`` points more often than the best client on the
     same trucks and the same staff.
     """
-    envelope = _missed_work_call("client_comparison", days, account_id)
+    envelope = _missed_work_call("client_comparison", days, company_id)
     document = envelope["document"] or {}
     thresholds = document.get("thresholds") or {}
     min_offers = int(thresholds.get("min_offers") or 20)
@@ -1112,22 +1338,804 @@ def client_no_response(
 
 
 # ==========================================================================
+# Tab 1 -- HOURLY. The board that replaced the hourly text message.
+# ==========================================================================
+#
+# THIS TAB IS THE SMS NOW. Nothing is texted any more, so everything the text
+# carried has to be on this screen or it is simply gone:
+#
+#     14:00-14:59 | Offered 12 / Accepted 9 (75%)
+#     Day: 84 / 61 (73%)
+#     !! 3 tows unanswered this hour
+#
+# All three lines are reproduced verbatim in `text_block` -- built by the same
+# agents/notifier.py helpers that built the message, not by a second
+# implementation -- and then expanded into the hour-by-hour table around them.
+# If the two ever disagreed there would be no way to tell which was lying.
+#
+# The one number the SMS did NOT carry, and the board does, is `unanswered`
+# per hour. On this account 795 of 2,996 offers over 30 days were never
+# answered at all, so an hour's acceptance rate without its unanswered count
+# beside it hides the thing most worth acting on.
+
+
+def _hour_range_label(hour: int) -> str:
+    """``"14:00-14:59"`` -- the exact shape the hourly SMS used."""
+    return f"{hour:02d}:00-{hour:02d}:59"
+
+
+def _notification_formatting() -> dict[str, Any]:
+    try:
+        return dict((CONFIG.get_notifications().get("formatting") or {}))
+    except Exception:
+        return {}
+
+
+def _missed_work_line(counts: dict[str, int], report_type: str) -> str:
+    """The ``!! 3 tows unanswered this hour`` line, or ``""``.
+
+    Built by ``agents/notifier.py -> missed_work_line`` so the board's wording
+    is the message's wording. Empty when the count is zero: a warning that
+    appears every hour is one the owner stops reading, and that was true of the
+    text message for the same reason.
+    """
+    module = _notifier_module()
+    if module is None or not hasattr(module, "missed_work_line"):
+        return ""
+    try:
+        return str(module.missed_work_line(counts, report_type, _notification_formatting()))
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def _wanted_classes() -> set[str]:
+    """Service classes the written policy says we want. Config, not code."""
+    return {name for name, verdict in policy_map().items() if verdict == "accept"}
+
+
+@for_company
+def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
+    """Today, hour by hour: offers, accepted, unanswered, running day total.
+
+    The current hour is returned separately as ``current`` as well as inside
+    ``hours``, because it is the number the owner actually opened the page for
+    and it should not have to be found in a table of 24 rows.
+
+    Hours later than the current one are marked ``is_future`` and carry a
+    running rate of ``None``. They are not zeros -- nothing has been offered in
+    them yet -- and the template draws them as em-dashes.
+    """
+    today = today_local()
+    now = now_local()
+    rules = rules_snapshot()
+    wanted = _wanted_classes()
+
+    day_start, day_end = local_day_bounds(today)
+    rows = fetch_requests(day_start, day_end, company_id=company_id)
+
+    # 28 days ending yesterday: four of each weekday, so the same-hour baseline
+    # is not one freak Tuesday. Today is excluded on purpose -- a baseline that
+    # includes the hour being measured moves as that hour fills up.
+    base_start, base_end = local_span_bounds(today - timedelta(days=28), today - timedelta(days=1))
+    baseline_rows = fetch_requests(base_start, base_end, company_id=company_id)
+
+    for row in rows:
+        row["bucket"] = bucket_of(row, rules)
+
+    day_counts: Counter[str] = Counter()
+    per_hour: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        per_hour[row["offered_local"].hour].append(row)
+        day_counts[row["bucket"] or "unknown"] += 1
+
+    # The same-hour-of-day baseline, as an average per day observed.
+    baseline_offered: Counter[int] = Counter()
+    baseline_accepted: Counter[int] = Counter()
+    baseline_days: set[_date] = set()
+    for row in baseline_rows:
+        moment = row["offered_local"]
+        baseline_offered[moment.hour] += 1
+        baseline_days.add(moment.date())
+        if row["status"] == "accepted":
+            baseline_accepted[moment.hour] += 1
+    observed_days = max(len(baseline_days), 1)
+
+    hours: list[dict[str, Any]] = []
+    running_offered = running_accepted = running_unanswered = 0
+    for hour in range(24):
+        hour_rows = per_hour.get(hour) or []
+        counts: Counter[str] = Counter(row["bucket"] or "unknown" for row in hour_rows)
+        offered = len(hour_rows)
+        accepted = counts.get("won", 0)
+        unanswered = counts.get("no_response", 0)
+
+        is_future = hour > now.hour
+        running_offered += offered
+        running_accepted += accepted
+        running_unanswered += unanswered
+
+        wanted_unanswered = Counter(
+            row["service_class"]
+            for row in hour_rows
+            if row["bucket"] == "no_response" and row["service_class"] in wanted
+        )
+
+        hours.append(
+            {
+                "hour": hour,
+                "label": f"{hour:02d}:00",
+                "range_label": _hour_range_label(hour),
+                "offered": offered,
+                "accepted": accepted,
+                "unanswered": unanswered,
+                "declined": counts.get("declined", 0),
+                "withdrew": counts.get("client_withdrew", 0),
+                "in_flight": counts.get("in_flight", 0),
+                "rate": ratio(accepted, offered),
+                "band": rate_band(ratio(accepted, offered)),
+                "unanswered_rate": ratio(unanswered, offered),
+                "unanswered_band": miss_band(ratio(unanswered, offered)),
+                "running_offered": running_offered,
+                "running_accepted": running_accepted,
+                "running_unanswered": running_unanswered,
+                "running_rate": None if is_future else ratio(running_accepted, running_offered),
+                "is_future": is_future,
+                "is_current": hour == now.hour,
+                "is_past": hour < now.hour,
+                "baseline_offered": round(baseline_offered.get(hour, 0) / observed_days, 1),
+                "baseline_rate": ratio(baseline_accepted.get(hour, 0), baseline_offered.get(hour, 0)),
+                "alert_line": _missed_work_line(dict(wanted_unanswered), "hourly"),
+                "wanted_unanswered": dict(wanted_unanswered),
+                "top_clients": _top_clients(hour_rows, limit=4),
+            }
+        )
+
+    current = hours[min(now.hour, 23)]
+
+    day_offered = len(rows)
+    day_accepted = day_counts.get("won", 0)
+    day_unanswered = day_counts.get("no_response", 0)
+    day_rate = ratio(day_accepted, day_offered)
+
+    day_wanted_unanswered = Counter(
+        row["service_class"]
+        for row in rows
+        if row["bucket"] == "no_response" and row["service_class"] in wanted
+    )
+
+    # The message, exactly as it read. Percentages are rendered here rather than
+    # by a template filter so the block is a faithful copy and not a re-format.
+    def _sms_pct(value: float | None) -> str:
+        return "0" if value is None else f"{value * 100:.0f}"
+
+    text_lines = [
+        f"{current['range_label']} | Offered {current['offered']} / "
+        f"Accepted {current['accepted']} ({_sms_pct(current['rate'])}%)",
+        f"Day: {day_offered} / {day_accepted} ({_sms_pct(day_rate)}%)",
+    ]
+    if current["alert_line"]:
+        text_lines.append(current["alert_line"])
+
+    return {
+        "date": today,
+        "generated_at": now,
+        "current_hour": now.hour,
+        "current": current,
+        "hours": hours,
+        "totals": {
+            "offered": day_offered,
+            "accepted": day_accepted,
+            "unanswered": day_unanswered,
+            "declined": day_counts.get("declined", 0),
+            "withdrew": day_counts.get("client_withdrew", 0),
+            "in_flight": day_counts.get("in_flight", 0),
+            "unknown": day_counts.get("unknown_status", 0) + day_counts.get("unknown", 0),
+            "rate": day_rate,
+            "band": rate_band(day_rate),
+            "unanswered_rate": ratio(day_unanswered, day_offered),
+            "unanswered_band": miss_band(ratio(day_unanswered, day_offered)),
+        },
+        "day_alert_line": _missed_work_line(dict(day_wanted_unanswered), "daily"),
+        "text_block": "\n".join(text_lines),
+        "top_clients": _top_clients(rows, limit=6),
+        "alerts": recent_alerts(limit=6),
+        "last_run": last_run_summary(),
+        "basis_note": basis_note(),
+        "baseline_days": observed_days,
+        "model_available": bool(_missed_work_module()),
+        "has_data": bool(rows) or bool(baseline_rows),
+        "has_today": bool(rows),
+    }
+
+
+# ==========================================================================
+# Tabs 2 and 3 -- WEEKLY and MONTHLY, each against the period before it
+# ==========================================================================
+#
+# ONE FUNCTION SERVES BOTH TABS. A week and a month differ only in where their
+# boundaries fall; every comparison, every cause delta and every recommendation
+# below is identical, and writing them twice would guarantee the two tabs
+# eventually disagreed.
+#
+# THE COMPARISON IS LIKE-FOR-LIKE BY DEFAULT. On a Tuesday, "this week" is two
+# days long. Setting that against a full seven-day last week would report a 70%
+# collapse in volume every Monday morning, so the headline comparison is
+# against the SAME NUMBER OF ELAPSED DAYS of the previous period, and the full
+# previous period is shown beside it, labelled, never instead of it.
+
+#: The two period kinds the board offers, and how each one is described.
+PERIOD_KINDS: tuple[str, ...] = ("week", "month")
+
+
+def _month_start(day: _date) -> _date:
+    return day.replace(day=1)
+
+
+def _previous_month_start(day: _date) -> _date:
+    first = _month_start(day)
+    return _month_start(first - timedelta(days=1))
+
+
+def _month_end(first_of_month: _date) -> _date:
+    """Last calendar day of the month ``first_of_month`` opens."""
+    if first_of_month.month == 12:
+        following = first_of_month.replace(year=first_of_month.year + 1, month=1)
+    else:
+        following = first_of_month.replace(month=first_of_month.month + 1)
+    return following - timedelta(days=1)
+
+
+def period_bounds(kind: str, today: _date | None = None) -> dict[str, Any]:
+    """The three windows a period tab compares.
+
+    ``current``            this week / month so far, up to and including today
+    ``previous_to_date``   the same number of elapsed days of the period before
+    ``previous_full``      that whole period, however long it ran
+
+    All three are ``(first_day, last_day)`` pairs of local calendar days,
+    inclusive at both ends, because that is how a human reads "last month".
+    """
+    today = today or today_local()
+    kind = kind if kind in PERIOD_KINDS else "week"
+
+    if kind == "week":
+        current_first = week_start_for(today)
+        previous_first = current_first - timedelta(days=7)
+        previous_last = current_first - timedelta(days=1)
+        length = 7
+    else:
+        current_first = _month_start(today)
+        previous_first = _previous_month_start(today)
+        previous_last = _month_end(previous_first)
+        length = (previous_last - previous_first).days + 1
+
+    elapsed = (today - current_first).days + 1
+    # A short previous month (February against March) cannot supply more days
+    # than it has, so the like-for-like window is clamped and the page says so.
+    comparable = min(elapsed, length)
+    previous_to_date_last = previous_first + timedelta(days=comparable - 1)
+
+    return {
+        "kind": kind,
+        "label": "week" if kind == "week" else "month",
+        "elapsed_days": elapsed,
+        "previous_length_days": length,
+        "comparable_days": comparable,
+        "is_partial": elapsed < length,
+        "current": (current_first, today),
+        "previous_to_date": (previous_first, previous_to_date_last),
+        "previous_full": (previous_first, previous_last),
+    }
+
+
+def _missed_work_for_days(
+    first_day: _date, last_day: _date, company_id: str | None
+) -> dict[str, Any]:
+    """``compute_missed_work`` over an inclusive span of local days.
+
+    ``persist=False`` -- this is the dashboard, and the dashboard never writes.
+    Returns an envelope with ``available`` / ``error`` rather than raising, so a
+    period tab degrades to an explanation instead of a 500.
+    """
+    envelope: dict[str, Any] = {
+        "available": False,
+        "error": None,
+        "document": {},
+        "first_day": first_day,
+        "last_day": last_day,
+        "days": (last_day - first_day).days + 1,
+    }
+    module = _missed_work_module()
+    if module is None:
+        envelope["error"] = (
+            "agents/missed_work.py could not be imported, so the missed-work "
+            "model cannot be computed."
+        )
+        return envelope
+    try:
+        envelope["document"] = module.compute_missed_work(
+            None,
+            datetime.combine(first_day, time.min),
+            datetime.combine(last_day + timedelta(days=1), time.min),
+            None,
+            period_type="custom",
+            company_id=_companies.resolve_company_id(company_id),
+            persist=False,
+        )
+        envelope["available"] = True
+    except Exception as exc:
+        logger.exception("compute_missed_work failed for %s..%s", first_day, last_day)
+        envelope["error"] = redact(f"{type(exc).__name__}: {exc}")
+    return envelope
+
+
+def _count_delta(current: Any, previous: Any) -> dict[str, Any]:
+    """A count against its comparison, with the direction already decided.
+
+    ``change`` is ``None`` rather than 100% when the previous period had none of
+    something: "we went from nothing to three" has no percentage, and inventing
+    one is how a report ends up claiming an infinite increase.
+    """
+    current_value = int(current or 0)
+    previous_value = int(previous or 0)
+    difference = current_value - previous_value
+    change = (difference / previous_value) if previous_value else None
+    if difference > 0:
+        direction = "up"
+    elif difference < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {
+        "current": current_value,
+        "previous": previous_value,
+        "difference": difference,
+        "change": change,
+        "direction": direction,
+    }
+
+
+def _rate_delta(current: float | None, previous: float | None) -> dict[str, Any]:
+    points = None if (current is None or previous is None) else (current - previous)
+    if points is None:
+        direction = "unknown"
+    elif points > 0.005:
+        direction = "up"
+    elif points < -0.005:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {
+        "current": current,
+        "previous": previous,
+        "points": points,
+        "direction": direction,
+    }
+
+
+def _coverage_comparison(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """Covered vs uncovered, this period against last."""
+    rows = []
+    for key, title in (("outside", "Outside covered hours"), ("inside", "Inside covered hours")):
+        now_side = (current or {}).get(key) or {}
+        was_side = (previous or {}).get(key) or {}
+        rows.append(
+            {
+                "key": key,
+                "title": title,
+                "is_headline": key == "outside",
+                "offers": _count_delta(now_side.get("offers"), was_side.get("offers")),
+                "no_response": _count_delta(now_side.get("no_response"), was_side.get("no_response")),
+                "recoverable": _count_delta(now_side.get("recoverable"), was_side.get("recoverable")),
+                "no_response_rate": _rate_delta(
+                    now_side.get("no_response_rate"), was_side.get("no_response_rate")
+                ),
+                "band": miss_band(now_side.get("no_response_rate")),
+            }
+        )
+    return {
+        "available": bool(current),
+        "rows": rows,
+        "contrast": (current or {}).get("contrast") or {},
+        "finding": (current or {}).get("finding") or "",
+        "definitions": (current or {}).get("definitions") or [],
+        "default_label": (current or {}).get("default_label") or uncovered_label(),
+    }
+
+
+def _cause_comparison(current: dict[str, Any], previous: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-cause movement, worst first. Every cause in either period appears."""
+    now_causes = (current or {}).get("by_cause") or {}
+    was_causes = (previous or {}).get("by_cause") or {}
+    rows: list[dict[str, Any]] = []
+    for cause in sorted(set(now_causes) | set(was_causes)):
+        now_entry = now_causes.get(cause) or {}
+        was_entry = was_causes.get(cause) or {}
+        source = now_entry or was_entry
+        rows.append(
+            {
+                "cause": cause,
+                "remedy": source.get("remedy") or "",
+                "question": source.get("question") or "",
+                "missed": _count_delta(now_entry.get("missed"), was_entry.get("missed")),
+                "recoverable": _count_delta(
+                    now_entry.get("recoverable"), was_entry.get("recoverable")
+                ),
+                "share": now_entry.get("share"),
+                "top_clients": _linkable_clients(now_entry.get("top_clients")),
+                "service_classes": now_entry.get("service_classes") or {},
+            }
+        )
+    rows.sort(key=lambda row: (-(row["missed"]["current"]), row["cause"]))
+    return rows
+
+
+def _client_comparison(current: dict[str, Any], previous: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-client trajectory: volume, acceptance and unanswered, then vs then."""
+    def _by_key(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        entries = ((document or {}).get("client_comparison") or {}).get("clients") or []
+        return {str(entry.get("client_key") or ""): entry for entry in entries if isinstance(entry, dict)}
+
+    now_clients = _by_key(current)
+    was_clients = _by_key(previous)
+
+    rows: list[dict[str, Any]] = []
+    for key in set(now_clients) | set(was_clients):
+        now_entry = now_clients.get(key) or {}
+        was_entry = was_clients.get(key) or {}
+        source = now_entry or was_entry
+        rows.append(
+            {
+                "client_key": key,
+                "slug": _slug_for(key),
+                "client": source.get("client") or "(no client name)",
+                "offers": _count_delta(now_entry.get("offers"), was_entry.get("offers")),
+                "accepted": _count_delta(now_entry.get("accepted"), was_entry.get("accepted")),
+                "no_response": _count_delta(
+                    now_entry.get("no_response"), was_entry.get("no_response")
+                ),
+                "rate": _rate_delta(now_entry.get("rate"), was_entry.get("rate")),
+                "no_response_rate": _rate_delta(
+                    now_entry.get("no_response_rate"), was_entry.get("no_response_rate")
+                ),
+                "band": rate_band(now_entry.get("rate")),
+                "miss_band": miss_band(now_entry.get("no_response_rate")),
+                "is_new": not was_entry and bool(now_entry),
+                "is_gone": bool(was_entry) and not now_entry,
+            }
+        )
+    rows.sort(key=lambda row: (-(row["offers"]["current"]), row["client"].casefold()))
+    return rows
+
+
+def _closeoff_effect(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """Did the close-offs work?
+
+    For every service type flagged as a close-off candidate in EITHER period,
+    the offer count then and now. A type that was flagged last period and has
+    fallen away is the close-off having taken effect; one that is still arriving
+    at the same volume is a conversation that did not happen or did not land.
+
+    MISSED_WORK_MODEL.md section 5 claims closing these off should also improve
+    the tow response rate, because they compete for the same three-minute
+    decision window. That claim is tracked here rather than asserted: the
+    no-response rate for both periods sits beside the volumes.
+    """
+    def _types(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        rows = ((document or {}).get("closeoff_candidates") or {}).get("by_service_type") or []
+        return {
+            str(row.get("service_type_raw") or ""): row
+            for row in rows
+            if isinstance(row, dict)
+        }
+
+    now_types = _types(current)
+    was_types = _types(previous)
+
+    rows: list[dict[str, Any]] = []
+    for name in set(now_types) | set(was_types):
+        now_entry = now_types.get(name) or {}
+        was_entry = was_types.get(name) or {}
+        offers = _count_delta(now_entry.get("offers"), was_entry.get("offers"))
+        rows.append(
+            {
+                "service_type_raw": name,
+                "service_class": (now_entry or was_entry).get("service_class"),
+                "offers": offers,
+                "accepted": _count_delta(now_entry.get("accepted"), was_entry.get("accepted")),
+                "still_flagged": name in now_types,
+                "was_flagged": name in was_types,
+                # "Stopped" only when it was flagged before and no offer of that
+                # type arrived at all. A drop from 145 to 12 is progress, not a
+                # close-off that landed, and calling it one would overstate it.
+                "stopped": name in was_types and offers["current"] == 0,
+            }
+        )
+    rows.sort(key=lambda row: (-(row["offers"]["previous"] + row["offers"]["current"]), row["service_type_raw"]))
+
+    return {
+        "rows": rows,
+        "stopped": sum(1 for row in rows if row["stopped"]),
+        "still_arriving": sum(1 for row in rows if row["still_flagged"]),
+        "no_response_rate": _rate_delta(
+            ((current or {}).get("totals") or {}).get("no_response_rate"),
+            ((previous or {}).get("totals") or {}).get("no_response_rate"),
+        ),
+    }
+
+
+def _recommendations(
+    document: dict[str, Any], previous: dict[str, Any], kind: str
+) -> list[dict[str, Any]]:
+    """What to actually do, ranked, each carrying the number that justifies it.
+
+    Deterministic and sourced. Nothing here is generated text and nothing here
+    is a guess: every entry is a threshold in ``rules.yaml`` having been crossed
+    by a count from the window, and every entry states that count. An
+    unsupported sentence is not added -- MISSED_WORK_MODEL.md section 9 applies
+    to the board as much as to the Analyst.
+    """
+    if not document:
+        return []
+
+    out: list[dict[str, Any]] = []
+    totals = document.get("totals") or {}
+    coverage = document.get("coverage") or {}
+    outside = coverage.get("outside") or {}
+    inside = coverage.get("inside") or {}
+    contrast = coverage.get("contrast") or {}
+    window = "this week" if kind == "week" else "this month"
+
+    # 1. Coverage. On this owner's real data the largest single lever by a wide
+    #    margin -- but the recommendation FIRES ONLY WHEN THE UNCOVERED WINDOW
+    #    IS ACTUALLY WORSE. "Staff the uncovered hours" is a claim about a gap,
+    #    and in a week where there is no gap it is an instruction with no
+    #    evidence behind it. The coverage table on the page still shows both
+    #    rows either way, so nothing is hidden by declining to advise.
+    outside_rate = outside.get("no_response_rate")
+    inside_rate = inside.get("no_response_rate")
+    coverage_is_worse = outside_rate is not None and (
+        inside_rate is None or outside_rate > inside_rate
+    )
+    if outside.get("no_response") and coverage_is_worse:
+        multiple = contrast.get("multiple")
+        detail = (
+            f"{outside['no_response']:,} of {outside.get('offers', 0):,} offers that arrived "
+            f"outside the staffed window went unanswered "
+            f"({(outside_rate or 0) * 100:.1f}%), against "
+            f"{inside.get('no_response', 0):,} of {inside.get('offers', 0):,} inside it "
+            f"({(inside_rate or 0) * 100:.1f}%)."
+        )
+        if multiple and multiple > 1:
+            detail += f" That is {multiple}x as often, on the same trucks."
+        out.append(
+            {
+                "priority": "high",
+                "action": "Put a person on the queue outside the staffed window",
+                "detail": detail,
+                "evidence": f"{outside.get('recoverable', 0):,} recoverable jobs {window}",
+                "where": "rules.yaml -> missed_work -> coverage",
+            }
+        )
+
+    # 2. Named hours, so the coverage point becomes a rota change.
+    for cell in (document.get("blind_spots") or {}).get("blind_spots", [])[:3]:
+        if not isinstance(cell, dict):
+            continue
+        rate = cell.get("no_response_rate")
+        out.append(
+            {
+                "priority": "high",
+                "action": (
+                    f"Cover {cell.get('weekday', '')} "
+                    f"{int(cell.get('hour', 0)):02d}:00-{int(cell.get('hour', 0)):02d}:59"
+                ),
+                "detail": (
+                    f"{cell.get('offers', 0):,} offers in that slot {window}, "
+                    f"{cell.get('no_response', 0):,} never answered"
+                    + (f" ({rate * 100:.0f}%)." if rate is not None else ".")
+                ),
+                "evidence": "blind spot: over the configured offers and miss-rate thresholds",
+                "where": "rules.yaml -> missed_work -> blind_spot",
+            }
+        )
+
+    # 3. Causes we can actually act on, biggest first, with the remedy attached.
+    for entry in sorted(
+        (document.get("by_cause") or {}).values(),
+        key=lambda row: -(row.get("missed") or 0),
+    )[:3]:
+        if not isinstance(entry, dict) or not entry.get("missed"):
+            continue
+        clients = ", ".join(
+            str(client.get("client") or "")
+            for client in (entry.get("top_clients") or [])[:3]
+            if isinstance(client, dict)
+        )
+        out.append(
+            {
+                "priority": "medium",
+                "action": f"{str(entry.get('cause') or 'unattributed').replace('_', ' ').capitalize()}"
+                f" -- {str(entry.get('remedy') or 'review').replace('_', ' ')}",
+                "detail": (
+                    f"{entry.get('missed', 0):,} missed {window}, "
+                    f"{entry.get('recoverable', 0):,} of them recoverable."
+                    + (f" Mostly {clients}." if clients else "")
+                ),
+                "evidence": entry.get("question") or "",
+                "where": "rules.yaml -> missed_work -> remedies",
+            }
+        )
+
+    # 4. Work we do not want, and who to say so to.
+    for client in ((document.get("closeoff_candidates") or {}).get("clients") or [])[:3]:
+        if not isinstance(client, dict):
+            continue
+        share = client.get("candidate_share_of_client_offers")
+        out.append(
+            {
+                "priority": "medium",
+                "action": f"Ask {client.get('client', 'this client')} to stop sending work we do not cover",
+                "detail": (
+                    f"{client.get('candidate_offers', 0):,} offers {window} produced "
+                    f"{client.get('candidate_accepted', 0):,} jobs"
+                    + (f" -- {share * 100:.0f}% of everything they sent." if share is not None else ".")
+                    + " Each one lands in the same three-minute window as their tows."
+                ),
+                "evidence": "close-off candidate: over the configured offers threshold, under the rate threshold",
+                "where": "/close-off has a paste-ready note",
+            }
+        )
+
+    # 5. A client whose offers go unanswered far more often than the best one.
+    for finding in ((document.get("client_comparison") or {}).get("findings") or [])[:2]:
+        if not isinstance(finding, dict):
+            continue
+        out.append(
+            {
+                "priority": "medium",
+                "action": (
+                    f"Find the process difference between "
+                    f"{(finding.get('worst') or {}).get('client', 'these clients')} and "
+                    f"{(finding.get('best') or {}).get('client', 'the best one')}"
+                ),
+                "detail": str(finding.get("summary") or ""),
+                "evidence": f"{finding.get('spread_pp', 0)} point gap, same trucks and same staff",
+                "where": "/clients",
+            }
+        )
+
+    # 6. Anything the status maps did not recognise. Small, and never hidden:
+    #    silently absorbing a new Towbook status is how a report starts being
+    #    confidently incorrect.
+    unknown = int(totals.get("unknown_status") or 0)
+    if unknown:
+        out.append(
+            {
+                "priority": "low",
+                "action": "Teach the bucket map the statuses it does not know",
+                "detail": f"{unknown:,} offers {window} carried a status no map recognised.",
+                "evidence": "listed on the Missed work tab under unreadable status",
+                "where": "rules.yaml -> missed_work -> buckets",
+            }
+        )
+
+    return out
+
+
+@for_company
+def period_snapshot(kind: str = "week", company_id: str | None = None) -> dict[str, Any]:
+    """A whole period tab: this week/month against the one before it.
+
+    Three computations of the missed-work model -- current, the like-for-like
+    slice of the previous period, and the whole previous period -- reshaped
+    into the comparisons the tab renders. Nothing is recomputed a second way.
+    """
+    bounds = period_bounds(kind)
+    current = _missed_work_for_days(*bounds["current"], company_id)
+    previous = _missed_work_for_days(*bounds["previous_to_date"], company_id)
+    previous_full = _missed_work_for_days(*bounds["previous_full"], company_id)
+
+    document = current["document"] or {}
+    prior = previous["document"] or {}
+    prior_full = previous_full["document"] or {}
+
+    totals = document.get("totals") or {}
+    prior_totals = prior.get("totals") or {}
+    prior_full_totals = prior_full.get("totals") or {}
+
+    buckets = [
+        {
+            "bucket": bucket,
+            "label": label,
+            "note": note,
+            "counts": _count_delta(totals.get(totals_key), prior_totals.get(totals_key)),
+            "previous_full": int(prior_full_totals.get(totals_key) or 0),
+        }
+        for bucket, label, totals_key, note in HEADLINE_BUCKETS
+    ]
+
+    return {
+        "kind": bounds["kind"],
+        "label": bounds["label"],
+        "available": current["available"],
+        "error": current["error"] or previous["error"],
+        "bounds": bounds,
+        "current_first": bounds["current"][0],
+        "current_last": bounds["current"][1],
+        "previous_first": bounds["previous_to_date"][0],
+        "previous_last": bounds["previous_to_date"][1],
+        "previous_full_first": bounds["previous_full"][0],
+        "previous_full_last": bounds["previous_full"][1],
+        "elapsed_days": bounds["elapsed_days"],
+        "comparable_days": bounds["comparable_days"],
+        "previous_length_days": bounds["previous_length_days"],
+        "is_partial": bounds["is_partial"],
+        "totals": totals,
+        "prior_totals": prior_totals,
+        "prior_full_totals": prior_full_totals,
+        "headline_buckets": buckets,
+        "offers": _count_delta(totals.get("offers"), prior_totals.get("offers")),
+        "recoverable": _count_delta(totals.get("recoverable"), prior_totals.get("recoverable")),
+        "missed": _count_delta(totals.get("missed"), prior_totals.get("missed")),
+        "acceptance_rate": _rate_delta(
+            totals.get("acceptance_rate"), prior_totals.get("acceptance_rate")
+        ),
+        "no_response_rate": _rate_delta(
+            totals.get("no_response_rate"), prior_totals.get("no_response_rate")
+        ),
+        "coverage": _coverage_comparison(
+            document.get("coverage") or {}, prior.get("coverage") or {}
+        ),
+        "causes": _cause_comparison(document, prior),
+        "clients": _client_comparison(document, prior),
+        "closeoff": _closeoff_effect(document, prior),
+        "blind_spots": {
+            "count": (document.get("blind_spots") or {}).get("blind_spot_count", 0),
+            "offers": (document.get("blind_spots") or {}).get("blind_spot_offers", 0),
+            "no_response": (document.get("blind_spots") or {}).get("blind_spot_no_response", 0),
+            "worst": ((document.get("blind_spots") or {}).get("blind_spots") or [])[:6],
+            "previous_count": (prior.get("blind_spots") or {}).get("blind_spot_count", 0),
+        },
+        "inventory": [
+            dict(row, top_clients=_linkable_clients(row.get("top_clients")))
+            for row in (document.get("inventory") or [])
+        ],
+        "findings": (document.get("client_comparison") or {}).get("findings") or [],
+        "recommendations": _recommendations(document, prior, bounds["kind"]),
+        "revenue_available": bool(document.get("revenue_available")),
+        # FALSE ON PURPOSE, even when job values ARE configured.
+        #
+        # ``ranking_note`` captions what the reader is actually looking at, not
+        # what the system could compute: its "dollar figures are estimates"
+        # variant is only true of a report that contains dollar figures. No
+        # screen on this board does -- every column here is a job count -- so
+        # printing that sentence would tell the owner these numbers are money.
+        # The reports carry the priced version; the board does not.
+        "basis_note": basis_note(False),
+        "rules_version": document.get("rules_version"),
+        "has_data": bool(totals.get("offers")) or bool(prior_totals.get("offers")),
+    }
+
+
+# ==========================================================================
 # View 1 -- Live
 # ==========================================================================
 
 
-def live_snapshot(account_id: str | None = None) -> dict[str, Any]:
+@for_company
+def live_snapshot(company_id: str | None = None) -> dict[str, Any]:
     """Today so far: running totals, hour buckets, and the comparison baselines."""
     today = today_local()
     now = now_local()
 
     day_start, day_end = local_day_bounds(today)
-    today_rows = fetch_requests(day_start, day_end, account_id=account_id)
+    today_rows = fetch_requests(day_start, day_end, company_id=company_id)
 
     # 30 days ending yesterday -- the baselines must not include today, or the
     # line the operator is being measured against moves as the day fills up.
     base_start, base_end = local_span_bounds(today - timedelta(days=30), today - timedelta(days=1))
-    baseline_rows = fetch_requests(base_start, base_end, account_id=account_id)
+    baseline_rows = fetch_requests(base_start, base_end, company_id=company_id)
 
     by_day: dict[_date, Bucket] = _bucket_by(baseline_rows, lambda r: r["offered_local"].date())
 
@@ -1233,18 +2241,19 @@ def sort_clients(entries: list[dict[str, Any]], sort: str, direction: str) -> li
     return ordered
 
 
+@for_company
 def daily_snapshot(
     day: _date,
-    account_id: str | None = None,
+    company_id: str | None = None,
     sort: str = "volume",
     direction: str = "desc",
 ) -> dict[str, Any]:
     """Full breakdown for one local calendar day."""
     day_start, day_end = local_day_bounds(day)
-    rows = fetch_requests(day_start, day_end, account_id=account_id)
+    rows = fetch_requests(day_start, day_end, company_id=company_id)
 
     prior_start, prior_end = local_span_bounds(day - timedelta(days=7), day - timedelta(days=1))
-    prior_rows = fetch_requests(prior_start, prior_end, account_id=account_id)
+    prior_rows = fetch_requests(prior_start, prior_end, company_id=company_id)
 
     totals = _totals(rows)
     prior_by_day = _bucket_by(prior_rows, lambda r: r["offered_local"].date())
@@ -1337,21 +2346,25 @@ def daily_snapshot(
         "hours": hours,
         "denial_mix": denial_mix(rows, top=8),
         "variance": variance,
-        "stored_metric": stored_daily_metric(day),
+        "stored_metric": stored_daily_metric(day, company_id),
         "has_data": bool(rows),
     }
 
 
-def stored_daily_metric(day: _date) -> dict[str, Any] | None:
-    """The metrics_daily row for ``day``, if the pipeline has computed one.
+def stored_daily_metric(day: _date, company_id: str | None = None) -> dict[str, Any] | None:
+    """This company's metrics_daily row for ``day``, if one was computed.
 
     Shown next to the recomputation so a divergence is visible rather than
-    silently resolved in favour of one of them.
+    silently resolved in favour of one of them. Unfiltered it would show
+    whichever company's row happened to be first, which is a divergence
+    invented by the query.
     """
     try:
         with core_db.get_session(commit=False) as session:
             row = session.execute(
-                select(MetricsDaily).where(MetricsDaily.date == day)
+                select(MetricsDaily)
+                .where(MetricsDaily.company_id == _companies.resolve_company_id(company_id))
+                .where(MetricsDaily.date == day)
             ).scalar_one_or_none()
             if row is None:
                 return None
@@ -1370,8 +2383,9 @@ def stored_daily_metric(day: _date) -> dict[str, Any] | None:
 # ==========================================================================
 
 
+@for_company
 def clients_overview(
-    account_id: str | None = None,
+    company_id: str | None = None,
     sort: str = "volume",
     direction: str = "desc",
     sparkline_days: int = 14,
@@ -1382,7 +2396,7 @@ def clients_overview(
     now = now_local()
 
     start, end = local_span_bounds(today - timedelta(days=29), today)
-    rows = fetch_requests(start, end, account_id=account_id)
+    rows = fetch_requests(start, end, company_id=company_id)
 
     cutoff_24h = now - timedelta(hours=24)
     first_7d = today - timedelta(days=6)
@@ -1462,7 +2476,7 @@ def clients_overview(
     # Merge is by client_key. A row whose client_key the model did not produce
     # keeps `no_response_rate: None` and renders as an em-dash, which is the
     # correct reading of "we do not know", not "zero".
-    misses = client_no_response(days=30, account_id=account_id)
+    misses = client_no_response(days=30, company_id=company_id)
     by_key = misses["by_client_key"]
     for entry in entries:
         stats = by_key.get(entry["client_key"]) or {}
@@ -1499,17 +2513,18 @@ def clients_overview(
     }
 
 
+@for_company
 def client_detail(
     slug: str,
     days: int = 30,
     limit: int = 400,
-    account_id: str | None = None,
+    company_id: str | None = None,
 ) -> dict[str, Any]:
     """Request history and rate trajectory for a single client."""
     client_key = "" if slug == EMPTY_CLIENT_KEY else slug
     today = today_local()
     start, end = local_span_bounds(today - timedelta(days=days - 1), today)
-    rows = fetch_requests(start, end, account_id=account_id, client_key=client_key)
+    rows = fetch_requests(start, end, company_id=company_id, client_key=client_key)
     rows.sort(key=lambda r: r["offered_at"], reverse=True)
 
     name = ""
@@ -1563,9 +2578,10 @@ def client_detail(
 WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
+@for_company
 def trends_snapshot(
     weeks: int = 8,
-    account_id: str | None = None,
+    company_id: str | None = None,
     max_series: int = 6,
     min_cell_sample: int = 3,
 ) -> dict[str, Any]:
@@ -1575,7 +2591,7 @@ def trends_snapshot(
     days = weeks * 7
     first_day = today - timedelta(days=days - 1)
     start, end = local_span_bounds(first_day, today)
-    rows = fetch_requests(start, end, account_id=account_id)
+    rows = fetch_requests(start, end, company_id=company_id)
 
     # ---- hour of week heatmap -----------------------------------------
     cells: dict[tuple[int, int], Bucket] = defaultdict(Bucket)
@@ -1676,6 +2692,14 @@ def trends_snapshot(
             }
         )
 
+    # ---- coverage trend --------------------------------------------------
+    #
+    # Is the coverage gap closing? The single most important line on this tab,
+    # because it is the one the owner can move. Computed here, in Python, over
+    # the rows already in hand -- calling coverage_analysis() once per week
+    # would re-read and re-classify the same rows N times for the same answer.
+    coverage_weekly = _coverage_weekly(rows, week_starts)
+
     return {
         "weeks": weeks,
         "days": days,
@@ -1689,9 +2713,60 @@ def trends_snapshot(
         "week_labels": [week.isoformat() for week in week_starts],
         "trajectories": trajectories,
         "overall_weekly": overall_weekly,
+        "coverage_weekly": coverage_weekly,
         "totals": _totals(rows).as_dict(),
+        "basis_note": basis_note(),
         "has_data": bool(rows),
     }
+
+
+def _coverage_weekly(
+    rows: Sequence[dict[str, Any]], week_starts: Sequence[_date]
+) -> list[dict[str, Any]]:
+    """Per week: unanswered inside the staffed window versus outside it.
+
+    Both series always, never one. A falling uncovered miss rate means nothing
+    on its own -- it could be a quiet fortnight -- and only reads as progress
+    next to the covered line that did not move.
+    """
+    rules = rules_snapshot()
+    default_label = uncovered_label(rules)
+    try:
+        module = _missed_work_module()
+        if module is not None:
+            default_label = str(
+                ((rules.get("missed_work") or {}).get("coverage") or {}).get("default_label")
+                or default_label
+            )
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    tally: dict[tuple[_date, bool], dict[str, int]] = defaultdict(
+        lambda: {"offers": 0, "no_response": 0, "accepted": 0}
+    )
+    for row in rows:
+        week = week_start_for(row["offered_local"].date())
+        covered = coverage_of(row, rules) != default_label
+        cell = tally[(week, covered)]
+        cell["offers"] += 1
+        bucket = bucket_of(row, rules)
+        if bucket == "no_response":
+            cell["no_response"] += 1
+        elif bucket == "won":
+            cell["accepted"] += 1
+
+    out: list[dict[str, Any]] = []
+    for week in week_starts:
+        entry: dict[str, Any] = {"week": week.isoformat(), "label": week.strftime("%b %d")}
+        for covered, prefix in ((False, "uncovered"), (True, "covered")):
+            cell = tally.get((week, covered)) or {"offers": 0, "no_response": 0, "accepted": 0}
+            rate = ratio(cell["no_response"], cell["offers"])
+            entry[f"{prefix}_offers"] = cell["offers"]
+            entry[f"{prefix}_no_response"] = cell["no_response"]
+            entry[f"{prefix}_rate"] = rate
+            entry[f"{prefix}_band"] = miss_band(rate)
+        out.append(entry)
+    return out
 
 
 # ==========================================================================
@@ -1699,7 +2774,9 @@ def trends_snapshot(
 # ==========================================================================
 
 
-def unclassified_service_types(days: int = 60, limit: int = 100) -> list[dict[str, Any]]:
+def unclassified_service_types(
+    days: int = 60, limit: int = 100, company_id: str | None = None
+) -> list[dict[str, Any]]:
     """Distinct verbatim service strings the classifier could not place.
 
     ``service_type_raw`` is immutable, so this list *is* the backlog: map a
@@ -1710,7 +2787,7 @@ def unclassified_service_types(days: int = 60, limit: int = 100) -> list[dict[st
     start, end = local_span_bounds(today - timedelta(days=days - 1), today)
     counter: Counter[str] = Counter()
     last_seen: dict[str, datetime] = {}
-    for row in fetch_requests(start, end):
+    for row in fetch_requests(start, end, company_id=company_id):
         if row["service_class"] not in ("unclassified", ""):
             continue
         raw = (row.get("service_type_raw") or "").strip()
@@ -1725,8 +2802,15 @@ def unclassified_service_types(days: int = 60, limit: int = 100) -> list[dict[st
     ]
 
 
-def rules_view() -> dict[str, Any]:
-    """Current rules, pending proposals and the unclassified backlog."""
+@for_company
+def rules_view(company_id: str | None = None) -> dict[str, Any]:
+    """Current rules, pending proposals and this company's unclassified backlog.
+
+    The rules TEXT shown is the global config/rules.yaml, because that is the
+    file the accept-a-proposal button writes to. ``rules`` is the EFFECTIVE
+    document -- global plus this company's overrides -- because that is what
+    actually classified the rows on every other tab. The page names both.
+    """
     result: dict[str, Any] = {
         "rules_text": "",
         "rules_path": None,
@@ -1747,8 +2831,13 @@ def rules_view() -> dict[str, Any]:
         path = CONFIG.path_for("rules")
         result["rules_path"] = str(path)
         result["rules_text"] = path.read_text(encoding="utf-8")
-        result["rules"] = CONFIG.get_rules()
+        # The EFFECTIVE rules -- global plus this company's overrides -- because
+        # they are what classified every row on every other tab. The text above
+        # is the global file, which is what /rules writes to.
+        result["rules"] = company_rules()
         result["rules_version"] = CONFIG.rules_version()
+        result["company"] = current_company()
+        result["company_overrides"] = bool(result["rules"] != CONFIG.get_rules())
     except (ConfigError, OSError) as exc:
         result["rules_error"] = redact(f"{type(exc).__name__}: {exc}")
 
@@ -1810,7 +2899,7 @@ def rules_view() -> dict[str, Any]:
         result["proposals_error"] = redact(f"{type(exc).__name__}: {exc}")
 
     try:
-        result["unclassified"] = unclassified_service_types()
+        result["unclassified"] = unclassified_service_types(company_id=company_id)
     except Exception as exc:
         result["unclassified_error"] = redact(f"{type(exc).__name__}: {exc}")
 
@@ -1819,7 +2908,7 @@ def rules_view() -> dict[str, Any]:
     except Exception:
         result["config_digests"] = {}
 
-    result["has_data"] = has_any_data()
+    result["has_data"] = has_any_data(company_id)
     return result
 
 
@@ -1838,12 +2927,20 @@ def _dump_yaml(value: Any) -> str:
 # ==========================================================================
 
 
-def last_run_summary() -> dict[str, Any] | None:
-    """The most recent run of any type, for the staleness banner."""
+def last_run_summary(company_id: str | None = None) -> dict[str, Any] | None:
+    """This company's most recent run, for the staleness banner.
+
+    Per company, because "the pipeline ran" is not a fact about the install --
+    it is a fact about one tenant. Another company's healthy 06:00 run must not
+    clear the banner for a company whose pull has been failing for two days.
+    """
     try:
         with core_db.get_session(commit=False) as session:
             run = session.execute(
-                select(Run).order_by(Run.started_at.desc()).limit(1)
+                select(Run)
+                .where(Run.company_id == _companies.resolve_company_id(company_id))
+                .order_by(Run.started_at.desc())
+                .limit(1)
             ).scalar_one_or_none()
             if run is None:
                 return None
@@ -1865,11 +2962,162 @@ def last_run_summary() -> dict[str, Any] | None:
         return None
 
 
-def recent_alerts(limit: int = 20) -> list[dict[str, Any]]:
+#: How long a recorded pipeline_failure keeps the banner up. Long enough that a
+#: failure overnight is still on the board when the owner opens it in the
+#: morning; short enough that a problem fixed two days ago stops shouting.
+PIPELINE_FAILURE_BANNER_HOURS: float = 24.0
+
+
+@for_company
+def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
+    """The one thing on this board that replaces the text message.
+
+    THERE IS NO SMS AND NO EMAIL. config/notifications.yaml ships with every
+    route disabled, because the dashboard is the delivery mechanism. That is a
+    reasonable trade for a report -- a report is something you go and look at --
+    but it is not a reasonable trade for a *failure*, because the whole point of
+    a failure notification is that it finds you. So the failure has to find the
+    owner here instead: a persistent banner rendered by ``base.html`` on EVERY
+    tab, not a line on the Health page that nobody opens when everything looks
+    normal, which is exactly when the pipeline is broken.
+
+    Three conditions raise it, in descending severity, and the worst one wins:
+
+    1. **The last scheduled run failed.** ``runs.status == 'failed'``.
+    2. **A report is overdue.** The scheduler's own watchdog logic, asked
+       read-only (``core.scheduler.overdue_reports``) so a page view does not
+       fire an alert. This is the condition a try/except cannot catch: the
+       container was redeployed and the scheduler never came back, the cron
+       entry was removed, RUN_SCHEDULER was left false on the service.
+    3. **A pipeline_failure was recorded recently** and delivery was disabled,
+       so nothing was sent about it anywhere else.
+
+    Returns ``None`` when the pipeline is healthy -- a banner that is always
+    there is furniture, and gets read as furniture. Never raises: the banner is
+    on every page, and a broken banner must not be able to take the board down.
+    """
+    try:
+        candidates: list[dict[str, Any]] = []
+
+        last_run = last_run_summary(company_id)
+        if last_run and str(last_run.get("status") or "").strip().lower() == "failed":
+            candidates.append(
+                {
+                    "level": "error",
+                    "rank": 3,
+                    "title": "The last pipeline run failed.",
+                    "detail": (
+                        last_run.get("error_message")
+                        or "No error message was recorded."
+                    ),
+                    "hint": (
+                        f"The {last_run.get('report_type') or 'last'} run started "
+                        f"{last_run.get('age_hours'):.1f}h ago. Numbers below are "
+                        "incomplete until it succeeds."
+                    )
+                    if isinstance(last_run.get("age_hours"), (int, float))
+                    else "Numbers below are incomplete until it succeeds.",
+                }
+            )
+
+        for finding in _overdue_reports():
+            hours = float(finding.get("overdue_seconds") or 0) / 3600.0
+            last = finding.get("last_success")
+            candidates.append(
+                {
+                    "level": "error",
+                    "rank": 4,
+                    "title": f"The {finding.get('report_type')} report is overdue.",
+                    "detail": (
+                        f"Nothing has succeeded for {hours:.1f}h. Last success: "
+                        + (
+                            to_local(last).strftime("%b %d, %H:%M")
+                            if isinstance(last, datetime)
+                            else "never"
+                        )
+                        + "."
+                    ),
+                    "hint": (
+                        "The scheduler is not running, or its jobs are failing. Nothing is "
+                        "sent by SMS or email, so this banner is the only warning."
+                    ),
+                }
+            )
+
+        for alert in recent_alerts(limit=25, company_id=company_id):
+            if alert.get("alert_id") != "pipeline_failure":
+                continue
+            fired = alert.get("fired_at")
+            if not isinstance(fired, datetime):
+                continue
+            age_hours = (now_local() - fired).total_seconds() / 3600.0
+            if age_hours > PIPELINE_FAILURE_BANNER_HOURS or age_hours < 0:
+                continue
+            if alert.get("acknowledged"):
+                continue
+            payload = alert.get("payload") or {}
+            candidates.append(
+                {
+                    "level": "error",
+                    "rank": 2,
+                    "title": "A pipeline failure was recorded.",
+                    "detail": redact(
+                        str(payload.get("error") or payload.get("stage") or alert.get("entity") or "")
+                    )[:400]
+                    or "See Health for the details.",
+                    "hint": (
+                        f"{age_hours:.1f}h ago"
+                        + (
+                            " - notification routes are disabled, so this banner is the "
+                            "only warning."
+                            if alert.get("suppressed_reason") == "delivery_disabled"
+                            else "."
+                        )
+                    ),
+                }
+            )
+            break
+
+        if not candidates:
+            return None
+
+        best = max(candidates, key=lambda item: item["rank"])
+        best["others"] = len(candidates) - 1
+        return best
+    except Exception:  # pragma: no cover - the banner must never break a page
+        logger.exception("could not build the pipeline banner")
+        return None
+
+
+def _overdue_reports() -> list[dict[str, Any]]:
+    """``core.scheduler.overdue_reports`` without importing it at module scope.
+
+    Deferred because ``core.scheduler`` pulls in APScheduler, and the query layer
+    is imported by things that have no business starting a scheduler.
+    """
+    try:
+        from ..core.scheduler import overdue_reports
+
+        return overdue_reports()
+    except Exception:
+        logger.debug("could not evaluate overdue reports", exc_info=True)
+        return []
+
+
+def recent_alerts(limit: int = 20, company_id: str | None = None) -> list[dict[str, Any]]:
+    """This company's most recent alerts, newest first."""
     try:
         with core_db.get_session(commit=False) as session:
             alerts = (
-                session.execute(select(AlertFired).order_by(AlertFired.fired_at.desc()).limit(limit))
+                session.execute(
+                    select(AlertFired)
+                    .where(
+                        AlertFired.company_id
+                        == _companies.resolve_company_id(company_id)
+                    )
+                    .order_by(AlertFired.fired_at.desc())
+                    .limit(limit)
+                )
                 .scalars()
                 .all()
             )
@@ -1890,7 +3138,8 @@ def recent_alerts(limit: int = 20) -> list[dict[str, Any]]:
         return []
 
 
-def health_view(run_limit: int = 60) -> dict[str, Any]:
+@for_company
+def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str, Any]:
     """Run history, last success per report type, failures and row counts.
 
     The first place to look when a number seems wrong, so it deliberately shows
@@ -1904,9 +3153,17 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
         "failures": [],
         "counts": {},
         "coverage": [],
-        "alerts": recent_alerts(limit=20),
+        "company": current_company(),
+        "alerts": recent_alerts(limit=20, company_id=company_id),
         "config_digests": {},
         "rules_version": None,
+        # Is anything in THIS container actually scheduled? With the board as the
+        # only delivery mechanism, "the web service is up but nothing refreshes
+        # it" is the failure that looks most like everything being fine, and it
+        # is otherwise unanswerable from a browser.
+        "scheduler": {},
+        "overdue": [],
+        "storage_warning": None,
         "timezone": str(local_tz()),
         "generated_at": now_local(),
         "error": None,
@@ -1914,8 +3171,18 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
 
     try:
         result["database"] = core_db.healthcheck()
+        result["storage_warning"] = core_db.warn_if_ephemeral_sqlite()
     except Exception as exc:  # pragma: no cover - healthcheck swallows its own
         result["database"] = {"ok": False, "error": redact(f"{type(exc).__name__}: {exc}")}
+
+    try:
+        from ..core.scheduler import background_scheduler_status
+
+        result["scheduler"] = background_scheduler_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        result["scheduler"] = {"error": redact(f"{type(exc).__name__}: {exc}")}
+
+    result["overdue"] = _overdue_reports()
 
     try:
         result["config_digests"] = CONFIG.snapshot()
@@ -1926,7 +3193,12 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
     try:
         with core_db.get_session(commit=False) as session:
             runs = (
-                session.execute(select(Run).order_by(Run.started_at.desc()).limit(run_limit))
+                session.execute(
+                    select(Run)
+                    .where(Run.company_id == company_id)
+                    .order_by(Run.started_at.desc())
+                    .limit(run_limit)
+                )
                 .scalars()
                 .all()
             )
@@ -1943,7 +3215,7 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
                 entries.append(
                     {
                         "run_id": run.run_id,
-                        "account_id": run.account_id,
+                        "company_id": run.company_id,
                         "report_type": report_type,
                         "status": (run.status or "").strip().casefold(),
                         "window_start": to_local(run.window_start),
@@ -1988,38 +3260,43 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
                     "age_hours": age,
                 }
 
-            result["counts"] = {
-                "requests": session.execute(select(func.count()).select_from(Request)).scalar_one(),
-                "requests_without_offered_at": session.execute(
-                    select(func.count()).select_from(Request).where(Request.offered_at.is_(None))
-                ).scalar_one(),
-                "requests_unclassified": session.execute(
+            # EVERY count is this company's. A roster-wide row count on a page
+            # headed with one company's name is the most quietly misleading
+            # number the dashboard could show: it looks like the answer to
+            # "how much data do I have" and is the answer to somebody else's.
+            def _count(model: Any, *clauses: Any) -> int:
+                statement = (
                     select(func.count())
-                    .select_from(Request)
-                    .where(
-                        (Request.service_class.is_(None)) | (Request.service_class == "unclassified")
-                    )
-                ).scalar_one(),
-                "runs": session.execute(select(func.count()).select_from(Run)).scalar_one(),
-                "metrics_hourly": session.execute(
-                    select(func.count()).select_from(MetricsHourly)
-                ).scalar_one(),
-                "metrics_daily": session.execute(
-                    select(func.count()).select_from(MetricsDaily)
-                ).scalar_one(),
-                "metrics_weekly": session.execute(
-                    select(func.count()).select_from(MetricsWeekly)
-                ).scalar_one(),
-                "client_daily": session.execute(
-                    select(func.count()).select_from(ClientDaily)
-                ).scalar_one(),
-                "alerts_fired": session.execute(
-                    select(func.count()).select_from(AlertFired)
-                ).scalar_one(),
+                    .select_from(model)
+                    .where(model.company_id == company_id)
+                )
+                for clause in clauses:
+                    statement = statement.where(clause)
+                return int(session.execute(statement).scalar_one())
+
+            result["counts"] = {
+                "requests": _count(Request),
+                "requests_without_offered_at": _count(
+                    Request, Request.offered_at.is_(None)
+                ),
+                "requests_unclassified": _count(
+                    Request,
+                    (Request.service_class.is_(None))
+                    | (Request.service_class == "unclassified"),
+                ),
+                "runs": _count(Run),
+                "metrics_hourly": _count(MetricsHourly),
+                "metrics_daily": _count(MetricsDaily),
+                "metrics_weekly": _count(MetricsWeekly),
+                "client_daily": _count(ClientDaily),
+                "alerts_fired": _count(AlertFired),
             }
+            result["companies_with_data"] = companies_with_data()
 
             earliest, latest = session.execute(
-                select(func.min(Request.offered_at), func.max(Request.offered_at))
+                select(func.min(Request.offered_at), func.max(Request.offered_at)).where(
+                    Request.company_id == company_id
+                )
             ).one()
             result["earliest_request"] = to_local(earliest)
             result["latest_request"] = to_local(latest)
@@ -2030,13 +3307,15 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
     try:
         today = today_local()
         start, end = local_span_bounds(today - timedelta(days=13), today)
-        rows = fetch_requests(start, end)
+        rows = fetch_requests(start, end, company_id=company_id)
         by_day = _bucket_by(rows, lambda r: r["offered_local"].date())
         with core_db.get_session(commit=False) as session:
             stored = {
                 row.date: row
                 for row in session.execute(
-                    select(MetricsDaily).where(MetricsDaily.date >= today - timedelta(days=13))
+                    select(MetricsDaily)
+                    .where(MetricsDaily.company_id == company_id)
+                    .where(MetricsDaily.date >= today - timedelta(days=13))
                 ).scalars()
             }
         coverage = []
@@ -2078,9 +3357,20 @@ def health_view(run_limit: int = 60) -> dict[str, Any]:
 
 
 def jsonable(value: Any) -> Any:
-    """Recursively convert dates, datetimes and Decimals for JSON responses."""
+    """Recursively convert dates, datetimes, Decimals and sets for JSON.
+
+    Sets are sorted before being emitted as a list. ``missed_work``'s coverage
+    definitions carry the covered weekdays as a ``frozenset``, and a JSON feed
+    whose day list came out in a different order on every request would be
+    impossible to diff.
+    """
     if isinstance(value, dict):
         return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        try:
+            return [jsonable(item) for item in sorted(value)]
+        except TypeError:  # mixed types have no total order; fall back to text
+            return [jsonable(item) for item in sorted(value, key=repr)]
     if isinstance(value, (list, tuple)):
         return [jsonable(item) for item in value]
     if isinstance(value, datetime):
