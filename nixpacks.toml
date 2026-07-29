@@ -1,34 +1,64 @@
 # Nixpacks build plan. Railway reads this; it is the build half of railway.json.
 #
-# PIN THE INTERPRETER. pyproject.toml requires >=3.11 and every wheel here is
-# verified on 3.12. Left unpinned, Nixpacks picks whatever it currently
-# considers default -- which changes without notice and will eventually pick a
-# version with no psycopg or openpyxl wheel, turning a working redeploy of
-# unchanged code into a build failure. .python-version carries the same number
-# for pyenv and uv locally.
+# THIS FILE DELIBERATELY DOES ALMOST NOTHING, AND THAT IS THE POINT. Nixpacks'
+# Python provider already knows how to build this repo: it sees requirements.txt,
+# creates a virtualenv at /opt/venv, installs into it, and puts /opt/venv/bin at
+# the front of PATH so `python start.py` runs the interpreter that has the
+# packages. Everything below appends to that plan. Nothing below replaces it.
+#
+# WHY THAT SENTENCE IS IN CAPITALS. An earlier version of this file opened with:
+#
+#     [phases.setup]
+#     nixPkgs = ["python312", "gcc"]
+#
+# which reads like "also install these" and actually means "discard the
+# provider's package list and use exactly these". The Nix `python312` package
+# ships no pip, so the next command in the build died:
+#
+#     /root/.nix-profile/bin/python: No module named pip
+#     "python -m pip install --upgrade pip" did not complete successfully
+#
+# The `...` below is the documented splice: it holds the provider's own packages
+# and appends ours to them.
+#
+# DO NOT REPAIR A MISSING PIP WITH `python -m ensurepip`. It looks like the
+# one-line fix and it fails twice over. The interpreter that pip would belong to
+# lives in /nix/store, which is READ-ONLY, so the install has nowhere to write;
+# and anything that did get installed would land outside /opt/venv, which is the
+# directory PATH points at when the start command runs -- a green build followed
+# by ModuleNotFoundError at boot. The venv is the fix, and the provider makes one.
+#
+# THE PYTHON VERSION IS PINNED IN .python-version, NOT HERE. Nixpacks reads that
+# file (after $NIXPACKS_PYTHON_VERSION, ahead of runtime.txt and .tool-versions),
+# and pyenv and uv read it locally, so a single line pins the interpreter in
+# every environment instead of one number here drifting from another there.
+# Nixpacks defaults to 3.11 when it finds nothing; pyproject.toml requires >=3.11
+# and every wheel here is verified on 3.12. If a future Nixpacks release ever
+# stops reading that file, set NIXPACKS_PYTHON_VERSION=3.12 as a service variable
+# -- do not reinstate the nixPkgs override that caused the failure above.
 #
 # gcc is a safety net only. psycopg[binary] and every other dependency ship
 # wheels, so nothing should compile; if the build ever starts compiling
 # something, that is worth investigating rather than papering over.
 [phases.setup]
-nixPkgs = ["python312", "gcc"]
+nixPkgs = ["...", "gcc"]
 
-[phases.install]
-cmds = [
-  "python -m pip install --upgrade pip",
-  "python -m pip install --no-cache-dir -r requirements.txt",
-]
-
+# There is deliberately no [phases.install]. The provider's own install phase
+# creates the venv and installs requirements.txt into it, which is exactly what
+# this deployment needs -- and is the half the old override was missing.
+#
 # Playwright is NOT installed. The default acquisition path (source: api) talks
 # to Towbook's JSON endpoint over httpx and needs no browser -- every playwright
 # import in agents/acquisition.py is lazy or behind TYPE_CHECKING, so nothing
 # here imports it. Only add it if you switch config/schedule.yaml to
-# `source: ui`, and then you need the browser binaries too:
+# `source: ui`, and then you need the browser binaries too. Note the `...`, which
+# keeps the provider's install commands and appends to them rather than
+# replacing them:
 #
 #   [phases.install]
 #   cmds = [
-#     "python -m pip install --upgrade pip",
-#     "python -m pip install --no-cache-dir -r requirements.txt 'playwright>=1.44'",
+#     "...",
+#     "python -m pip install 'playwright>=1.44'",
 #     "python -m playwright install --with-deps chromium",
 #   ]
 #

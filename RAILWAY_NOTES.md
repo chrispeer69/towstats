@@ -8,7 +8,7 @@ that document stays a set of instructions.
 | File | Owns |
 | --- | --- |
 | `railway.json` | Railway's build and deploy settings, in the repo instead of the dashboard |
-| `nixpacks.toml` | The Python version and the install commands |
+| `nixpacks.toml` | One appended build package, and nothing else |
 | `Procfile` | The same process definitions in a provider-neutral format |
 | `start.py` | The container entrypoint: check storage, migrate, cold-start backfill, serve |
 | `.python-version` | The interpreter pin that local tooling reads |
@@ -42,10 +42,39 @@ retries are only ever spent on infrastructure.
 
 ## `nixpacks.toml`
 
-Pins `python312`. `pyproject.toml` requires `>=3.11` and the wheels are verified
-on 3.12; Nixpacks otherwise picks whatever it currently considers default, which
-changes without notice and would eventually pick a version with no `psycopg`
-wheel. `.python-version` carries the same number for pyenv and uv locally.
+**It adds one package and overrides nothing.** This is a correction: the first
+version of the file set `nixPkgs = ["python312", "gcc"]` and wrote its own
+install commands, and it never built. In a Nixpacks phase an array is a
+*replacement*, not an addition — that line discarded the Python provider's own
+package list, and the Nix `python312` package ships no `pip`, so the build died
+on its first install command:
+
+```
+/root/.nix-profile/bin/python: No module named pip
+"python -m pip install --upgrade pip" did not complete successfully: exit code 1
+```
+
+`nixPkgs = ["...", "gcc"]` is the documented splice: `...` is a hole filled by
+the values from the plan being merged into, so the provider keeps its packages
+and `gcc` is appended.
+
+**Do not fix a missing `pip` with `python -m ensurepip`.** It is the obvious
+one-line repair and it fails twice over. The interpreter that `pip` would belong
+to lives in `/nix/store`, which is read-only, so the install has nowhere to
+write; and anything that did install would land outside `/opt/venv`, which is
+the directory on `PATH` when the start command runs — a green build followed by
+`ModuleNotFoundError` at boot. The provider creates that venv, installs
+`requirements.txt` into it and puts it on `PATH`, which is why there is no
+`[phases.install]` here any more and no `buildCommand` in `railway.json`.
+
+**The interpreter is pinned in `.python-version`, not here.** Nixpacks reads it
+(after `$NIXPACKS_PYTHON_VERSION`, ahead of `runtime.txt` and `.tool-versions`)
+and pyenv and uv read it locally, so one line pins the version everywhere rather
+than one number here drifting from another there. Nixpacks falls back to 3.11
+when it finds nothing; `pyproject.toml` requires `>=3.11` and every wheel is
+verified on 3.12. If a Nixpacks release ever stops reading the file, set
+`NIXPACKS_PYTHON_VERSION=3.12` as a service variable — do not reinstate the
+`nixPkgs` override.
 
 `gcc` is in the setup phase as a safety net only. `psycopg[binary]` and every
 other dependency here ship wheels, so nothing should need to compile; if the

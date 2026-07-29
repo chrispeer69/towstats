@@ -21,6 +21,7 @@ are all checkable offline, and the suite is offline by design.
 from __future__ import annotations
 
 import json
+import re
 import socket
 from pathlib import Path
 
@@ -817,6 +818,18 @@ def test_playwright_is_not_a_hard_dependency() -> None:
 # ==========================================================================
 
 
+def _uncommented_lines(path: Path) -> str:
+    """The file with every ``#`` comment line dropped.
+
+    The deployment manifests carry long comments that quote the exact settings
+    they warn against, so a plain substring search over the raw text reports the
+    warning as though it were the setting. Only active lines are configuration.
+    """
+    return "\n".join(
+        line for line in path.read_text("utf-8").splitlines() if not line.strip().startswith("#")
+    )
+
+
 def test_the_deployment_files_exist() -> None:
     for name in ("railway.json", "Procfile", "nixpacks.toml", "start.py", ".python-version"):
         assert (REAL_REPO_ROOT / name).is_file(), f"{name} is missing"
@@ -828,7 +841,38 @@ def test_railway_json_is_valid_and_asks_for_one_replica() -> None:
     assert config["deploy"]["numReplicas"] == 1
     assert config["deploy"]["healthcheckPath"] == "/healthz"
     assert config["deploy"]["startCommand"] == "python start.py"
-    assert "requirements.txt" in config["build"]["buildCommand"]
+    assert config["build"]["builder"] == "NIXPACKS"
+
+
+def test_nothing_overrides_the_providers_install_phase() -> None:
+    """The Nixpacks Python provider owns the install, because only it makes the venv.
+
+    This is a regression test for a build that failed on every push. railway.json
+    used to carry `buildCommand: python -m pip install -r requirements.txt` and
+    nixpacks.toml used to replace `[phases.install]` with the same thing. Both
+    ran against the interpreter in the read-only Nix store rather than the venv
+    at /opt/venv, and the Nix python package ships no pip, so the image never
+    built:
+
+        /root/.nix-profile/bin/python: No module named pip
+
+    Left to itself the provider creates /opt/venv, installs requirements.txt into
+    it and puts it on PATH. An override here silently takes back all three.
+    """
+    config = json.loads((REAL_REPO_ROOT / "railway.json").read_text("utf-8"))
+    assert "buildCommand" not in config["build"], (
+        "railway.json's buildCommand replaces the Nixpacks build phase; the "
+        "provider already installs requirements.txt into /opt/venv"
+    )
+
+    active = _uncommented_lines(REAL_REPO_ROOT / "nixpacks.toml")
+    assert "[phases.install]" not in active, (
+        "a [phases.install] table replaces the provider's install commands, "
+        "including the venv creation the start command depends on"
+    )
+    assert "ensurepip" not in active, (
+        "ensurepip installs into the read-only Nix store, not /opt/venv"
+    )
 
 
 def test_the_start_command_is_the_same_everywhere() -> None:
@@ -853,15 +897,28 @@ def test_no_process_definition_asks_for_more_than_one_worker() -> None:
             assert "--workers" not in stripped, f"{name}: {stripped}"
 
 
-def test_the_python_pin_agrees_with_pyproject() -> None:
+def test_the_python_pin_lives_in_one_file_and_agrees_with_pyproject() -> None:
+    """`.python-version` is the only pin. Nixpacks, pyenv and uv all read it.
+
+    It used to be pinned twice -- here and as `nixPkgs = ["python312", ...]` in
+    nixpacks.toml -- which is how two numbers drift apart, and the nixPkgs half
+    is what discarded the provider's packages and broke the build. Nixpacks reads
+    `.python-version` itself (after $NIXPACKS_PYTHON_VERSION, ahead of
+    runtime.txt), so the second pin bought nothing.
+    """
     pinned = (REAL_REPO_ROOT / ".python-version").read_text("utf-8").strip()
-    nixpacks = (REAL_REPO_ROOT / "nixpacks.toml").read_text("utf-8")
     pyproject = (REAL_REPO_ROOT / "pyproject.toml").read_text("utf-8")
 
     major, minor = pinned.split(".")[:2]
-    assert f"python{major}{minor}" in nixpacks, "nixpacks.toml pins a different interpreter"
     assert 'requires-python = ">=3.11"' in pyproject
     assert (int(major), int(minor)) >= (3, 11)
+
+    # Comments may discuss the old override; an active line must not restore it.
+    for line in _uncommented_lines(REAL_REPO_ROOT / "nixpacks.toml").splitlines():
+        assert not re.search(r"\bpython\d{2,3}\b", line), (
+            f"nixpacks.toml pins the interpreter again: {line.strip()!r} -- "
+            "the pin belongs in .python-version alone"
+        )
 
 
 def test_env_example_documents_every_variable_the_deployment_reads() -> None:
