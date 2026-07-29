@@ -1356,7 +1356,26 @@ footer.foot {
     max-width: 100%;
     border-collapse: collapse;
     font-size: 7.5pt;      /* eleven columns have to fit 8.5in minus margins */
-    table-layout: auto;
+  }
+
+  /* TABLE-LAYOUT: FIXED IS THE ONLY THING THAT ACTUALLY GUARANTEES A FIT.
+     `overflow: visible` stops the scroller clipping, but an auto-layout table
+     still takes its minimum content width and simply spills off the sheet --
+     which is why "Day offered" printed as "Day offe" and, because the spill
+     widened the whole document, the masthead lost its right edge too. Fixed
+     layout makes the columns share the page width and wrap instead. */
+  .table-scroll > table,
+  table.data {
+    table-layout: fixed;
+    width: 100%;
+  }
+  /* The label column carries "00:00-00:59" and a "now" pill; the rest are
+     short numbers and can share what is left. */
+  .table-scroll > table th:first-child,
+  .table-scroll > table td:first-child,
+  table.data th:first-child,
+  table.data td:first-child {
+    width: 15%;
   }
   thead { display: table-header-group; }
   tfoot { display: table-footer-group; }
