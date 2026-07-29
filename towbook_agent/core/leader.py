@@ -164,6 +164,32 @@ def acquire_scheduler_lease(name: str = SCHEDULER_LOCK_NAME) -> SchedulerLease:
         # A dedicated connection, checked out of the pool and never returned:
         # a session-scoped advisory lock lives exactly as long as its session.
         connection = engine.connect()
+
+        # MAKE THE SERVER NOTICE A DEAD HOLDER.
+        #
+        # "Released automatically if the process dies" is only true once
+        # PostgreSQL realises the client is gone, and a container that is killed
+        # never closes its socket. The server's default keepalive comes from the
+        # OS -- typically two hours -- so the backend sits `idle`, holding this
+        # lock, long after the container that took it stopped existing. Observed
+        # in production: a free-looking deployment with no scheduler, because an
+        # orphan from the previous deploy still owned the lock.
+        #
+        # These are per-session settings of the SERVER's keepalive toward this
+        # client, so a holder that vanishes is detected in about a minute
+        # (30s idle + 3 x 10s probes) and its lock released. Wrapped
+        # individually: they are an optimisation, and a managed Postgres that
+        # disallows them must not cost us the lock entirely.
+        for statement in (
+            "SET tcp_keepalives_idle = 30",
+            "SET tcp_keepalives_interval = 10",
+            "SET tcp_keepalives_count = 3",
+        ):
+            try:
+                connection.execute(text(statement))
+            except Exception as exc:  # pragma: no cover - depends on the server
+                logger.debug("could not apply %r: %s", statement, exc)
+
         granted = bool(
             connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar()
         )

@@ -1144,3 +1144,59 @@ def test_port_and_host_resolution_prefers_the_platforms_values(
     monkeypatch.setenv("DASHBOARD_HOST", "10.0.0.5")
     assert resolve_host() == "10.0.0.5"
     assert resolve_host("0.0.0.0") == "0.0.0.0"
+
+
+def test_the_lease_watcher_survives_a_failing_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad retry must not end the thread -- that is the original bug again.
+
+    The first version of the watcher wrapped its try/except around the loop
+    instead of inside it, so a single transient error killed it permanently and
+    a lock that freed up afterwards was never claimed. Seen in production: the
+    watcher was already gone by the time the lock became available.
+    """
+    import time
+
+    from towbook_agent.core import leader as leader_module
+    from towbook_agent.core import scheduler as scheduler_module
+
+    attempts: list[int] = []
+
+    def sometimes_explodes(*_args: object, **_kwargs: object) -> object:
+        attempts.append(1)
+        if len(attempts) <= 3:
+            raise RuntimeError("connection refused while Postgres restarts")
+        return leader_module.SchedulerLease(
+            acquired=True, backend="postgresql", reason="advisory lock held", key=1
+        )
+
+    # Refuse at boot so the watcher starts, then fail, then finally succeed.
+    calls: list[int] = []
+
+    def boot_lease(*a: object, **k: object) -> object:
+        calls.append(1)
+        if len(calls) == 1:
+            return leader_module.SchedulerLease(
+                acquired=False, backend="postgresql", reason="another process", key=1
+            )
+        return sometimes_explodes()
+
+    monkeypatch.setattr(leader_module, "acquire_scheduler_lease", boot_lease)
+    monkeypatch.setattr(scheduler_module, "_lease_retry_seconds", lambda: 0.05)
+
+    scheduler_module.stop_background_scheduler()
+    try:
+        scheduler_module.start_background_scheduler(dry_run=True)
+
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if scheduler_module.background_scheduler_status().get("running"):
+                break
+            time.sleep(0.05)
+
+        assert scheduler_module.background_scheduler_status().get("running") is True, (
+            "three failed retries killed the watcher; a lock that freed afterwards "
+            "would never be claimed"
+        )
+        assert len(attempts) >= 4, "the watcher gave up instead of retrying past the failures"
+    finally:
+        scheduler_module.stop_background_scheduler()

@@ -2289,21 +2289,42 @@ def _watch_for_the_lease(dry_run: bool) -> None:
         interval,
     )
 
-    try:
-        while stop is not None and not stop.wait(interval):
-            if _background_scheduler is not None and getattr(_background_scheduler, "running", False):
-                return
+    # THE TRY GOES INSIDE THE LOOP. With it wrapped around the loop instead, a
+    # single transient failure -- one refused connection while Postgres
+    # restarts, one blip mid-retry -- ends the thread for the life of the
+    # process, and the scheduler never comes back. That is the exact bug this
+    # watcher exists to fix, reintroduced one level down. Observed in
+    # production: the watcher was gone before the lock it was waiting for
+    # became free, so a free lock sat unclaimed.
+    failures = 0
+    while stop is not None and not stop.wait(interval):
+        if _background_scheduler is not None and getattr(_background_scheduler, "running", False):
+            break
+        try:
             outcome = start_background_scheduler(dry_run=dry_run, _retrying=True)
-            if outcome.get("running"):
-                logger.warning(
-                    "took over the scheduler lease from a process that is no longer "
-                    "holding it; scheduled jobs are running again in this process"
+        except Exception as exc:
+            failures += 1
+            # Logged sparsely: this runs every interval forever, and a database
+            # that is down for an hour must not write sixty identical stack
+            # traces into a log the platform is already rate limiting.
+            if failures in (1, 5) or failures % 60 == 0:
+                logger.error(
+                    "scheduler lease retry failed (%d consecutive): %s: %s",
+                    failures,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=(failures == 1),
                 )
-                return
-    except Exception as exc:  # pragma: no cover - defensive; the thread must not kill the app
-        logger.error("the scheduler lease watcher stopped: %s", exc, exc_info=True)
-    finally:
-        _lease_watcher = None
+            continue
+        failures = 0
+        if outcome.get("running"):
+            logger.warning(
+                "took over the scheduler lease from a process that is no longer "
+                "holding it; scheduled jobs are running again in this process"
+            )
+            break
+
+    _lease_watcher = None
 
 
 def _ensure_lease_watcher(dry_run: bool) -> None:
