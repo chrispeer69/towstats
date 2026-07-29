@@ -1607,3 +1607,31 @@ proposals:
   reviewed_by: null
   reviewed_at: null
   rules_version: 2-bac0cd2fd679
+- id: closeoff-tire-change-battery-jump
+  proposed_at: '2026-07-29T18:27:06+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change and Battery Jump are being offered repeatedly and refused
+    almost every time, consuming attention inside the same 3-minute decision window
+    as wanted tow/winch_out offers. Closing them off should raise the response rate
+    on the work we do want.
+  service_type_raw_samples: &id052
+  - Tire Change
+  - Battery Jump
+  first_seen: '2026-07-29T18:27:06+00:00'
+  last_seen: '2026-07-29T18:27:06+00:00'
+  occurrence_count: 41
+  evidence:
+    sample_service_type_raw: *id052
+    affected_requests: 41
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type: Tire Change
+      - service_type: Battery Jump
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type: \"Tire Change\"\
+    \n    - service_type: \"Battery Jump\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679

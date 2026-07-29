@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Agero Deep Dive — Jun 29 to Jul 28, 2026</title><style>
+@page { size: letter; margin: 18mm 16mm 16mm; }
+:root {
+  --ink:#12181f; --ink-soft:#3f4a57; --rule:#d9dee5; --rule-soft:#e9edf1;
+  --muted:#67727f; --lost:#b23a2b; --held:#2c6b52; --panel:#ffffff;
+  --prose:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --display:ui-sans-serif,"Helvetica Neue",Helvetica,Arial,sans-serif;
+  --data:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+}
+* { box-sizing: border-box; }
+body { margin:0; background:#fff; color:var(--ink); font-family:var(--prose);
+       font-size:10.5pt; line-height:1.5; }
+.wrap { max-width: 46rem; margin:0 auto; padding: 0 0 2rem; }
+h1 { font-family:var(--display); font-size:21pt; line-height:1.15; letter-spacing:-0.01em;
+     margin:0 0 .2rem; }
+h1 + p strong { font-family:var(--display); font-weight:600; font-size:10pt;
+     color:var(--muted); letter-spacing:.02em; }
+h2 { font-family:var(--display); font-size:13.5pt; margin:1.9rem 0 .6rem;
+     padding-bottom:.28rem; border-bottom:2px solid var(--ink);
+     break-after:avoid; page-break-after:avoid; }
+h3 { font-family:var(--display); font-size:11.5pt; margin:1.25rem 0 .35rem;
+     color:var(--ink); break-after:avoid; page-break-after:avoid; }
+p { margin:0 0 .7rem; }
+strong { font-weight:700; }
+code { font-family:var(--data); font-size:8.9pt; background:var(--rule-soft);
+       padding:.06em .3em; border-radius:2px; }
+hr { border:0; border-top:1px solid var(--rule); margin:1.6rem 0; }
+ul { margin:0 0 .8rem; padding-left:1.1rem; }
+li { margin:0 0 .35rem; }
+table { width:100%; border-collapse:collapse; margin:.5rem 0 1.1rem;
+        font-family:var(--display); font-size:9.2pt;
+        break-inside:avoid; page-break-inside:avoid; }
+thead th { text-align:left; font-weight:600; font-size:8pt; letter-spacing:.04em;
+           text-transform:uppercase; color:var(--muted);
+           border-bottom:1.5px solid var(--ink); padding:.3rem .45rem; }
+td { padding:.3rem .45rem; border-bottom:1px solid var(--rule-soft); }
+tbody tr:last-child td { border-bottom:1px solid var(--rule); }
+td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; }
+/* Bold in a cell means "look here", not "this is bad" -- 60% accepted is the
+   good number and must not print in the loss colour. Weight only, and it still
+   reads on a black-and-white printer. */
+td strong { color:var(--ink); font-weight:700; }
+em { color:var(--muted); }
+.lede { font-size:11.5pt; }
+h1 + p { margin-bottom:1.4rem; }
+@media print { .wrap { max-width:none; } a { color:inherit; text-decoration:none; } }
+</style></head><body><div class="wrap">
+<h1>Agero Deep Dive</h1>
+<p><strong>Roadside Towing and Recovery Inc — 30 days, Jun 29 – Jul 28, 2026</strong></p>
+<hr>
+<h2>The number</h2>
+<p><strong>1,942 offers. 65% of everything you are sent. You won 710 — 36.6%.</strong></p>
+<p>965 of the misses are yours to fix. At your configured $65/job that is roughly <strong>$62,700 a month</strong>, of which <strong>$46,700 is tow work</strong>.</p>
+<p>But the headline number is not the finding. This is:</p>
+<table><thead><tr><th class="">Agero</th><th class="r">offers</th><th class="r">accepted</th><th class="r">unanswered</th></tr></thead><tbody>
+<tr><td class=""><strong>Inside</strong> your staffed window (Mon–Fri 06:00–18:00)</td><td class="r">1,000</td><td class="r"><strong>60%</strong></td><td class="r">6%</td></tr>
+<tr><td class=""><strong>Outside</strong> it</td><td class="r">942</td><td class="r"><strong>12%</strong></td><td class="r">63%</td></tr>
+</tbody></table>
+<p>You are not bad at Agero. You are <strong>absent</strong> after 18:00 and on weekends. Inside your staffed window you accept 6 of every 10 Agero offers, which is a good number. Outside it you accept 1 in 8.</p>
+<hr>
+<h2>What the dashboard is currently telling you wrong</h2>
+<p>The board reports Allstate going unanswered 0.2% of the time against Agero's 33%, and flags it as a process difference — "same trucks, same staff." It is not a process difference.</p>
+<table><thead><tr><th class="">Allstate</th><th class="r">offers</th><th class="r">accepted</th><th class="r">canceled</th><th class="r">expired</th></tr></thead><tbody>
+<tr><td class="">Inside window</td><td class="r">283</td><td class="r"><strong>67%</strong></td><td class="r">18%</td><td class="r">1</td></tr>
+<tr><td class="">Outside it</td><td class="r">383</td><td class="r"><strong>11%</strong></td><td class="r"><strong>77%</strong></td><td class="r">0</td></tr>
+</tbody></table>
+<p>Identical collapse: 67% → 11% for Allstate, 60% → 12% for Agero. The only difference is the word the club writes down when you do not answer. <strong>Agero says <em>Expired</em>. Allstate says <em>Cancelled</em>.</strong></p>
+<p><em>Cancelled</em> lands in the <code>client_withdrew</code> bucket, and <code>count_client_withdrew_as_recoverable: false</code> excludes that bucket from your recoverable total. So roughly <strong>294 Allstate offers a month are missed work filed as "the client pulled it, not our fault."</strong></p>
+<p>Agero looks like your problem client because Agero is the only one telling you the truth.</p>
+<p>Across all five clients, tow and winch only: <strong>inside the window 65% accepted; outside it, 13% accepted and 889 offers lost.</strong></p>
+<hr>
+<h2>Where the money actually is</h2>
+<p>Weekends, not nights. Saturday and Sunday midday is the densest hole in the data — 14:00, 15:00, 16:00 and 17:00 all run 95–100% missed at roughly 40 offers per hour.</p>
+<table><thead><tr><th class="">Candidate shift</th><th class="r">hrs/wk</th><th class="r">tows missed /30d</th><th class="r">missed per hour</th><th class="r">at $65</th></tr></thead><tbody>
+<tr><td class=""><strong>Sat+Sun 10:00–19:00</strong></td><td class="r">18</td><td class="r">307</td><td class="r"><strong>3.98</strong></td><td class="r">$19,955</td></tr>
+<tr><td class="">Sat+Sun 06:00–22:00</td><td class="r">32</td><td class="r">423</td><td class="r">3.08</td><td class="r">$27,495</td></tr>
+<tr><td class="">Mon–Fri 17:00–23:00</td><td class="r">30</td><td class="r">330</td><td class="r">2.57</td><td class="r">$21,450</td></tr>
+<tr><td class="">Mon–Fri 18:00–22:00</td><td class="r">20</td><td class="r">247</td><td class="r">2.88</td><td class="r">$16,055</td></tr>
+<tr><td class="">All week 22:00–06:00</td><td class="r">56</td><td class="r">219</td><td class="r">0.91</td><td class="r">$14,235</td></tr>
+</tbody></table>
+<p>Sunday currently accepts <strong>1.7%</strong> of tow offers — 3 of 174. Saturday, <strong>7.9%</strong>.</p>
+<hr>
+<h2>Action plan, in order</h2>
+<h3>1. Staff Saturday and Sunday, 10:00–19:00</h3>
+<p>Eighteen hours a week. <strong>307 tow offers a month are dying in them.</strong> Capture even half and it is about $10,000 a month against one person's weekend wage. Nothing else in this dataset returns four jobs per staffed hour.</p>
+<h3>2. Then Monday–Friday, 17:00–23:00</h3>
+<p><strong>330 more.</strong> Note that 17:00–18:00 alone accounts for 123 missed tows: your coverage ends exactly one hour before the evening peak, and 18:00 is the single busiest offer hour of the day.</p>
+<h3>3. Close off light service</h3>
+<p><strong>431 offers a month producing 13 jobs — a 3% conversion on 14.4% of your total volume.</strong> And <strong>63% of it lands in an hour where a tow was missed</strong>, competing for the same attention inside the same short decision window.</p>
+<p>Ask Agero to stop sending:</p>
+<table><thead><tr><th class="">Service type</th><th class="r">offers</th><th class="r">jobs</th></tr></thead><tbody>
+<tr><td class="">Tire Change</td><td class="r">110</td><td class="r">0</td></tr>
+<tr><td class="">Battery Jump</td><td class="r">73</td><td class="r">3</td></tr>
+<tr><td class="">Lock Out</td><td class="r">58</td><td class="r">4</td></tr>
+<tr><td class="">Fuel Delivery</td><td class="r">18</td><td class="r">0</td></tr>
+<tr><td class="">Accident Tow</td><td class="r">19</td><td class="r">0</td></tr>
+</tbody></table>
+<p>Ask Allstate the same for its 110 light-service offers, which produced 4 jobs.</p>
+<h3>4. Interrogate "Equipment Not Available"</h3>
+<p><strong>178 tow declines a month ($11,570), 125 of them plain <em>Tow</em> — your core product.</strong> 100 of the 178 fall outside staffed hours, and they spike at 16:00–19:00 (77 of them).</p>
+<p>That pattern says <em>nobody there to send</em>, not <em>wrong truck class</em>. If dispatch is using this reason as a catch-all, the equipment line on your board is fiction and the staffing case above is larger than it already looks.</p>
+<h3>5. Fix the Allstate blind spot in the model</h3>
+<p>Treat "Cancelled outside staffed hours" as a non-response, or at minimum surface it separately. As it stands the board hides roughly <strong>$19,000 a month</strong> of missed Allstate work and prints a client comparison that points you at the wrong problem.</p>
+<hr>
+<h2>Three caveats to hold</h2>
+<ul><li><strong>Dollars are jobs × $65 from <code>job_value_by_client</code>, not revenue.</strong> The <code>amount</code> field is <code>0</code> on all 2,996 records. Every figure here is a job count priced by your configuration.</li><li><strong>The week of Jul 27 looks excellent — ignore it.</strong> 60% accepted, 14% unanswered, but it is Monday and Tuesday only, 101 offers, no weekend yet. The weekend is what drags the average down.</li><li><strong><code>responded_at</code> is empty on every record</strong>, so response latency cannot be measured. The "3-minute median decision window" cited in <code>MISSED_WORK_MODEL.md</code> is not verifiable from this data.</li></ul>
+<hr>
+<h1>Appendix — supporting detail</h1>
+<h2>A. Agero funnel, all service classes</h2>
+<table><thead><tr><th class="">Bucket</th><th class="r">offers</th><th class="r">share</th></tr></thead><tbody>
+<tr><td class="">Won</td><td class="r">710</td><td class="r">36.6%</td></tr>
+<tr><td class="">No response (expired)</td><td class="r">648</td><td class="r">33.4%</td></tr>
+<tr><td class="">Declined</td><td class="r">316</td><td class="r">16.3%</td></tr>
+<tr><td class="">Client withdrew</td><td class="r">267</td><td class="r">13.7%</td></tr>
+<tr><td class="">Accept failed</td><td class="r">1</td><td class="r">0.1%</td></tr>
+</tbody></table>
+<p>Recoverable (declined + no response + accept failed): <strong>965 = 49.7% of offers.</strong></p>
+<h2>B. Agero by service class</h2>
+<table><thead><tr><th class="">Class</th><th class="r">offers</th><th class="r">won</th><th class="r">rate</th><th class="r">unanswered</th><th class="r">declined</th><th class="r">withdrew</th></tr></thead><tbody>
+<tr><td class="">tow</td><td class="r">1,660</td><td class="r">700</td><td class="r">42.2%</td><td class="r">512</td><td class="r">189</td><td class="r">258</td></tr>
+<tr><td class="">light_service</td><td class="r">259</td><td class="r">7</td><td class="r">2.7%</td><td class="r">123</td><td class="r">123</td><td class="r">6</td></tr>
+<tr><td class="">winch_out</td><td class="r">22</td><td class="r">2</td><td class="r">9.1%</td><td class="r">13</td><td class="r">4</td><td class="r">3</td></tr>
+</tbody></table>
+<p>Work you want (tow + winch_out): <strong>1,682 offers, 702 won (41.7%), 719 recoverable ≈ $46,735/30d.</strong> Of those, <strong>525 were simply never answered</strong> (≈ $34,125/30d).</p>
+<h2>C. Agero by hour of day — tow and winch only</h2>
+<p>Blind spot = 5 or more offers and 35%+ unanswered, per your <code>rules.yaml</code>.</p>
+<table><thead><tr><th class="">Hour</th><th class="r">offers</th><th class="r">won</th><th class="r">unanswered</th><th class="r">rate</th><th class=""></th></tr></thead><tbody>
+<tr><td class="">00:00</td><td class="r">35</td><td class="r">11</td><td class="r">10</td><td class="r">28.6%</td><td class=""></td></tr>
+<tr><td class="">01:00</td><td class="r">27</td><td class="r">4</td><td class="r">17</td><td class="r">63.0%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">02:00</td><td class="r">14</td><td class="r">1</td><td class="r">8</td><td class="r">57.1%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">03:00</td><td class="r">7</td><td class="r">0</td><td class="r">5</td><td class="r">71.4%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">04:00</td><td class="r">20</td><td class="r">4</td><td class="r">13</td><td class="r">65.0%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">05:00</td><td class="r">46</td><td class="r">28</td><td class="r">6</td><td class="r">13.0%</td><td class=""></td></tr>
+<tr><td class="">06:00</td><td class="r">93</td><td class="r">65</td><td class="r">9</td><td class="r">9.7%</td><td class=""></td></tr>
+<tr><td class="">07:00</td><td class="r">66</td><td class="r">47</td><td class="r">10</td><td class="r">15.2%</td><td class=""></td></tr>
+<tr><td class="">08:00</td><td class="r">78</td><td class="r">51</td><td class="r">8</td><td class="r">10.3%</td><td class=""></td></tr>
+<tr><td class="">09:00</td><td class="r">82</td><td class="r">65</td><td class="r">8</td><td class="r">9.8%</td><td class=""></td></tr>
+<tr><td class="">10:00</td><td class="r">106</td><td class="r">69</td><td class="r">11</td><td class="r">10.4%</td><td class=""></td></tr>
+<tr><td class="">11:00</td><td class="r">96</td><td class="r">58</td><td class="r">15</td><td class="r">15.6%</td><td class=""></td></tr>
+<tr><td class="">12:00</td><td class="r">104</td><td class="r">56</td><td class="r">16</td><td class="r">15.4%</td><td class=""></td></tr>
+<tr><td class="">13:00</td><td class="r">115</td><td class="r">63</td><td class="r">20</td><td class="r">17.4%</td><td class=""></td></tr>
+<tr><td class="">14:00</td><td class="r">107</td><td class="r">51</td><td class="r">23</td><td class="r">21.5%</td><td class=""></td></tr>
+<tr><td class="">15:00</td><td class="r">94</td><td class="r">38</td><td class="r">27</td><td class="r">28.7%</td><td class=""></td></tr>
+<tr><td class="">16:00</td><td class="r">95</td><td class="r">22</td><td class="r">26</td><td class="r">27.4%</td><td class=""></td></tr>
+<tr><td class="">17:00</td><td class="r">108</td><td class="r">14</td><td class="r">59</td><td class="r">54.6%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">18:00</td><td class="r">113</td><td class="r">20</td><td class="r">64</td><td class="r">56.6%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">19:00</td><td class="r">66</td><td class="r">6</td><td class="r">38</td><td class="r">57.6%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">20:00</td><td class="r">76</td><td class="r">14</td><td class="r">51</td><td class="r">67.1%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">21:00</td><td class="r">62</td><td class="r">5</td><td class="r">46</td><td class="r">74.2%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">22:00</td><td class="r">38</td><td class="r">2</td><td class="r">20</td><td class="r">52.6%</td><td class=""><strong>blind spot</strong></td></tr>
+<tr><td class="">23:00</td><td class="r">34</td><td class="r">8</td><td class="r">15</td><td class="r">44.1%</td><td class=""><strong>blind spot</strong></td></tr>
+</tbody></table>
+<p>Sixty hour-of-week cells qualify as blind spots, accounting for <strong>438 lost jobs</strong> (≈ $28,470/30d). The worst: Sun 18:00 (15 of 16 missed), Sat 18:00 (15 of 21), Sun 15:00 (14 of 15), Sun 14:00 (13 of 13), Sat 16:00 (13 of 13).</p>
+<h2>D. Agero by day of week — tow and winch only</h2>
+<table><thead><tr><th class="">Day</th><th class="r">offers</th><th class="r">won</th><th class="r">rate</th><th class="r">unanswered</th><th class="r">rate</th></tr></thead><tbody>
+<tr><td class="">Mon</td><td class="r">347</td><td class="r">180</td><td class="r">51.9%</td><td class="r">44</td><td class="r">12.7%</td></tr>
+<tr><td class="">Tue</td><td class="r">261</td><td class="r">158</td><td class="r">60.5%</td><td class="r">45</td><td class="r">17.2%</td></tr>
+<tr><td class="">Wed</td><td class="r">253</td><td class="r">130</td><td class="r">51.4%</td><td class="r">44</td><td class="r">17.4%</td></tr>
+<tr><td class="">Thu</td><td class="r">252</td><td class="r">121</td><td class="r">48.0%</td><td class="r">56</td><td class="r">22.2%</td></tr>
+<tr><td class="">Fri</td><td class="r">218</td><td class="r">96</td><td class="r">44.0%</td><td class="r">54</td><td class="r">24.8%</td></tr>
+<tr><td class=""><strong>Sat</strong></td><td class="r">177</td><td class="r">14</td><td class="r"><strong>7.9%</strong></td><td class="r">126</td><td class="r">71.2%</td></tr>
+<tr><td class=""><strong>Sun</strong></td><td class="r">174</td><td class="r">3</td><td class="r"><strong>1.7%</strong></td><td class="r">156</td><td class="r">89.7%</td></tr>
+</tbody></table>
+<h2>E. Weekend hour by hour — all clients, tow and winch</h2>
+<table><thead><tr><th class="">Hour</th><th class="r">offers</th><th class="r">accepted</th><th class="r">missed</th><th class="r">missed %</th></tr></thead><tbody>
+<tr><td class="">06:00</td><td class="r">12</td><td class="r">0</td><td class="r">12</td><td class="r">100%</td></tr>
+<tr><td class="">07:00</td><td class="r">15</td><td class="r">1</td><td class="r">13</td><td class="r">87%</td></tr>
+<tr><td class="">08:00</td><td class="r">19</td><td class="r">4</td><td class="r">11</td><td class="r">58%</td></tr>
+<tr><td class="">09:00</td><td class="r">20</td><td class="r">1</td><td class="r">16</td><td class="r">80%</td></tr>
+<tr><td class="">10:00</td><td class="r">19</td><td class="r">1</td><td class="r">17</td><td class="r">89%</td></tr>
+<tr><td class="">11:00</td><td class="r">39</td><td class="r">1</td><td class="r">32</td><td class="r">82%</td></tr>
+<tr><td class="">12:00</td><td class="r">40</td><td class="r">3</td><td class="r">31</td><td class="r">78%</td></tr>
+<tr><td class="">13:00</td><td class="r">30</td><td class="r">0</td><td class="r">28</td><td class="r">93%</td></tr>
+<tr><td class="">14:00</td><td class="r">38</td><td class="r">0</td><td class="r">38</td><td class="r">100%</td></tr>
+<tr><td class="">15:00</td><td class="r">40</td><td class="r">0</td><td class="r">40</td><td class="r">100%</td></tr>
+<tr><td class="">16:00</td><td class="r">42</td><td class="r">0</td><td class="r">41</td><td class="r">98%</td></tr>
+<tr><td class="">17:00</td><td class="r">40</td><td class="r">0</td><td class="r">38</td><td class="r">95%</td></tr>
+<tr><td class="">18:00</td><td class="r">49</td><td class="r">4</td><td class="r">42</td><td class="r">86%</td></tr>
+<tr><td class="">19:00</td><td class="r">31</td><td class="r">2</td><td class="r">22</td><td class="r">71%</td></tr>
+<tr><td class="">20:00</td><td class="r">23</td><td class="r">0</td><td class="r">22</td><td class="r">96%</td></tr>
+<tr><td class="">21:00</td><td class="r">22</td><td class="r">1</td><td class="r">20</td><td class="r">91%</td></tr>
+<tr><td class="">22:00</td><td class="r">16</td><td class="r">2</td><td class="r">14</td><td class="r">88%</td></tr>
+</tbody></table>
+<p>"Missed" here counts expired offers plus offers cancelled outside staffed hours — see the Allstate note above.</p>
+<h2>F. Why you said no — Agero declines</h2>
+<table><thead><tr><th class="">Reason</th><th class="r">declines</th><th class="r">of which tow/winch</th></tr></thead><tbody>
+<tr><td class="">Equipment Not Available</td><td class="r">239</td><td class="r">137</td></tr>
+<tr><td class="">No Drivers Available</td><td class="r">30</td><td class="r">19</td></tr>
+<tr><td class="">Other</td><td class="r">25</td><td class="r">18</td></tr>
+<tr><td class="">Out of Service Area</td><td class="r">17</td><td class="r">16</td></tr>
+<tr><td class="">Not Enough Information</td><td class="r">5</td><td class="r">3</td></tr>
+</tbody></table>
+<h2>G. Client comparison — tow and winch only</h2>
+<table><thead><tr><th class="">Client</th><th class="r">offers</th><th class="r">won</th><th class="r">rate</th><th class="r">unanswered</th><th class="r">rate</th><th class="r">declined</th></tr></thead><tbody>
+<tr><td class="">Agero (Swoop)</td><td class="r">1,682</td><td class="r">702</td><td class="r">41.7%</td><td class="r">525</td><td class="r">31.2%</td><td class="r">193</td></tr>
+<tr><td class="">Allstate</td><td class="r">556</td><td class="r">227</td><td class="r">40.8%</td><td class="r">1</td><td class="r">0.2%</td><td class="r">40</td></tr>
+<tr><td class="">NSD</td><td class="r">190</td><td class="r">68</td><td class="r">35.8%</td><td class="r">68</td><td class="r">35.8%</td><td class="r">0</td></tr>
+<tr><td class="">Urgent.ly</td><td class="r">67</td><td class="r">26</td><td class="r">38.8%</td><td class="r">18</td><td class="r">26.9%</td><td class="r">5</td></tr>
+<tr><td class="">Allied Dispatch Solutions</td><td class="r">63</td><td class="r">28</td><td class="r">44.4%</td><td class="r">22</td><td class="r">34.9%</td><td class="r">0</td></tr>
+</tbody></table>
+<p>Allstate's 0.2% is the reporting artifact described above, not a better result.</p>
+<h2>H. Trend by week — Agero, tow and winch</h2>
+<table><thead><tr><th class="">Week of</th><th class="r">offers</th><th class="r">won</th><th class="r">rate</th><th class="r">unanswered</th><th class="r">rate</th></tr></thead><tbody>
+<tr><td class="">Jun 29</td><td class="r">437</td><td class="r">153</td><td class="r">35.0%</td><td class="r">170</td><td class="r">38.9%</td></tr>
+<tr><td class="">Jul 06</td><td class="r">389</td><td class="r">176</td><td class="r">45.2%</td><td class="r">102</td><td class="r">26.2%</td></tr>
+<tr><td class="">Jul 13</td><td class="r">392</td><td class="r">172</td><td class="r">43.9%</td><td class="r">100</td><td class="r">25.5%</td></tr>
+<tr><td class="">Jul 20</td><td class="r">363</td><td class="r">140</td><td class="r">38.6%</td><td class="r">139</td><td class="r">38.3%</td></tr>
+<tr><td class="">Jul 27 <em>(partial — 2 weekdays)</em></td><td class="r">101</td><td class="r">61</td><td class="r">60.4%</td><td class="r">14</td><td class="r">13.9%</td></tr>
+</tbody></table>
+<h2>I. Client withdrawals — Agero, tow and winch</h2>
+<p>261 offers Agero pulled back, 15.5% of the work you want.</p>
+<table><thead><tr><th class="">Raw status</th><th class="r">count</th></tr></thead><tbody>
+<tr><td class="">Cancelled</td><td class="r">174</td></tr>
+<tr><td class="">Rejected By Motor Club</td><td class="r">38</td></tr>
+<tr><td class="">Service Failure Confirmed</td><td class="r">25</td></tr>
+<tr><td class="">GOA Approved By Motor Club</td><td class="r">24</td></tr>
+</tbody></table>
+<hr>
+<p><em>Analysis run against the 30-day backfill in <code>data/towbook.db</code>, Jun 29 – Jul 28 2026, using this company's own bucket, coverage and blind-spot rules from <code>config/rules.yaml</code> and <code>config/companies.yaml</code>. Timezone America/Detroit.</em></p>
+</div></body></html>
