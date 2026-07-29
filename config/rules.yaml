@@ -634,3 +634,76 @@ missed_work:
           Owner's stated staffed window. Verified against 30 days of real Agero
           traffic: 5.8% of offers expire inside it, 61.7% outside it.
     default_label: uncovered
+
+  # ------------------------------------------------------------------------
+  # territory -- "was this even our job to take?"
+  #
+  # The other half of the question `coverage` asks. Coverage asks whether
+  # anybody was at a desk; this asks whether the job was inside the area this
+  # company works at all. An offer failing either test is not a miss the owner
+  # should be judged on, and counting it as one is precisely what makes an
+  # honest acceptance rate read badly: 18.8% of everything this company is
+  # offered is light service it declines by policy or work outside its area.
+  #
+  # PER COMPANY, and the second override a new tenant sets after `coverage`.
+  # A company entry in companies.yaml may declare its own `territory:` block,
+  # which REPLACES this one outright rather than merging -- exactly like
+  # `coverage` and `job_value_by_client`, and for the same reason: a tenant
+  # that lists its own service area must not silently inherit somebody else's
+  # ZIPs and be measured against a market it has never worked.
+  #
+  # Bands are NEAREST FIRST and a ZIP belongs to the first band naming it, so
+  # the ordering here is the tie-break. They are reported separately because
+  # the contrast is a real operating fact, verified over 30 days:
+  #
+  #     core   2,628 offers   39.6% accepted
+  #     edge     187 offers    9.1% accepted
+  #     ext       12 offers    8.3% accepted
+  #     outside  169 offers    3.0% accepted   (5 jobs in a month)
+  #
+  # Derived from the owner's own service-area definition -- Franklin County
+  # plus the I-270 outerbelt and eight miles beyond it -- and VALIDATED against
+  # 30 days of real offers: only 5 accepted jobs of 1,085 fell outside these
+  # 79 ZIPs, which is 0.5% of the work.
+  #
+  # Quote every ZIP. Unquoted, YAML reads 43201 as an integer and a leading-zero
+  # ZIP like 01234 as 1234, which would leave a New England tenant with no
+  # territory at all. The loader normalises either way, but quoting keeps the
+  # file honest about what these are: labels, not numbers.
+  # ------------------------------------------------------------------------
+  territory:
+    bands:
+      # Franklin County and the ring that touches it. Home.
+      - name: core
+        note: >-
+          Columbus and the inner suburbs -- Dublin, Hilliard, Grove City,
+          Westerville, Gahanna, Reynoldsburg, Pickerington, Canal Winchester,
+          Powell, New Albany, Pataskala, Groveport, Ashville, West Jefferson.
+        zips: ["43002", "43004", "43016", "43017", "43021", "43026", "43035", "43054",
+               "43062", "43064", "43065", "43068", "43081", "43082", "43085", "43103",
+               "43109", "43110", "43116", "43117", "43119", "43123", "43125", "43126",
+               "43136", "43137", "43146", "43147", "43162", "43201", "43202", "43203",
+               "43204", "43205", "43206", "43207", "43209", "43210", "43211", "43212",
+               "43213", "43214", "43215", "43217", "43219", "43220", "43221", "43222",
+               "43223", "43224", "43227", "43228", "43229", "43230", "43231", "43232",
+               "43235", "43240"]
+
+      # The long runs. Taken when a truck is free -- 9.1% of them over 30 days,
+      # against 39.6% in the core. Worth watching: if this stays near zero the
+      # honest answer is to stop calling it territory.
+      - name: edge
+        note: >-
+          Delaware, Marysville, London, Circleville, Newark's western edge,
+          Sunbury, Granville, Johnstown, Mount Sterling, Baltimore, Carroll.
+        zips: ["43001", "43015", "43023", "43031", "43040", "43046", "43061", "43074",
+               "43102", "43105", "43112", "43113", "43140", "43143"]
+
+      # Reachable, rarely worked: 12 offers and one job in 30 days. Kept
+      # separate so it cannot flatter the edge band's rate.
+      - name: ext
+        note: Croton, Hebron, Irwin, Kilbourne, Kirkersville, Thurston, Unionville Center.
+        zips: ["43013", "43025", "43029", "43032", "43033", "43077", "43157"]
+
+    # Everything else. Chillicothe, Zanesville, Logan, Waverly, Mansfield:
+    # 169 offers and 5 jobs in 30 days, and the clubs know it.
+    default_label: outside

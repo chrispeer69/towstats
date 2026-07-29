@@ -122,6 +122,7 @@ agents/metrics.py, which owns that machinery and the ``alerts_fired`` read path.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
@@ -144,6 +145,8 @@ __all__ = [
     "client_comparison",
     "coverage_label",
     "coverage_analysis",
+    "territory_band",
+    "in_territory",
     # wiring
     "alert_contexts",
     "get_stored_missed_work",
@@ -153,6 +156,8 @@ __all__ = [
     "UNATTRIBUTED_CAUSE",
     "UNATTRIBUTED_REMEDY",
     "UNCOVERED_LABEL",
+    "OUTSIDE_TERRITORY_LABEL",
+    "UNKNOWN_TERRITORY_LABEL",
 ]
 
 logger = logging.getLogger(__name__)
@@ -173,6 +178,21 @@ UNATTRIBUTED_REMEDY: str = "review"
 #: greppable and so the shipped ``coverage_gap`` alert has something to match
 #: even if the block is deleted from rules.yaml.
 UNCOVERED_LABEL: str = "uncovered"
+
+#: The label for an offer whose pickup ZIP is in no configured band -- work
+#: this company does not travel for. Overridden by
+#: ``missed_work.territory.default_label``.
+OUTSIDE_TERRITORY_LABEL: str = "outside"
+
+#: The label for an offer we cannot place: no ZIP on the row and none parseable
+#: out of the address, or no territory configured at all. DELIBERATELY NOT the
+#: outside label -- see territory_band(). An unplaceable offer is counted as
+#: ours, because the alternative is silently shrinking the missed-work
+#: inventory, and this model exists to stop work going unseen.
+UNKNOWN_TERRITORY_LABEL: str = "territory_unknown"
+
+#: Trailing ZIP in a free-text address, for CSV rows that carry no ZIP field.
+_ZIP_IN_TEXT = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
 #: Every tunable, with the value used when rules.yaml does not override it.
 #: Mirrors :data:`agents.metrics.DEFAULTS` in shape and intent.
@@ -710,6 +730,140 @@ def _local_moment(row: Any) -> tuple[int, int] | None:
         return (int(weekday or 0) % 7, (int(hour or 0) % 24) * 60)
     except (TypeError, ValueError):
         return None
+
+
+# ==========================================================================
+# Territory -- "was this even our job to take?"
+#
+# The second half of the same question coverage asks. Coverage asks whether
+# anybody was at a desk; territory asks whether the job was inside the area
+# this company works at all. An offer that fails either test is not a miss the
+# owner should be judged on, and counting it as one is what makes an honest
+# acceptance rate look bad.
+#
+# Keyed on ZIP, from ``rules.yaml -> missed_work.territory``; there is no
+# geography in this code. Bands are ordered nearest-first and are reported
+# separately, because "we take 40% of the core and 9% of the edge" is a real
+# operating fact and flattening the two hides it.
+# ==========================================================================
+
+
+def _zip_key(value: Any) -> str:
+    """Normalise anything ZIP-shaped to a comparable 5-character key.
+
+    YAML turns an unquoted 43201 into an int and an unquoted 01234 into 1234
+    (or, worse, into octal on some loaders), and the portal writes ZIP+4 as
+    "43201-1234". All of those have to land on the same key, or a tenant in
+    Massachusetts silently has no territory at all.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.split("-", 1)[0].strip()
+    if not text.isdigit():
+        return ""
+    return text.zfill(5)[:5]
+
+
+def _territory_config(rules: Mapping[str, Any]) -> Mapping[str, Any]:
+    block = (rules.get("missed_work") or {}).get("territory")
+    return block if isinstance(block, Mapping) else {}
+
+
+def _territory_default_label(rules: Mapping[str, Any]) -> str:
+    return str(_territory_config(rules).get("default_label") or OUTSIDE_TERRITORY_LABEL)
+
+
+def _territory_bands(rules: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """``[{name, zips: frozenset}]``, nearest band first.
+
+    A ZIP listed in more than one band belongs to the FIRST that names it, so
+    the ordering in config is the tie-break and moving a ZIP inward is a
+    one-line edit.
+    """
+    raw = _territory_config(rules).get("bands")
+    if isinstance(raw, Mapping):
+        raw = [{**entry, "name": name} for name, entry in raw.items()
+               if isinstance(entry, Mapping)]
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    default_label = _territory_default_label(rules)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or f"band_{position + 1}").strip()
+        if name == default_label:
+            logger.warning(
+                "missed_work.territory: band %r uses the default_label; renaming it "
+                "to %r so in and out stay distinguishable",
+                name,
+                f"{name}_band",
+            )
+            name = f"{name}_band"
+        zips: set[str] = set()
+        for item in entry.get("zips") or ():
+            key = _zip_key(item)
+            if not key:
+                logger.warning("missed_work.territory: %r is not a ZIP; ignoring", item)
+                continue
+            if key in seen:
+                continue  # first band wins
+            seen.add(key)
+            zips.add(key)
+        if not zips:
+            logger.warning(
+                "missed_work.territory: band %r lists no usable ZIP; it will never match",
+                name,
+            )
+        out.append({"name": name, "zips": frozenset(zips)})
+    return out
+
+
+def territory_band(row: Any, rules: Mapping[str, Any] | None = None) -> str:
+    """Which service-area band this offer's pickup falls in, or the outside label.
+
+    Reads ``pickup_zip`` -- the ZIP the API states as its own field -- and falls
+    back to the trailing ZIP in ``pickup_location`` for CSV-ingested rows, which
+    carry no ZIP field at all.
+
+    A row whose ZIP cannot be read returns the IN-TERRITORY default rather than
+    the outside label. That direction is deliberate: calling an unreadable row
+    "out of territory" would quietly delete it from the missed-work inventory,
+    and hiding work is the one failure this model must not have. Unknown
+    territory is reported as unknown, and counted.
+    """
+    resolved = _rules(rules)
+    bands = _territory_bands(resolved)
+    if not bands:
+        # No territory configured -- every offer is in territory, which is the
+        # behaviour every install had before this block existed.
+        return UNKNOWN_TERRITORY_LABEL
+
+    key = _zip_key(_field(row, "pickup_zip"))
+    if not key:
+        text = str(_field(row, "pickup_location") or "")
+        found = _ZIP_IN_TEXT.findall(text)
+        key = _zip_key(found[-1]) if found else ""
+    if not key:
+        return UNKNOWN_TERRITORY_LABEL
+
+    for band in bands:
+        if key in band["zips"]:
+            return str(band["name"])
+    return _territory_default_label(resolved)
+
+
+def in_territory(row: Any, rules: Mapping[str, Any] | None = None) -> bool:
+    """Was this job inside the area this company works?
+
+    Unknown counts as IN, for the reason in :func:`territory_band`: an offer we
+    cannot place must not vanish from the inventory.
+    """
+    band = territory_band(row, rules)
+    return band != _territory_default_label(_rules(rules))
 
 
 def coverage_label(row: Any, rules: Mapping[str, Any] | None = None) -> str:
