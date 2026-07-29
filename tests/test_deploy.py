@@ -743,6 +743,118 @@ def test_sqlite_needs_no_lease_and_says_why() -> None:
         lease.release()
 
 
+# ==========================================================================
+# Losing the advisory lock must not be permanent
+#
+# Regression tests for a real outage: the scheduler stopped for 5.7 hours and
+# the board's only symptom was its own overdue banner.
+#
+# Railway starts the replacement container BEFORE stopping the old one. During
+# that overlap the old container legitimately holds the lock, so the new one is
+# refused -- and, asking only once, never scheduled anything again. It logged
+# "That is expected on a second replica" while being the only replica.
+# ==========================================================================
+
+
+def test_the_lease_retry_interval_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Too short is a busy-poll; too long outlasts the hourly job it protects."""
+    from towbook_agent.core import scheduler as scheduler_module
+
+    monkeypatch.delenv("SCHEDULER_LEASE_RETRY_SECONDS", raising=False)
+    assert scheduler_module._lease_retry_seconds() == 60.0
+
+    monkeypatch.setenv("SCHEDULER_LEASE_RETRY_SECONDS", "0.001")
+    assert scheduler_module._lease_retry_seconds() == 5.0
+
+    monkeypatch.setenv("SCHEDULER_LEASE_RETRY_SECONDS", "999999")
+    assert scheduler_module._lease_retry_seconds() == 3600.0
+
+    monkeypatch.setenv("SCHEDULER_LEASE_RETRY_SECONDS", "not-a-number")
+    assert scheduler_module._lease_retry_seconds() == 60.0
+
+
+def test_a_process_that_loses_the_lease_takes_over_when_the_holder_goes_away(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE regression test. Refused once, granted next -- it must end up running.
+
+    Before the fix this scheduler stayed dead forever and the only way back was
+    a manual redeploy.
+    """
+    import time
+
+    from towbook_agent.core import leader as leader_module
+    from towbook_agent.core import scheduler as scheduler_module
+
+    calls: list[int] = []
+
+    def flaky_lease(*_args: object, **_kwargs: object) -> object:
+        calls.append(1)
+        # Refused the first time, exactly as during a deploy overlap.
+        if len(calls) == 1:
+            return leader_module.SchedulerLease(
+                acquired=False,
+                backend="postgresql",
+                reason="another process is the scheduler",
+                key=1,
+            )
+        return leader_module.SchedulerLease(
+            acquired=True, backend="postgresql", reason="advisory lock held", key=1
+        )
+
+    monkeypatch.setattr(leader_module, "acquire_scheduler_lease", flaky_lease)
+    monkeypatch.setenv("SCHEDULER_LEASE_RETRY_SECONDS", "0.001")  # clamps to 5s floor
+    monkeypatch.setattr(scheduler_module, "_lease_retry_seconds", lambda: 0.05)
+
+    scheduler_module.stop_background_scheduler()
+    try:
+        first = scheduler_module.start_background_scheduler(dry_run=True)
+        assert first["running"] is False
+        assert "retrying" in first["reason"], "the refusal must announce that it will retry"
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if scheduler_module.background_scheduler_status().get("running"):
+                break
+            time.sleep(0.05)
+
+        assert scheduler_module.background_scheduler_status().get("running") is True, (
+            "the watcher never took over the lease; the scheduler would stay dead "
+            "until somebody redeployed by hand"
+        )
+        assert len(calls) >= 2, "the lease was only ever asked for once"
+    finally:
+        scheduler_module.stop_background_scheduler()
+
+
+def test_shutting_down_stops_the_retry_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A watcher left running could start a scheduler as the process exits."""
+    import time
+
+    from towbook_agent.core import leader as leader_module
+    from towbook_agent.core import scheduler as scheduler_module
+
+    monkeypatch.setattr(
+        leader_module,
+        "acquire_scheduler_lease",
+        lambda *a, **k: leader_module.SchedulerLease(
+            acquired=False, backend="postgresql", reason="another process is the scheduler", key=1
+        ),
+    )
+    monkeypatch.setattr(scheduler_module, "_lease_retry_seconds", lambda: 0.05)
+
+    scheduler_module.stop_background_scheduler()
+    scheduler_module.start_background_scheduler(dry_run=True)
+    watcher = scheduler_module._lease_watcher
+    assert watcher is not None and watcher.is_alive()
+
+    scheduler_module.stop_background_scheduler()
+    deadline = time.monotonic() + 5.0
+    while watcher.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not watcher.is_alive(), "the lease watcher outlived the shutdown that stopped it"
+
+
 def test_the_timezone_database_is_an_unconditional_dependency() -> None:
     """tzdata must not be marked Windows-only, because the container is Linux.
 

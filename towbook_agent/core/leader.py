@@ -34,8 +34,23 @@ another scheduler running" there is "you would know".
 
 The lock is *session* scoped (``pg_try_advisory_lock``, not the ``_xact_``
 variant), so it is held for as long as the connection is, and it is released
-automatically if the process dies -- which is what makes a redeploy hand the
-scheduler over to the new container without any manual cleanup.
+automatically if the process dies.
+
+THAT IS NOT ENOUGH ON ITS OWN, and this file used to claim it was. The original
+note here said the automatic release "is what makes a redeploy hand the
+scheduler over to the new container without any manual cleanup". It does not,
+because a zero-downtime platform starts the replacement container *before* it
+stops the old one. During that overlap the old container still holds the lock
+and the new one is refused -- correctly. The bug was that being refused was
+treated as final: the new container logged "expected on a second replica", ran
+as a board-only process, and after the old container exited there was no
+scheduler left anywhere. Observed in production as 5.7 hours with no hourly
+run, whose only symptom was the board's own overdue banner.
+
+Asking once is not leader election. The retry loop that makes it one lives in
+:func:`towbook_agent.core.scheduler._watch_for_the_lease`: a process that is
+refused keeps asking, and takes over when the holder goes away. Everything in
+this module is still a single, honest attempt -- it just is not the last one.
 """
 
 from __future__ import annotations
@@ -177,7 +192,9 @@ def acquire_scheduler_lease(name: str = SCHEDULER_LOCK_NAME) -> SchedulerLease:
             pass
         logger.warning(
             "another process already holds the scheduler advisory lock (key %d); this "
-            "process serves the board only. That is expected on a second replica.",
+            "process serves the board only for now and will keep asking for the lock. "
+            "Expected on a second replica, and expected for a few seconds during a "
+            "deploy while the container being replaced is still running.",
             key,
         )
         return SchedulerLease(

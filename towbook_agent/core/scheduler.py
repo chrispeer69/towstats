@@ -2238,6 +2238,89 @@ _RUN_SCHEDULER_ENV: str = "RUN_SCHEDULER"
 _background_scheduler: Any = None
 _background_lease: Any = None
 
+#: How often a process that lost the advisory lock asks for it again.
+_LEASE_RETRY_ENV: str = "SCHEDULER_LEASE_RETRY_SECONDS"
+_DEFAULT_LEASE_RETRY_SECONDS: float = 60.0
+
+_lease_watcher: Any = None
+_lease_watch_stop: Any = None
+
+
+def _lease_retry_seconds() -> float:
+    """Seconds between attempts to take over the scheduler lease.
+
+    Bounded at both ends: below a few seconds this is a busy-poll against
+    Postgres for no benefit, and above an hour a failover takes longer than the
+    hourly job it exists to protect.
+    """
+    raw = (os.environ.get(_LEASE_RETRY_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else _DEFAULT_LEASE_RETRY_SECONDS
+    except (TypeError, ValueError):
+        logger.warning("ignoring non-numeric %s=%r", _LEASE_RETRY_ENV, raw)
+        value = _DEFAULT_LEASE_RETRY_SECONDS
+    return max(5.0, min(value, 3600.0))
+
+
+def _watch_for_the_lease(dry_run: bool) -> None:
+    """Keep asking for the lease until this process gets it.
+
+    WHY THIS EXISTS. ``pg_try_advisory_lock`` asked once at boot is not leader
+    election, it is a coin toss with no rematch -- and a platform that starts
+    the new container before stopping the old one guarantees the new one loses
+    it. That is not the "second replica" the warning describes; it is the only
+    replica, refused the lock by a container that is about to exit, and then
+    never asking again. The scheduler stays dead until somebody restarts the
+    service by hand, which is exactly the silent-stale-board failure the whole
+    design is meant to prevent.
+
+    On a genuine second replica this loop is close to free -- one query a
+    minute -- and it upgrades the guard from "the spare never schedules" to
+    "the spare takes over when the leader dies", which is what anyone would
+    assume a leader lock already did.
+    """
+    global _lease_watcher, _lease_watch_stop
+
+    stop = _lease_watch_stop
+    interval = _lease_retry_seconds()
+    logger.info(
+        "another process holds the scheduler lease; retrying every %.0fs so this "
+        "process takes over if that one goes away",
+        interval,
+    )
+
+    try:
+        while stop is not None and not stop.wait(interval):
+            if _background_scheduler is not None and getattr(_background_scheduler, "running", False):
+                return
+            outcome = start_background_scheduler(dry_run=dry_run, _retrying=True)
+            if outcome.get("running"):
+                logger.warning(
+                    "took over the scheduler lease from a process that is no longer "
+                    "holding it; scheduled jobs are running again in this process"
+                )
+                return
+    except Exception as exc:  # pragma: no cover - defensive; the thread must not kill the app
+        logger.error("the scheduler lease watcher stopped: %s", exc, exc_info=True)
+    finally:
+        _lease_watcher = None
+
+
+def _ensure_lease_watcher(dry_run: bool) -> None:
+    """Start the retry thread once, if it is not already running."""
+    global _lease_watcher, _lease_watch_stop
+
+    if _lease_watcher is not None and _lease_watcher.is_alive():
+        return
+    _lease_watch_stop = threading.Event()
+    _lease_watcher = threading.Thread(
+        target=_watch_for_the_lease,
+        args=(dry_run,),
+        name="scheduler-lease-watch",
+        daemon=True,
+    )
+    _lease_watcher.start()
+
 
 def run_scheduler_enabled() -> bool:
     """Should this process run scheduled jobs? ``RUN_SCHEDULER``, default true.
@@ -2253,7 +2336,7 @@ def run_scheduler_enabled() -> bool:
     return raw in _TRUTHY
 
 
-def start_background_scheduler(dry_run: bool = False) -> dict[str, Any]:
+def start_background_scheduler(dry_run: bool = False, _retrying: bool = False) -> dict[str, Any]:
     """Start the scheduler inside the current process. Never raises.
 
     Returns a small status dict -- ``{"running", "reason", "jobs", "lease"}`` --
@@ -2283,7 +2366,14 @@ def start_background_scheduler(dry_run: bool = False) -> dict[str, Any]:
         lease = acquire_scheduler_lease()
         status["lease"] = lease.reason
         if not lease.acquired:
-            status["reason"] = lease.reason
+            # Losing the lock is not a terminal state. Keep asking -- the usual
+            # holder is the container this deploy is replacing, which is about
+            # to exit. See _watch_for_the_lease.
+            if not _retrying:
+                _ensure_lease_watcher(dry_run)
+            status["reason"] = (
+                f"{lease.reason}; retrying every {_lease_retry_seconds():.0f}s to take over"
+            )
             return status
 
         _ensure_db()
@@ -2319,7 +2409,15 @@ def start_background_scheduler(dry_run: bool = False) -> dict[str, Any]:
 
 def stop_background_scheduler(wait: bool = False) -> None:
     """Shut the in-process scheduler down and release the lease. Never raises."""
-    global _background_scheduler, _background_lease
+    global _background_scheduler, _background_lease, _lease_watcher, _lease_watch_stop
+
+    # Stop the retry thread FIRST. It exists to start a scheduler, and a
+    # shutdown that leaves it running invites it to start one while the process
+    # is on its way out -- and to take a lock nothing will ever release.
+    stop, _lease_watch_stop = _lease_watch_stop, None
+    _lease_watcher = None
+    if stop is not None:
+        stop.set()
 
     scheduler, _background_scheduler = _background_scheduler, None
     lease, _background_lease = _background_lease, None
