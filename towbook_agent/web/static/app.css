@@ -1234,6 +1234,16 @@ footer.foot {
   .tabs, .detail, #theme-toggle, #print-btn,
   .tip, .tooltip, .copy-btn, .no-print { display: none !important; }
 
+  /* ---------------------------------------------------------------- identity
+     A printed report needs one accent colour and the confidence to use it.
+     Bleaching the screen design to white produces something technically
+     correct and completely forgettable; this is the same information with a
+     masthead, a rule, and a hierarchy you can read from across a desk. */
+  :root, :root[data-theme="dark"], :root[data-theme="light"] {
+    --print-accent: #123a63;   /* deep navy: reads black on a mono printer */
+    --print-rule:   #123a63;
+  }
+
   /* The letterhead, restored. min-width:0 on both columns is what lets them
      shrink instead of forcing the row wider than the page. */
   .letterhead {
@@ -1241,18 +1251,19 @@ footer.foot {
     align-items: flex-end;
     justify-content: space-between;
     gap: 16px;
-    padding: 0 0 8px;
-    margin: 0 0 14px;
-    border-bottom: 2.5px solid #111;
+    padding: 0 0 9px;
+    margin: 0 0 15px;
+    border-bottom: 3px solid var(--print-rule);
     max-width: 100%;
   }
   .letterhead-id { min-width: 0; flex: 1 1 auto; }
   .letterhead-logo { max-height: 52px; max-width: 300px; }
   .letterhead-name {
-    font-size: 15pt;
-    font-weight: 700;
-    letter-spacing: -0.2px;
-    line-height: 1.15;
+    font-size: 16pt;
+    font-weight: 800;
+    letter-spacing: -0.3px;
+    line-height: 1.1;
+    color: var(--print-accent);
   }
   .letterhead-contact {
     margin-top: 4px;
@@ -1267,27 +1278,56 @@ footer.foot {
     min-width: 0;
     flex: 0 1 auto;
   }
-  .letterhead-title { font-size: 12pt; font-weight: 700; line-height: 1.15; }
-  .letterhead-period { font-size: 9pt; margin-top: 1px; }
-  .letterhead-meta { font-size: 7.5pt; color: #555; margin-top: 2px; }
+  /* The document's own name, set as a label rather than a heading: it is what
+     kind of report this is, and the period below it is the headline. */
+  .letterhead-title {
+    font-size: 8.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--print-accent);
+    line-height: 1.2;
+  }
+  .letterhead-period { font-size: 11pt; font-weight: 700; margin-top: 2px; line-height: 1.15; }
+  .letterhead-meta { font-size: 7.5pt; color: #555; margin-top: 3px; }
 
   .wrap { max-width: none; padding: 0; margin: 0; overflow: visible; }
 
   /* The page heading duplicates the letterhead's document title, and at screen
      size it eats a third of the first page before a number appears. */
-  .page-head h1 { font-size: 12.5pt; margin: 0 0 2px; }
+  .page-head h1 { font-size: 12.5pt; margin: 0 0 2px; letter-spacing: -0.2px; }
   .page-head .sub { font-size: 8.5pt; color: #444; }
-  .card > header h2 { font-size: 10.5pt; margin: 0; }
-  .card > header .hint { font-size: 7.5pt; color: #555; }
 
-  /* Cards become ruled sections. Shadows and fills are toner with no meaning. */
+  /* Section labels: small, uppercase, tracked, in the accent. Reads as a
+     report's table of contents rather than a stack of widget titles. */
+  .card > header h2 {
+    font-size: 8.5pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--print-accent);
+    margin: 0;
+  }
+  .card > header .hint { font-size: 7.5pt; color: #555; display: block; margin-top: 1px; }
+
+  /* Cards become ruled SECTIONS, not boxes. A page of outlined rectangles is a
+     screenshot of an interface; a report is set with rules and whitespace. */
   .card {
     background: #fff !important;
-    border: 1px solid #bbb;
+    border: none;
+    border-top: 1.5px solid var(--print-rule);
+    border-radius: 0;
     box-shadow: none !important;
+    padding: 7px 0 0;
     break-inside: avoid;
     page-break-inside: avoid;
-    margin-bottom: 12px;
+    margin: 0 0 13px;
+  }
+  .card > header {
+    padding: 0;
+    background: none !important;
+    border: none;
+    margin-bottom: 5px;
   }
 
   h1, h2, h3, .card-title {
@@ -1322,18 +1362,29 @@ footer.foot {
   tfoot { display: table-footer-group; }
   tr, td, th { break-inside: avoid; page-break-inside: avoid; }
   th, td {
-    border-bottom: 1px solid #ddd;
-    padding: 2.5px 3px;
+    border-bottom: 1px solid #e3e3e3;
+    padding: 3px 4px;
     white-space: normal;   /* let a long header wrap rather than widen the table */
     overflow-wrap: anywhere;
   }
-  th {
-    border-bottom: 1px solid #888;
-    font-size: 6.8pt;
-    letter-spacing: 0.02em;
+  /* A reversed header band is the single change that makes a table look
+     typeset instead of dumped. print-color-adjust:exact above is what keeps
+     the browser from helpfully removing it to save ink. */
+  thead th {
+    background: var(--print-accent) !important;
+    color: #ffffff !important;
+    border-bottom: none;
+    font-size: 6.6pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px;
   }
-  /* Zebra striping is screen affordance; on paper it is grey wash. */
-  tbody tr:nth-child(even) { background: transparent !important; }
+  /* Banding light enough to guide the eye across eleven columns and not so
+     heavy it greys the page. */
+  tbody tr:nth-child(even) { background: #f2f5f8 !important; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: 1px solid #bbb; }
 
   /* Charts. Sized down so a tall canvas does not push a whole section onto a
      page of its own, and told to keep their colours -- browsers otherwise
@@ -1374,10 +1425,27 @@ footer.foot {
   .notice .ico { display: none; }
   .notice a { text-decoration: underline; }
 
-  /* Stat tiles: the headline numbers. Kept big enough to read across a desk,
-     small enough that six of them are not a page on their own. */
-  .stat .value, .tile .value, .kpi .value { font-size: 15pt !important; }
-  .stat, .tile, .kpi { break-inside: avoid; }
+  /* Stat tiles: the headline numbers, and the reason anyone opens the report.
+     Big, in the accent, over a small tracked label -- the one place on the page
+     that should be loud. */
+  .stat .value, .tile .value, .kpi .value {
+    font-size: 19pt !important;
+    font-weight: 800 !important;
+    color: var(--print-accent) !important;
+    line-height: 1.05 !important;
+  }
+  .stat .label, .tile .label, .kpi .label,
+  .stat .k, .tile .k, .kpi .k {
+    font-size: 6.6pt !important;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #55534f !important;
+  }
+  .stat, .tile, .kpi {
+    break-inside: avoid;
+    background: #fff !important;
+    border-color: #d5d5d5 !important;
+  }
 
   /* Expose link targets nobody can click on paper -- but only real ones. */
   a { color: #000 !important; text-decoration: none; }
