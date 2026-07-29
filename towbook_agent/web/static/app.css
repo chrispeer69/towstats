@@ -1284,7 +1284,11 @@ footer.foot {
     font-size: 8.5pt;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
+    /* Tracking adds a trailing space after the last letter, which on a
+       right-aligned line pushes it into the margin and clips the final glyph.
+       The negative margin takes that trailing space back. */
+    letter-spacing: 0.12em;
+    margin-right: -0.12em;
     color: var(--print-accent);
     line-height: 1.2;
   }
@@ -1393,11 +1397,19 @@ footer.foot {
     background: var(--print-accent) !important;
     color: #ffffff !important;
     border-bottom: none;
-    font-size: 6.6pt;
+    font-size: 6pt;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 4px;
+    letter-spacing: 0.02em;
+    padding: 4px 3px;
+    /* !important because the screen rules keep header cells on one line, and
+       under table-layout:fixed a header that cannot wrap is a header that gets
+       cut -- "Unanswered" printed as "UNANSW". Wrapping to two lines costs a
+       few millimetres of header and keeps every column label readable. */
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    vertical-align: bottom;
+    line-height: 1.15;
   }
   /* Banding light enough to guide the eye across eleven columns and not so
      heavy it greys the page. */
