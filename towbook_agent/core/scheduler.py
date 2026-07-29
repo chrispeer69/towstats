@@ -1659,6 +1659,7 @@ def overdue_reports(
     specs: Sequence[JobSpec] | None = None,
     now: datetime | None = None,
     baseline: datetime | None = None,
+    company_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Which report types have gone quiet, as a READ-ONLY question.
 
@@ -1668,6 +1669,14 @@ def overdue_reports(
     *show*, on every page load, with no cooldown and no side effect. Sharing one
     function would have meant either the banner silencing the alert or the alert
     firing once per page view.
+
+    ``company_id`` SCOPES THE QUESTION TO ONE TENANT, and the board always
+    passes it. Without it the newest successful run of *any* company answers for
+    all of them: a roster where one company is healthy and another has not run
+    in a week reports both as fine, on the silent company's own Health page and
+    in its own banner. That is worse than no alarm, because it is an alarm
+    actively saying the opposite of the truth. Left unscoped it keeps the
+    roster-wide meaning the process-level watchdog wants.
 
     Returns one entry per stale report type, each with ``report_type``,
     ``last_success`` (naive UTC or None), ``overdue_seconds``, ``interval_seconds``
@@ -1700,7 +1709,7 @@ def overdue_reports(
 
         for report_type, (interval, grace_seconds) in sorted(by_report.items()):
             deadline = interval + timedelta(seconds=grace_seconds)
-            last = _last_success(report_type)
+            last = _last_success(report_type, company_id=company_id)
             reference = last or base
             age = moment_utc - reference
             if age <= deadline:

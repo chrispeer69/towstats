@@ -27,7 +27,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from conftest import ingest_file
+from conftest import REAL_REPO_ROOT, ingest_file
 from fixture_generator import generate_fixture_xlsx
 from towbook_agent.core.db import get_session
 from towbook_agent.web.app import DASH, TABS, app, f_pct
@@ -678,3 +678,66 @@ def test_the_period_tabs_never_write(client: TestClient, seeded) -> None:
     for path in ("/weekly", "/monthly", "/api/period?kind=week", "/api/period?kind=month"):
         assert client.get(path).status_code == 200, path
     assert count() == before, "rendering a period tab wrote to metrics_missed_work"
+
+
+# ==========================================================================
+# Print / PDF
+#
+# The letterhead is display:none on screen, so a broken one is invisible until
+# it is on a document somebody has already sent. These assert the markup and
+# the stylesheet that reveals it, which is as far as a test can go without
+# driving a real print dialog.
+# ==========================================================================
+
+
+def test_every_tab_carries_the_print_button_and_the_letterhead(client: TestClient) -> None:
+    for _key, _label, href in TABS:
+        html = client.get(href).text
+        assert 'id="print-btn"' in html, f"{href} has no Print button"
+        assert 'class="letterhead"' in html, f"{href} has no letterhead"
+
+
+def test_the_letterhead_names_the_company_the_numbers_belong_to(client: TestClient) -> None:
+    """On a printed page the company name is the only provenance there is.
+
+    Resolved through the same call the request uses rather than hard-coded, so
+    this holds for the fixture roster, for the real one, and for the
+    single-company fallback.
+    """
+    from towbook_agent.core import companies as companies_module
+
+    expected = companies_module.resolve_company(None).letterhead_name
+    assert expected, "a company with no usable name would print a blank header"
+
+    html = client.get("/hourly").text
+    letterhead = html.split('class="letterhead"', 1)[1].split("</header>", 1)[0]
+    assert expected in letterhead
+
+
+def test_the_letterhead_is_hidden_on_screen_and_shown_in_print() -> None:
+    """Both halves matter: leaking it on screen duplicates the topbar."""
+    css = (REAL_REPO_ROOT / "towbook_agent" / "web" / "static" / "app.css").read_text("utf-8")
+
+    screen, _, printed = css.partition("@media print")
+    assert ".letterhead { display: none; }" in screen
+    assert "display: flex !important" in printed
+
+    # The chrome must not survive into the document.
+    for selector in (".topbar", ".subbar", "footer.foot", ".icon-btn", "#print-btn"):
+        assert selector in printed, f"{selector} is not hidden in print"
+
+    # A table split across pages loses its header; a row split loses its
+    # meaning. Both are the difference between a report and a mess.
+    assert "display: table-header-group" in printed
+    assert "page-break-inside: avoid" in printed
+    assert "@page" in css
+
+
+def test_printing_repaints_the_charts_instead_of_printing_black_boxes() -> None:
+    """CSS cannot recolour a <canvas>; dash.js has to redraw it."""
+    js = (REAL_REPO_ROOT / "towbook_agent" / "web" / "static" / "dash.js").read_text("utf-8")
+    assert "beforeprint" in js and "afterprint" in js
+    assert "rebuildCharts" in js
+    # The swap must not be persisted -- printing is not a theme preference.
+    before = js.split("beforeprint", 1)[1].split("afterprint", 1)[0]
+    assert "localStorage" not in before

@@ -776,10 +776,48 @@
     })()
   );
 
+  /* ------------------------------------------------------------------ print */
+
+  /* The Print button, and the one thing CSS cannot fix about printing a chart.
+     Every chart is a <canvas>: it keeps the pixels it was drawn with, so a
+     board in dark theme prints as black rectangles that soak a page in toner
+     and hide the light-coloured labels drawn on them. @media print cannot
+     repaint a canvas, so the theme is swapped to light and the charts redrawn
+     for the duration of the print, then put back.
+
+     The attribute is set directly rather than through TBK.toggleTheme so the
+     swap is never written to localStorage -- printing is not a preference, and
+     a user who prints once should not find the board light afterwards. */
+  function wirePrint() {
+    var button = document.getElementById("print-btn");
+    if (button) {
+      button.addEventListener("click", function () {
+        window.print();
+      });
+    }
+
+    var restore = null;
+    window.addEventListener("beforeprint", function () {
+      if (currentTheme() === "dark") {
+        restore = "dark";
+        document.documentElement.setAttribute("data-theme", "light");
+        TBK.rebuildCharts();
+      }
+    });
+    window.addEventListener("afterprint", function () {
+      if (restore) {
+        document.documentElement.setAttribute("data-theme", restore);
+        restore = null;
+        TBK.rebuildCharts();
+      }
+    });
+  }
+
   function init() {
     updateToggleLabel();
     var toggle = document.getElementById("theme-toggle");
     if (toggle) toggle.addEventListener("click", TBK.toggleTheme);
+    wirePrint();
     wireTips();
     wireConfirms();
     wireCopy();

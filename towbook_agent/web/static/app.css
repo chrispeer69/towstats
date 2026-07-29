@@ -1155,8 +1155,169 @@ footer.foot {
   flex-wrap: wrap;
 }
 
+/* ==========================================================================
+   PRINT
+   ==========================================================================
+
+   The Print button in the topbar calls window.print(); "Save as PDF" in the
+   browser's own dialog is the PDF export. There is deliberately no
+   server-side renderer: WeasyPrint, wkhtmltopdf and headless Chromium each
+   cost a large dependency and a second layout engine whose output would have
+   to be checked separately from the one every user already looks at. The
+   browser is right there and already renders this page correctly.
+
+   The letterhead in base.html is display:none on screen and restored here, so
+   it exists only in the printed document.
+
+   `.no-print` is the general escape hatch; add it to anything interactive
+   that a later tab introduces.
+   ========================================================================== */
+
+.letterhead { display: none; }
+
+@page {
+  size: letter portrait;
+  /* Room for the letterhead at the top of page 1 and for the browser's own
+     footer at the bottom of every page. */
+  margin: 14mm 12mm 16mm;
+}
+
 @media print {
-  .topbar, .controls, .btn, footer.foot { display: none !important; }
-  body { background: #fff; color: #000; }
-  .card { break-inside: avoid; border-color: #ccc; }
+  /* FORCE THE LIGHT PALETTE. The variables are redefined rather than
+     overridden per rule, so every card, border and muted label follows
+     without a print-specific version of each. dash.js separately repaints the
+     chart canvases, which CSS cannot reach. */
+  :root, :root[data-theme="dark"], :root[data-theme="light"] {
+    color-scheme: light;
+    /* The light theme's own values, with the tinted surfaces flattened to
+       white -- #f9f9f7 is a warm paper tone on a screen and a faint grey wash
+       on paper. Series and status colours are inherited from the light block
+       unchanged, so a chart printed here matches a chart on screen. */
+    --plane:         #ffffff;
+    --surface:       #ffffff;
+    --surface-2:     #ffffff;
+    --surface-3:     #f4f4f2;
+    --text:          #0b0b0b;
+    --text-2:        #3a3a38;
+    --muted:         #55534f;
+    --grid:          #dcdbd5;
+    --baseline:      #b4b3ab;
+    --border:        rgba(11, 11, 11, 0.30);
+    --border-strong: rgba(11, 11, 11, 0.45);
+    --shadow:        none;
+
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #4a3aa7;
+    --series-8: #e34948;
+
+    --good:     #006300;
+    --warning:  #b07a00;
+    --serious:  #c05a2a;
+    --critical: #c02c2c;
+  }
+
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 10.5pt;
+  }
+
+  /* Screen chrome and every control. None of it means anything on paper, and
+     a printed button is a printed lie. */
+  .topbar, .subbar, footer.foot,
+  .controls, .btn, .icon-btn, .company-switch,
+  .tabs, .detail, #theme-toggle, #print-btn,
+  .tip, .tooltip, .copy-btn, .no-print { display: none !important; }
+
+  /* The letterhead, restored. */
+  .letterhead {
+    display: flex !important;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 0 0 10px;
+    margin: 0 0 16px;
+    border-bottom: 2px solid #111;
+  }
+  .letterhead-logo { max-height: 52px; max-width: 320px; }
+  .letterhead-name { font-size: 17pt; font-weight: 700; letter-spacing: -0.2px; }
+  .letterhead-contact {
+    margin-top: 3px;
+    font-size: 8.5pt;
+    color: #444;
+    display: flex;
+    flex-direction: column;
+  }
+  .letterhead-doc { text-align: right; }
+  .letterhead-title { font-size: 13pt; font-weight: 700; }
+  .letterhead-period { font-size: 9.5pt; margin-top: 2px; }
+  .letterhead-meta { font-size: 8.5pt; color: #444; margin-top: 3px; }
+
+  .wrap { max-width: none; padding: 0; margin: 0; }
+
+  /* Cards become ruled sections. Shadows and fills are toner with no meaning. */
+  .card {
+    background: #fff !important;
+    border: 1px solid #bbb;
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 12px;
+  }
+
+  h1, h2, h3, .card-title {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  /* Tables: repeat the header on every page, and never split a row. A row cut
+     across a page break is the classic way a printed report becomes unreadable
+     exactly where it matters. */
+  table { width: 100%; border-collapse: collapse; }
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tr, td, th { break-inside: avoid; page-break-inside: avoid; }
+  th, td { border-bottom: 1px solid #ddd; padding: 4px 6px; }
+  th { border-bottom: 1px solid #888; }
+
+  /* Charts. Sized down so a tall canvas does not push a whole section onto a
+     page of its own, and told to keep their colours -- browsers otherwise
+     drop background fills to save ink, which erases a bar chart. */
+  canvas {
+    max-height: 62mm !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Keep the status colours -- a red acceptance rate is the point of the
+     report -- but drop the tinted pill backgrounds, which print as grey mud. */
+  .pill, .badge, .chip {
+    background: transparent !important;
+    border: 1px solid #999;
+  }
+
+  /* Banners are worth printing: "the data may be stale" belongs on a document
+     that outlives the session it was printed from. */
+  .notice {
+    background: #fff !important;
+    border: 1px solid #999;
+    break-inside: avoid;
+  }
+
+  /* Expose link targets nobody can click on paper -- but only real ones. */
+  a { color: #000 !important; text-decoration: none; }
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 8pt;
+    color: #555;
+  }
 }

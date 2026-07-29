@@ -49,10 +49,19 @@ python-dotenv>=1.0
 PyYAML>=6.0
 
 # --- timezones ---
-# Windows ships no IANA tz database, so zoneinfo.ZoneInfo("America/Detroit")
-# raises without this. Ingestion localises every exported timestamp before
-# converting it to UTC, so a missing tz database would shift every number.
-tzdata>=2024.1; platform_system == "Windows"
+# UNCONDITIONAL, not Windows-only. zoneinfo reads the operating system's IANA
+# database first and falls back to this package when there is none.
+#
+# Windows ships no tz database at all, so ZoneInfo("America/Detroit") raises
+# there without this -- that is why it was originally listed. The reason it is
+# no longer conditional is the container: a slim Linux image may carry no
+# /usr/share/zoneinfo either, and on that image the failure is SILENT rather
+# than loud. queries.local_tz() catches the lookup error and falls back to UTC,
+# which moves every local day boundary four or five hours, files offers under
+# the wrong day, and shifts the staffed-hours window that the whole covered vs
+# uncovered headline rests on. Nothing logs an exception and every page still
+# renders. ~450 KB of pure Python removes the entire failure mode.
+tzdata>=2024.1
 
 # --- http ---
 httpx>=0.27

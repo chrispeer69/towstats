@@ -528,6 +528,25 @@ def _account(request: HTTPRequest) -> str:
     return _company(request)
 
 
+def _api_company(request: HTTPRequest, company: str | None = None) -> str:
+    """Which company a JSON endpoint is about. Same precedence as the tabs.
+
+    ``?company=``, then the remembered cookie, then the roster default. The
+    endpoints keep their declared ``company`` query parameter so it stays in the
+    OpenAPI schema; this is what makes them fall back to the *cookie* rather
+    than silently answering for the default company while the board is showing
+    somebody else's.
+
+    That gap was not theoretical. ``/api/clients/{slug}`` took no company
+    argument at all, so a request for one tenant's client page was answered with
+    the default tenant's history under the requested tenant's name.
+    """
+    explicit = (company or "").strip()
+    if explicit:
+        return _companies.resolve_company_id(explicit)
+    return _company(request)
+
+
 @app.get("/company")
 def switch_company_form(request: HTTPRequest) -> RedirectResponse:
     """The no-JavaScript path of the switcher: ``/company?company=<id>``.
@@ -1030,10 +1049,11 @@ def liveness() -> JSONResponse:
 
 @app.get("/api/missed-work")
 def api_missed_work(
+    request: HTTPRequest,
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.missed_work_snapshot(days=days, company_id=company or None)
+    data = q.missed_work_snapshot(days=days, company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1065,10 +1085,11 @@ def api_missed_work(
 
 @app.get("/api/blind-spots")
 def api_blind_spots(
+    request: HTTPRequest,
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.blind_spots_snapshot(days=days, company_id=company or None)
+    data = q.blind_spots_snapshot(days=days, company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1091,10 +1112,11 @@ def api_blind_spots(
 
 @app.get("/api/close-off")
 def api_close_off(
+    request: HTTPRequest,
     days: int = Query(default=q.MISSED_WORK_WINDOW_DAYS, ge=1, le=365),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.closeoff_snapshot(days=days, company_id=company or None)
+    data = q.closeoff_snapshot(days=days, company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1114,14 +1136,16 @@ def api_close_off(
 
 
 @app.get("/api/hourly")
-def api_hourly(company: str | None = Query(default=None)) -> JSONResponse:
+def api_hourly(
+    request: HTTPRequest, company: str | None = Query(default=None)
+) -> JSONResponse:
     """The hourly board as JSON, including the exact text the SMS carried.
 
     ``text_block`` is in the payload on purpose: this endpoint is the seam
     where somebody will eventually re-attach a message transport, and it should
     not have to be rebuilt from the parts to do it.
     """
-    data = q.hourly_snapshot(company_id=company or None)
+    data = q.hourly_snapshot(company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1143,11 +1167,12 @@ def api_hourly(company: str | None = Query(default=None)) -> JSONResponse:
 
 @app.get("/api/period")
 def api_period(
+    request: HTTPRequest,
     kind: str = Query(default="week"),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
     """A period tab as JSON. ``kind`` is ``week`` or ``month``."""
-    data = q.period_snapshot(kind, company_id=company or None)
+    data = q.period_snapshot(kind, company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1175,8 +1200,10 @@ def api_period(
 
 
 @app.get("/api/live")
-def api_live(company: str | None = Query(default=None)) -> JSONResponse:
-    data = q.live_snapshot(company_id=company or None)
+def api_live(
+    request: HTTPRequest, company: str | None = Query(default=None)
+) -> JSONResponse:
+    data = q.live_snapshot(company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1195,11 +1222,16 @@ def api_live(company: str | None = Query(default=None)) -> JSONResponse:
 
 @app.get("/api/daily")
 def api_daily(
+    request: HTTPRequest,
     date: str | None = Query(default=None),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
-    day = q.parse_date(date, q.today_local() - timedelta(days=1))
-    data = q.daily_snapshot(day, company_id=company or None)
+    company_id = _api_company(request, company)
+    # Inside the company, because "yesterday" is a question about its clock:
+    # a Texas tenant and an Ohio one do not roll over at the same instant.
+    with _companies.use_company(company_id):
+        day = q.parse_date(date, q.today_local() - timedelta(days=1))
+    data = q.daily_snapshot(day, company_id=company_id)
     return JSONResponse(
         q.jsonable(
             {
@@ -1225,8 +1257,10 @@ def api_daily(
 
 
 @app.get("/api/clients")
-def api_clients(company: str | None = Query(default=None)) -> JSONResponse:
-    data = q.clients_overview(company_id=company or None)
+def api_clients(
+    request: HTTPRequest, company: str | None = Query(default=None)
+) -> JSONResponse:
+    data = q.clients_overview(company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1263,8 +1297,27 @@ def api_clients(company: str | None = Query(default=None)) -> JSONResponse:
 
 
 @app.get("/api/clients/{slug:path}")
-def api_client_detail(slug: str, days: int = Query(default=30, ge=1, le=365)) -> JSONResponse:
-    data = q.client_detail((slug or "").strip("/") or q.EMPTY_CLIENT_KEY, days=days)
+def api_client_detail(
+    request: HTTPRequest,
+    slug: str,
+    days: int = Query(default=30, ge=1, le=365),
+    company: str | None = Query(default=None),
+) -> JSONResponse:
+    """One client's history, as JSON.
+
+    ``company`` is not optional decoration here. A client key is a casefolded
+    name, and names are not unique across tenants -- two companies on this
+    install can both be offered work by Agero. Without the scope this endpoint
+    answered every request from the roster default, so asking for one tenant's
+    Agero page returned another tenant's Agero rows. See
+    ``tests/test_companies.py`` ->
+    ``test_the_client_detail_json_endpoint_cannot_read_across_companies``.
+    """
+    data = q.client_detail(
+        (slug or "").strip("/") or q.EMPTY_CLIENT_KEY,
+        days=days,
+        company_id=_api_company(request, company),
+    )
     return JSONResponse(
         q.jsonable(
             {
@@ -1282,10 +1335,11 @@ def api_client_detail(slug: str, days: int = Query(default=30, ge=1, le=365)) ->
 
 @app.get("/api/trends")
 def api_trends(
+    request: HTTPRequest,
     weeks: int = Query(default=8, ge=1, le=26),
     company: str | None = Query(default=None),
 ) -> JSONResponse:
-    data = q.trends_snapshot(weeks=weeks, company_id=company or None)
+    data = q.trends_snapshot(weeks=weeks, company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {
@@ -1304,8 +1358,10 @@ def api_trends(
 
 
 @app.get("/api/health")
-def api_health(request: HTTPRequest) -> JSONResponse:
-    data = q.health_view(company_id=_company(request))
+def api_health(
+    request: HTTPRequest, company: str | None = Query(default=None)
+) -> JSONResponse:
+    data = q.health_view(company_id=_api_company(request, company))
     return JSONResponse(
         q.jsonable(
             {

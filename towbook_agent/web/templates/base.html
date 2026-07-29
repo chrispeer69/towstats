@@ -63,6 +63,13 @@
       <span class="company-name" title="Reporting on {{ company.name }}">{{ company.label }}</span>
       {% endif %}
       <span title="Presentation timezone">{{ now|dt("%a %b %d, %I:%M %p") }} {{ timezone }}</span>
+      {#- PRINT / PDF. window.print() rather than a server-rendered PDF: every
+          browser's print dialog offers "Save as PDF", which means no
+          WeasyPrint, no wkhtmltopdf and no headless Chromium in the image --
+          see the note in app.css's print block. The letterhead below and the
+          @media print rules are what make the output worth keeping. -#}
+      <button type="button" class="icon-btn" id="print-btn"
+              title="Print this page, or save it as a PDF">&#128424; Print</button>
       <button type="button" class="icon-btn" id="theme-toggle">&#9728; Light</button>
       <form method="post" action="/logout" style="display:inline">
         <button type="submit" class="icon-btn" title="End this session">Sign out</button>
@@ -77,6 +84,42 @@
       <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
+  </div>
+</header>
+
+{#-
+  THE LETTERHEAD. `display: none` on screen, restored by the print block in
+  app.css -- this is markup that exists only in the PDF.
+
+  It is here in base.html rather than in each tab so that every printed page
+  carries it, including the ones added later. What it says comes from
+  `letterhead:` in config/companies.yaml; with that block left blank the
+  company name still prints as a wordmark, so a fresh install produces a
+  presentable document before anybody configures anything.
+-#}
+<header class="letterhead" role="presentation">
+  <div class="letterhead-id">
+    {% if company and company.letterhead_logo %}
+    <img class="letterhead-logo" src="{{ company.letterhead_logo }}"
+         alt="{{ company.letterhead_name }}">
+    {% else %}
+    <div class="letterhead-name">{{ company.letterhead_name if company else "Job Acceptance" }}</div>
+    {% endif %}
+    {% if company and company.letterhead_lines %}
+    <div class="letterhead-contact">
+      {% for line in company.letterhead_lines %}<span>{{ line }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="letterhead-doc">
+    <div class="letterhead-title">{{ self.title() }}</div>
+    {#- The reporting window is the one fact a printed page cannot be read
+        without: on screen the tab and the controls say which period this is,
+        and both are hidden in print. -#}
+    {% if print_period %}<div class="letterhead-period">{{ print_period }}</div>{% endif %}
+    <div class="letterhead-meta">
+      Generated {{ now|dt("%b %d, %Y at %I:%M %p") }} {{ timezone }}
+    </div>
   </div>
 </header>
 

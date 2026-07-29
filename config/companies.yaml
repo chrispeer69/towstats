@@ -72,6 +72,36 @@ companies:
     timezone: America/Detroit
     enabled: true
 
+    # ----------------------------------------------------------------------
+    # LETTERHEAD -- printed page only.
+    #
+    # The Print button on every tab opens the browser's print dialog; choose
+    # "Save as PDF" there and this block becomes the header of the document.
+    # None of it appears on screen, so it costs nothing to fill in and nothing
+    # to leave blank: every field below is optional and empty ones are dropped
+    # rather than printed as a blank line.
+    #
+    # `name` overrides the roster name for print only -- use it when the legal
+    # entity above is not the trading name you put in front of a client.
+    #
+    # `logo`: drop the image into towbook_agent/web/static/ and name it here
+    # (e.g. `logo: letterhead-logo.png`). An absolute path, a full URL or a
+    # data: URI also work. Left blank, the name prints as a wordmark instead,
+    # which is why this deployment has a working letterhead already. Keep it
+    # under about 320px wide; it is scaled to 52px tall on the page.
+    # ----------------------------------------------------------------------
+    letterhead:
+      name: ""
+      logo: ""
+      address: ""
+      address2: ""
+      city: ""
+      state: ""
+      zip: ""
+      phone: ""
+      email: ""
+      website: ""
+
     # Per-company staffed window. Omit the block to inherit rules.yaml.
     # Measured on this account's real traffic: 5.8% of offers expire inside
     # this window, 61.7% outside it.

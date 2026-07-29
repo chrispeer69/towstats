@@ -151,6 +151,11 @@ class Company:
     rules_overrides: dict[str, Any] = field(default_factory=dict)
     #: Whether this record came from companies.yaml or from the fallback.
     configured: bool = True
+    #: Letterhead shown ONLY on the printed page -- address, phone, logo. See
+    #: :meth:`letterhead_lines`. Per-company because a printout that goes to a
+    #: client has to carry the name of the company whose numbers are on it, and
+    #: on a multi-tenant install that is not whoever runs the server.
+    letterhead: dict[str, Any] = field(default_factory=dict)
 
     # -- credentials -------------------------------------------------------
 
@@ -169,6 +174,49 @@ class Company:
         """What the dashboard shows in the switcher."""
         return self.name or self.id
 
+    # -- letterhead --------------------------------------------------------
+
+    @property
+    def letterhead_name(self) -> str:
+        """Trading name for the printed header. Falls back to :attr:`label`."""
+        return str(self.letterhead.get("name") or "").strip() or self.label
+
+    @property
+    def letterhead_logo(self) -> str | None:
+        """URL of the logo image, or None to print the name as a wordmark.
+
+        A path, not an upload: the file is dropped into
+        ``towbook_agent/web/static/`` and named here. There is no admin screen
+        and no upload endpoint, because one image that changes once a year does
+        not justify either.
+        """
+        value = str(self.letterhead.get("logo") or "").strip()
+        if not value:
+            return None
+        return value if value.startswith(("/", "http://", "https://", "data:")) else f"/static/{value}"
+
+    def letterhead_lines(self) -> list[str]:
+        """Address block for the printed header, in reading order.
+
+        Every field is optional and blanks are dropped, so a company that has
+        supplied only a phone number prints a one-line letterhead rather than a
+        block of empty space.
+        """
+        head = self.letterhead
+        parts = [
+            head.get("address"),
+            head.get("address2"),
+            " ".join(
+                str(x).strip()
+                for x in (head.get("city"), head.get("state"), head.get("zip"))
+                if str(x or "").strip()
+            ),
+            head.get("phone"),
+            head.get("email"),
+            head.get("website"),
+        ]
+        return [str(p).strip() for p in parts if str(p or "").strip()]
+
     def as_dict(self) -> dict[str, Any]:
         """JSON-safe summary. Deliberately carries no credential of any kind."""
         return {
@@ -182,6 +230,11 @@ class Company:
             "env_user": self.env_user,
             "env_pass": self.env_pass,
             "configured": self.configured,
+            # Printed header. Resolved here rather than in the template so the
+            # fallbacks (name -> label, blank fields dropped) are decided once.
+            "letterhead_name": self.letterhead_name,
+            "letterhead_logo": self.letterhead_logo,
+            "letterhead_lines": self.letterhead_lines(),
         }
 
 
@@ -254,6 +307,7 @@ def _parse_company(entry: Mapping[str, Any], position: int) -> Company | None:
         job_value_by_client=_as_mapping(entry.get("job_value_by_client")),
         rules_overrides=_as_mapping(entry.get("rules")) or {},
         configured=True,
+        letterhead=_as_mapping(entry.get("letterhead")) or {},
     )
 
 

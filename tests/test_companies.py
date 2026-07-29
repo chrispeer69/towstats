@@ -32,6 +32,7 @@ the roster from reporting.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
@@ -963,3 +964,359 @@ def test_the_json_api_respects_the_company_parameter(two_companies) -> None:
     texas = client.get(f"/api/clients?company={TEXAS}").json()
     assert {entry["client_key"] for entry in ohio["clients"]} == OHIO_CLIENTS
     assert {entry["client_key"] for entry in texas["clients"]} == TEXAS_CLIENTS
+
+
+def test_every_json_endpoint_takes_a_company_parameter() -> None:
+    """No ``/api`` read may be reachable without a way to scope it.
+
+    Enumerated off the route table rather than listed by hand, so an endpoint
+    added later is caught the day it is added rather than the day somebody
+    notices the wrong company's numbers in a chart. ``/api/clients/{slug}``
+    was exactly this bug: it took ``days`` and nothing else, so it answered
+    every request with the DEFAULT company's rows no matter which company was
+    selected.
+    """
+    from towbook_agent.web import app as app_module
+
+    missing = []
+    for route in app_module.app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", None) or set()
+        if not path.startswith("/api/") or "GET" not in methods:
+            continue
+        if path in ("/api/docs", "/api/openapi.json"):
+            continue  # FastAPI's own, no data
+        parameters = getattr(getattr(route, "dependant", None), "query_params", [])
+        names = {parameter.name for parameter in parameters}
+        source = (getattr(route, "endpoint", None).__code__.co_varnames
+                  if getattr(route, "endpoint", None) else ())
+        if "company" not in names and "company" not in source:
+            missing.append(path)
+
+    assert not missing, f"these /api endpoints cannot be scoped to a company: {missing}"
+
+
+def test_the_client_detail_json_endpoint_cannot_read_across_companies(two_companies) -> None:
+    """``/api/clients/<slug>?company=`` must obey the company it is given.
+
+    The HTML page at ``/clients/<slug>`` already did. Its JSON twin did not: it
+    resolved ``company_id=None`` to the roster default, so a request for Texas's
+    Agero page returned Ohio's Agero rows -- one tenant's client history served
+    under another tenant's name, and nothing on the page to say so.
+    """
+    from towbook_agent.web import app as app_module
+
+    client = _client(app_module)
+
+    # Texas has no Agero at all. Asking for it must return nothing, not Ohio's.
+    texas = client.get(f"/api/clients/agero?company={TEXAS}").json()
+    assert texas["totals"]["offered"] == 0, "Texas was served Ohio's Agero rows"
+
+    ohio = client.get(f"/api/clients/agero?company={OHIO}").json()
+    assert ohio["totals"]["offered"] == 10
+
+    # And the same via the remembered cookie, with no query string, because
+    # that is how every link on the board arrives.
+    client.get(f"/company/{TEXAS}?next=/", follow_redirects=False)
+    assert client.get("/api/clients/agero").json()["totals"]["offered"] == 0
+    assert client.get("/api/clients/nationwide").json()["totals"]["offered"] == 9
+
+
+# ==========================================================================
+# The leak test at the level the leak would actually happen: the SQL
+# ==========================================================================
+
+#: Tables that hold one tenant's data. Every SELECT against one of these has to
+#: name company_id or it is reading the whole install.
+_TENANT_TABLES = (
+    "requests",
+    "runs",
+    "metrics_hourly",
+    "metrics_daily",
+    "metrics_weekly",
+    "metrics_monthly",
+    "metrics_missed_work",
+    "client_daily",
+    "alerts_fired",
+)
+
+
+#: ``company_id`` used as a PREDICATE, not merely selected as a column.
+#:
+#: This distinction is the whole test. Every SELECT the ORM emits lists
+#: ``requests.company_id`` in its projection, so a naive substring search for
+#: "company_id" reports every statement as filtered -- including a bare
+#: ``SELECT * FROM requests`` that reads the entire install. Only a comparison
+#: is evidence of a filter.
+_COMPANY_PREDICATE = re.compile(r"company_id\s*(?:=|<>|!=|\bin\b|\bis\b)", re.IGNORECASE)
+
+
+#: The one roster-wide read that is allowed, named exactly rather than waved
+#: through by a loose pattern.
+#:
+#: ``queries.companies_with_data()`` selects DISTINCT company_id and nothing
+#: else. It returns identifiers, never a client name, a volume or a rate, and
+#: those identifiers are already on screen in the company switcher. /health uses
+#: it to tell the operator that a rostered company has never produced a row --
+#: usually a credentials prefix nobody set -- which is a question that only has
+#: an answer across the roster. It is documented in queries.py as "diagnostics
+#: only, never a filter"; this is the test holding it to that.
+_ALLOWED_ROSTER_WIDE = re.compile(
+    r"^select\s+distinct\s+requests\.company_id\s+from\s+requests\b", re.IGNORECASE
+)
+
+
+def _unscoped_selects(statements: Iterable[str]) -> list[str]:
+    """Statements that read a tenant table with no company_id comparison."""
+    out = []
+    for statement in statements:
+        collapsed = " ".join(statement.split())
+        lowered = collapsed.casefold()
+        if not lowered.startswith("select"):
+            continue
+        if not any(f" {table}" in lowered for table in _TENANT_TABLES):
+            continue
+        if _COMPANY_PREDICATE.search(collapsed):
+            continue
+        if _ALLOWED_ROSTER_WIDE.match(collapsed):
+            continue
+        out.append(collapsed[:240])
+    return out
+
+
+@pytest.fixture
+def captured_sql():
+    """Record every statement the engine executes, for the duration of a test."""
+    from sqlalchemy import event
+
+    from towbook_agent.core.db import get_engine
+
+    engine = get_engine()
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+
+def test_every_select_against_a_tenant_table_names_company_id(two_companies, captured_sql) -> None:
+    """The isolation proof at the level the bug would actually live: the SQL.
+
+    Every other leak test in this file compares RESULTS -- it asks whether the
+    rows that came back belonged to the right company. That catches a filter
+    that is missing today. It does not catch a filter that is missing but
+    happens to be harmless on this fixture, and it cannot catch one on a code
+    path the fixture does not reach.
+
+    So this one reads the statements themselves. Every dashboard entry point is
+    driven for both companies, every statement the engine executes is captured,
+    and any SELECT that touches a tenant table without a company_id predicate
+    fails the test by name. A query that forgets the filter is caught here even
+    if the rows it returned this time looked correct.
+    """
+    from towbook_agent.web import queries as q
+
+    for company_id in (OHIO, TEXAS):
+        q.has_any_data(company_id)
+        q.missed_work_snapshot(days=400, company_id=company_id)
+        q.blind_spots_snapshot(days=400, company_id=company_id)
+        q.closeoff_snapshot(days=400, company_id=company_id)
+        q.hourly_snapshot(company_id=company_id)
+        q.live_snapshot(company_id=company_id)
+        q.daily_snapshot(DAY, company_id=company_id)
+        q.clients_overview(company_id=company_id)
+        q.client_detail("agero", company_id=company_id)
+        q.trends_snapshot(company_id=company_id)
+        q.period_snapshot("week", company_id=company_id)
+        q.period_snapshot("month", company_id=company_id)
+        q.rules_view(company_id=company_id)
+        q.health_view(company_id=company_id)
+        q.last_run_summary(company_id=company_id)
+        q.pipeline_banner(company_id=company_id)
+        q.recent_alerts(company_id=company_id)
+
+    assert captured_sql, "no SQL was captured; the hook is not attached"
+
+    unscoped = _unscoped_selects(captured_sql)
+    assert not unscoped, (
+        f"{len(unscoped)} SELECT(s) read a tenant table without a company_id filter:\n  "
+        + "\n  ".join(sorted(set(unscoped))[:10])
+    )
+
+
+def test_the_sql_proof_would_actually_fail_on_an_unfiltered_query(
+    two_companies, captured_sql
+) -> None:
+    """The guard above is only worth having if it can fail. Prove that it can.
+
+    A test that asserts "nothing bad was found" is worthless when the search is
+    broken -- it passes just as happily against an empty capture or a predicate
+    that never matches. So this runs a deliberately unscoped read and asserts
+    the same check catches it.
+
+    This is not hypothetical tidiness. The first version of the detector looked
+    for the substring "company_id" anywhere in the statement, and every ORM
+    SELECT lists ``requests.company_id`` in its projection -- so it passed on a
+    bare ``SELECT * FROM requests`` that read both companies. This control is
+    what caught that, and it is why the detector now insists on a comparison.
+    """
+    from sqlalchemy import select
+
+    from towbook_agent.core.db import get_session
+
+    with get_session(commit=False) as session:
+        rows = session.execute(select(Request)).scalars().all()
+
+    # It really did read both companies -- that is what makes it a leak.
+    assert len(rows) == OHIO_TOTAL + TEXAS_TOTAL
+
+    offenders = _unscoped_selects(captured_sql)
+    assert offenders, "the detector failed to notice a query with no company_id filter"
+    assert any("requests." in statement for statement in offenders)
+
+
+def test_one_companys_healthy_run_does_not_clear_anothers_overdue_alarm(roster) -> None:
+    """A silent tenant must not read its neighbour's success as its own.
+
+    This is the failure the SQL test above was written to find, and it found it.
+    ``overdue_reports`` asked "when did a <report_type> run last succeed?"
+    without naming a company, so the newest run on the whole install answered
+    for every tenant. On a roster where Ohio ran an hour ago and Texas has not
+    run in a week, Texas's own Health page and its own banner both reported
+    healthy -- an alarm stating the opposite of the truth, on the only delivery
+    mechanism there is.
+    """
+    from towbook_agent.core.scheduler import overdue_reports
+    from towbook_agent.web import queries as q
+
+    now = datetime(2026, 7, 27, 12, 0)
+    with get_session() as session:
+        # Ohio succeeded a minute ago.
+        session.add(
+            Run(
+                run_id="OH-run-fresh",
+                company_id=OHIO,
+                report_type="daily",
+                status="succeeded",
+                started_at=now - timedelta(minutes=1),
+                finished_at=now - timedelta(minutes=1),
+            )
+        )
+        # Texas last succeeded three weeks ago. It is unambiguously overdue.
+        session.add(
+            Run(
+                run_id="TX-run-ancient",
+                company_id=TEXAS,
+                report_type="daily",
+                status="succeeded",
+                started_at=now - timedelta(days=21),
+                finished_at=now - timedelta(days=21),
+            )
+        )
+
+    specs = [
+        spec
+        for spec in __import__(
+            "towbook_agent.core.scheduler", fromlist=["load_job_specs"]
+        ).load_job_specs(strict=False)
+        if spec.report_type == "daily" and spec.enabled
+    ]
+    if not specs:
+        pytest.skip("no enabled daily job in config/schedule.yaml")
+
+    ohio_findings = overdue_reports(specs=specs, now=now, company_id=OHIO)
+    texas_findings = overdue_reports(specs=specs, now=now, company_id=TEXAS)
+
+    assert not [f for f in ohio_findings if f["report_type"] == "daily"], (
+        "Ohio ran a minute ago and must not be reported overdue"
+    )
+    assert [f for f in texas_findings if f["report_type"] == "daily"], (
+        "Texas has not run in three weeks and MUST be reported overdue"
+    )
+
+    # And through the board's own entry point, which is what the owner sees.
+    assert any(
+        item.get("report_type") == "daily"
+        for item in (q.health_view(company_id=TEXAS).get("overdue") or [])
+    ), "the Texas Health page cleared its alarm using Ohio's run"
+
+
+# ==========================================================================
+# The printed letterhead
+#
+# It exists only in the PDF, so nothing on screen fails when it is wrong --
+# which is exactly why it is tested here rather than left to be noticed on a
+# document that has already been emailed to a client.
+# ==========================================================================
+
+
+def test_the_letterhead_falls_back_to_the_company_name() -> None:
+    """A company that has configured nothing still prints a usable header."""
+    company = companies_module.Company(id="acme", name="Acme Towing LLC")
+    assert company.letterhead_name == "Acme Towing LLC"
+    assert company.letterhead_logo is None
+    assert company.letterhead_lines() == []
+
+
+def test_the_letterhead_drops_blank_fields_rather_than_printing_them() -> None:
+    """Half a letterhead prints as a short block, not as a block of gaps."""
+    company = companies_module.Company(
+        id="acme",
+        name="Acme Towing LLC",
+        letterhead={
+            "name": "Acme Towing & Recovery",
+            "address": "100 Main St",
+            "address2": "",
+            "city": "Columbus",
+            "state": "OH",
+            "zip": "43004",
+            "phone": "(614) 555-0100",
+            "email": "",
+            "website": "",
+        },
+    )
+    assert company.letterhead_name == "Acme Towing & Recovery"
+    assert company.letterhead_lines() == [
+        "100 Main St",
+        "Columbus OH 43004",
+        "(614) 555-0100",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        # The ordinary case: a file dropped into web/static/.
+        ("letterhead-logo.png", "/static/letterhead-logo.png"),
+        # Already a path or a URL -- left exactly as given.
+        ("/static/logo.svg", "/static/logo.svg"),
+        ("https://cdn.example.com/logo.png", "https://cdn.example.com/logo.png"),
+        ("data:image/png;base64,AAAA", "data:image/png;base64,AAAA"),
+        ("", None),
+    ],
+)
+def test_the_logo_path_is_resolved_for_each_way_of_naming_it(
+    configured: str, expected: str | None
+) -> None:
+    company = companies_module.Company(id="acme", name="Acme", letterhead={"logo": configured})
+    assert company.letterhead_logo == expected
+
+
+def test_the_letterhead_reaches_the_template_layer() -> None:
+    """as_dict() is what the templates get; the header renders from it."""
+    company = companies_module.Company(
+        id="acme",
+        name="Acme Towing LLC",
+        letterhead={"phone": "(614) 555-0100"},
+    )
+    data = company.as_dict()
+    assert data["letterhead_name"] == "Acme Towing LLC"
+    assert data["letterhead_lines"] == ["(614) 555-0100"]
+    assert data["letterhead_logo"] is None
+    # Unchanged guarantee: no credential value ever rides along.
+    assert "password" not in repr(data).lower()

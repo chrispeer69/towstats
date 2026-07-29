@@ -743,6 +743,51 @@ def test_sqlite_needs_no_lease_and_says_why() -> None:
         lease.release()
 
 
+def test_the_timezone_database_is_an_unconditional_dependency() -> None:
+    """tzdata must not be marked Windows-only, because the container is Linux.
+
+    ``TZ=America/Detroit`` is the deployment's most load-bearing variable after
+    DATABASE_URL: the covered-vs-uncovered split is the headline of every
+    report and it is a claim about local clock hours. ``queries.local_tz()``
+    swallows a failed zone lookup and returns UTC, so on an image with no
+    /usr/share/zoneinfo every day boundary silently moves four or five hours
+    and every page still renders, confidently, with the wrong numbers.
+
+    A ``platform_system == "Windows"`` marker means pip installs nothing on the
+    box where the failure is invisible.
+    """
+    text = (REAL_REPO_ROOT / "requirements.txt").read_text("utf-8")
+    active = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    tz_lines = [line for line in active if line.lower().startswith("tzdata")]
+    assert tz_lines, "tzdata is not in requirements.txt"
+    for line in tz_lines:
+        assert ";" not in line, (
+            f"tzdata carries an environment marker ({line!r}), so it is not "
+            "installed on Linux -- where a missing tz database fails silently"
+        )
+
+
+def test_the_configured_timezone_really_resolves() -> None:
+    """A zone name must produce that zone, not a silent UTC fallback.
+
+    Asserted against a zone with a non-zero offset, because UTC-vs-Detroit is
+    exactly the difference this catches and comparing names alone would not.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/Detroit")
+    offset = datetime(2026, 7, 28, 12, 0, tzinfo=zone).utcoffset()
+    assert offset is not None and offset.total_seconds() == -4 * 3600, (
+        f"America/Detroit resolved to {offset}, not EDT; the IANA database is "
+        "missing and every local day boundary is wrong"
+    )
+
+
 def test_overdue_reports_is_read_only() -> None:
     """The board asks this on every page load; it must not emit an alert.
 

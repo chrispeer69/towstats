@@ -305,6 +305,27 @@ never *every company*. `tests/test_companies.py` seeds two companies with
 deliberately different clients and asserts, by name rather than by count, that
 no view returns the other's rows.
 
+That is checked twice, at two different levels, because they fail differently:
+
+* **By result.** Every view is driven for both companies and asserted to
+  contain this company's client names and none of the other's. This catches a
+  filter that is missing today.
+* **By statement.** `test_every_select_against_a_tenant_table_names_company_id`
+  hooks the engine, drives every dashboard entry point, and fails any `SELECT`
+  that touches a tenant table without a `company_id` **comparison** — the
+  projection does not count, since every ORM select lists `requests.company_id`
+  in it. This catches a filter that is missing but happens to be harmless on the
+  fixture, which a result-level test cannot. A negative-control test proves the
+  detector can still fail. Exactly one roster-wide read is allowlisted by name:
+  `companies_with_data()`, which selects distinct ids and no tenant data.
+
+The statement-level test is what found the last real leak: the overdue-report
+watchdog asked "when did a `daily` run last succeed?" without naming a company,
+so on a roster where one tenant was healthy and another had been silent for a
+week, the silent one read its neighbour's run and showed itself green — an
+alarm stating the opposite of the truth, on the only delivery mechanism there
+is.
+
 ### The scheduler
 
 A job in `config/schedule.yaml` that names no company runs **every enabled
@@ -390,7 +411,7 @@ the ones with no usable default:
 | Variable | Value | Why |
 | --- | --- | --- |
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | See above. **Never SQLite here.** |
-| `TZ` | `America/Detroit` | A container defaults to UTC, which moves every day boundary 4–5 hours and files offers under the wrong day |
+| `TZ` | `America/Detroit` | A container defaults to UTC, which moves every day boundary 4–5 hours and files offers under the wrong day. `tzdata` is an unconditional dependency so the zone resolves even on an image with no `/usr/share/zoneinfo` — without it the lookup fails, `local_tz()` falls back to UTC, and the board renders the wrong day's numbers with no error |
 | `TOWBOOK_USER` | the portal login | Single company. Per company it is `TOWBOOK_<PREFIX>_USER` — see Multiple companies |
 | `TOWBOOK_PASS` | the portal password | |
 | `DASHBOARD_PASSWORD` | `1234` | The board's shared password. **Change it before sharing the URL** — see the warning below |

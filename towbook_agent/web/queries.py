@@ -3020,7 +3020,7 @@ def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
                 }
             )
 
-        for finding in _overdue_reports():
+        for finding in _overdue_reports(company_id):
             hours = float(finding.get("overdue_seconds") or 0) / 3600.0
             last = finding.get("last_success")
             candidates.append(
@@ -3089,16 +3089,22 @@ def pipeline_banner(company_id: str | None = None) -> dict[str, Any] | None:
         return None
 
 
-def _overdue_reports() -> list[dict[str, Any]]:
+def _overdue_reports(company_id: str | None = None) -> list[dict[str, Any]]:
     """``core.scheduler.overdue_reports`` without importing it at module scope.
 
     Deferred because ``core.scheduler`` pulls in APScheduler, and the query layer
     is imported by things that have no business starting a scheduler.
+
+    ALWAYS SCOPED. This feeds the banner and the Health page, which are the
+    whole alarm system now that no report is texted or emailed. Asked
+    roster-wide it answers with whichever company ran most recently, so a tenant
+    that has been silent for a week reads its neighbour's healthy run and shows
+    itself green.
     """
     try:
         from ..core.scheduler import overdue_reports
 
-        return overdue_reports()
+        return overdue_reports(company_id=_companies.resolve_company_id(company_id))
     except Exception:
         logger.debug("could not evaluate overdue reports", exc_info=True)
         return []
@@ -3182,7 +3188,7 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
     except Exception as exc:  # pragma: no cover - defensive
         result["scheduler"] = {"error": redact(f"{type(exc).__name__}: {exc}")}
 
-    result["overdue"] = _overdue_reports()
+    result["overdue"] = _overdue_reports(company_id)
 
     try:
         result["config_digests"] = CONFIG.snapshot()
