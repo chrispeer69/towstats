@@ -15,6 +15,7 @@ nixPkgs = ["python312", "gcc"]
 
 [phases.install]
 cmds = [
+  "python -m ensurepip --upgrade",
   "python -m pip install --upgrade pip",
   "python -m pip install --no-cache-dir -r requirements.txt",
 ]
