@@ -67,7 +67,11 @@
 
 {# ------------------------------------------- the message, exactly as it read #}
 
-<section class="card">
+{#- `no-print`: this card reproduces the retired SMS so the board and that text
+    cannot drift apart, and it exists to be copied out of the screen. A
+    paste-ready code block on a printed report is a control that cannot be
+    operated and a duplicate of the table directly beneath it. -#}
+<section class="card no-print">
   <header>
     <h2>What the hourly text said</h2>
     <span class="hint">

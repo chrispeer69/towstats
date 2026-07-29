@@ -1234,31 +1234,51 @@ footer.foot {
   .tabs, .detail, #theme-toggle, #print-btn,
   .tip, .tooltip, .copy-btn, .no-print { display: none !important; }
 
-  /* The letterhead, restored. */
+  /* The letterhead, restored. min-width:0 on both columns is what lets them
+     shrink instead of forcing the row wider than the page. */
   .letterhead {
     display: flex !important;
-    align-items: flex-start;
+    align-items: flex-end;
     justify-content: space-between;
-    gap: 18px;
-    padding: 0 0 10px;
-    margin: 0 0 16px;
-    border-bottom: 2px solid #111;
+    gap: 16px;
+    padding: 0 0 8px;
+    margin: 0 0 14px;
+    border-bottom: 2.5px solid #111;
+    max-width: 100%;
   }
-  .letterhead-logo { max-height: 52px; max-width: 320px; }
-  .letterhead-name { font-size: 17pt; font-weight: 700; letter-spacing: -0.2px; }
+  .letterhead-id { min-width: 0; flex: 1 1 auto; }
+  .letterhead-logo { max-height: 52px; max-width: 300px; }
+  .letterhead-name {
+    font-size: 15pt;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+    line-height: 1.15;
+  }
   .letterhead-contact {
-    margin-top: 3px;
-    font-size: 8.5pt;
+    margin-top: 4px;
+    font-size: 8pt;
     color: #444;
     display: flex;
     flex-direction: column;
+    line-height: 1.35;
   }
-  .letterhead-doc { text-align: right; }
-  .letterhead-title { font-size: 13pt; font-weight: 700; }
-  .letterhead-period { font-size: 9.5pt; margin-top: 2px; }
-  .letterhead-meta { font-size: 8.5pt; color: #444; margin-top: 3px; }
+  .letterhead-doc {
+    text-align: right;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+  .letterhead-title { font-size: 12pt; font-weight: 700; line-height: 1.15; }
+  .letterhead-period { font-size: 9pt; margin-top: 1px; }
+  .letterhead-meta { font-size: 7.5pt; color: #555; margin-top: 2px; }
 
-  .wrap { max-width: none; padding: 0; margin: 0; }
+  .wrap { max-width: none; padding: 0; margin: 0; overflow: visible; }
+
+  /* The page heading duplicates the letterhead's document title, and at screen
+     size it eats a third of the first page before a number appears. */
+  .page-head h1 { font-size: 12.5pt; margin: 0 0 2px; }
+  .page-head .sub { font-size: 8.5pt; color: #444; }
+  .card > header h2 { font-size: 10.5pt; margin: 0; }
+  .card > header .hint { font-size: 7.5pt; color: #555; }
 
   /* Cards become ruled sections. Shadows and fills are toner with no meaning. */
   .card {
@@ -1275,15 +1295,45 @@ footer.foot {
     page-break-after: avoid;
   }
 
+  /* NOTHING SCROLLS ON PAPER, so a horizontal scroller is a guillotine.
+     `.table-scroll` is overflow-x:auto on screen, which is right there and
+     wrong here: the hour-by-hour table is eleven columns, so in print it
+     stretched the document past the page and Chrome trimmed the right edge off
+     EVERY element -- the last table column and the letterhead timestamp with
+     it. Nothing looked broken; it looked like a page with a narrow margin. */
+  .table-scroll,
+  .scroller,
+  [class*="overflow"] {
+    overflow: visible !important;
+    max-width: 100% !important;
+  }
+
   /* Tables: repeat the header on every page, and never split a row. A row cut
      across a page break is the classic way a printed report becomes unreadable
      exactly where it matters. */
-  table { width: 100%; border-collapse: collapse; }
+  table {
+    width: 100%;
+    max-width: 100%;
+    border-collapse: collapse;
+    font-size: 7.5pt;      /* eleven columns have to fit 8.5in minus margins */
+    table-layout: auto;
+  }
   thead { display: table-header-group; }
   tfoot { display: table-footer-group; }
   tr, td, th { break-inside: avoid; page-break-inside: avoid; }
-  th, td { border-bottom: 1px solid #ddd; padding: 4px 6px; }
-  th { border-bottom: 1px solid #888; }
+  th, td {
+    border-bottom: 1px solid #ddd;
+    padding: 2.5px 3px;
+    white-space: normal;   /* let a long header wrap rather than widen the table */
+    overflow-wrap: anywhere;
+  }
+  th {
+    border-bottom: 1px solid #888;
+    font-size: 6.8pt;
+    letter-spacing: 0.02em;
+  }
+  /* Zebra striping is screen affordance; on paper it is grey wash. */
+  tbody tr:nth-child(even) { background: transparent !important; }
 
   /* Charts. Sized down so a tall canvas does not push a whole section onto a
      page of its own, and told to keep their colours -- browsers otherwise
@@ -1305,13 +1355,29 @@ footer.foot {
     border: 1px solid #999;
   }
 
-  /* Banners are worth printing: "the data may be stale" belongs on a document
-     that outlives the session it was printed from. */
+  /* Banners are worth printing -- "the data may be stale" is exactly the kind
+     of caveat that should travel with a document that outlives the session it
+     came from. But two of them at full screen size claimed the top third of
+     page one before a single number, so they print as a compact rule instead
+     of a filled panel. */
   .notice {
     background: #fff !important;
-    border: 1px solid #999;
+    border: none;
+    border-left: 2.5px solid #999;
+    border-radius: 0;
+    padding: 3px 0 3px 8px;
+    margin: 0 0 6px;
+    font-size: 8pt;
+    line-height: 1.35;
     break-inside: avoid;
   }
+  .notice .ico { display: none; }
+  .notice a { text-decoration: underline; }
+
+  /* Stat tiles: the headline numbers. Kept big enough to read across a desk,
+     small enough that six of them are not a page on their own. */
+  .stat .value, .tile .value, .kpi .value { font-size: 15pt !important; }
+  .stat, .tile, .kpi { break-inside: avoid; }
 
   /* Expose link targets nobody can click on paper -- but only real ones. */
   a { color: #000 !important; text-decoration: none; }
