@@ -590,6 +590,19 @@ missed_work:
     allied dispatch solutions: 65
     urgent.ly: 65          # ASSUMPTION: not supplied by owner, flagged in reports
 
+  # FLAT VALUE OF A LIGHT-SERVICE JOB WE DECLINE. Owner-supplied 2026-07-30.
+  #
+  # Used ONLY by the Maps view's "what are we giving away" tally, which counts
+  # the light-service jobs we did not accept and multiplies by this figure. It
+  # is deliberately separate from job_value_by_client above: those are average
+  # TOW values and must never be applied to light service (a declined Tire
+  # Change is not a $65 tow). This is a single flat gross figure for the
+  # roadside light-service work the owner declines by policy, so he can see the
+  # dollar value of what is being turned down. offerAmount is empty on every
+  # record, so like every other value in this file it is an owner estimate, not
+  # a Towbook number. Set to 0 to switch the tally off.
+  light_service_value: 35
+
   # WHICH JOBS THOSE VALUES MAY BE APPLIED TO.
   # The figures above are average TOW values. Applying them to a missed Tire
   # Change would price a $0 job at $65 and inflate the one number a reader is

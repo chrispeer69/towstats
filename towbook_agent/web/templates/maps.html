@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Maps{% endblock %}
+
+{#- ==========================================================================
+    MAPS -- where the work is, and what we are turning down.
+
+    Two maps over one window (day by default, week or month for review):
+
+      MAP 1  OFFERED HEAT   -- every offer placed at its pickup ZIP, summed per
+                               ZIP. Shows where work concentrates and, the point
+                               the owner made, where it does NOT.
+      MAP 2  DECLINED       -- every job we did not accept, one marker each, with
+                               the Towbook reference, service, offer time, who
+                               actioned it, and the decline reason in the popup.
+                               The light-service declines are tallied in dollars.
+
+    There is no lat/long in the Towbook feed. Placement is by pickup ZIP against
+    the committed centroid lookup (towbook_agent/web/geo/). A job whose ZIP is
+    unknown or out of state is counted as "unmapped" and reported here, never
+    silently dropped.
+    ========================================================================== -#}
+
+{% block head %}
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Maps</h1>
+    <div class="sub">
+      {{ maps.label }} &middot; {{ maps.offered.total|num }} offered,
+      {{ maps.declines.total|num }} not accepted.
+      Where the work is &mdash; and where it is not.
+    </div>
+  </div>
+  <div class="controls">
+    {#- Daily is the default; week and month are for review. -#}
+    <span class="seg">
+      <a href="/maps{{ qs(scope='day', date=maps.anchor, company=company_id) }}"
+         {% if maps.scope == 'day' %}aria-current="true"{% endif %}>Daily</a>
+      <a href="/maps{{ qs(scope='week', date=maps.anchor, company=company_id) }}"
+         {% if maps.scope == 'week' %}aria-current="true"{% endif %}>Weekly</a>
+      <a href="/maps{{ qs(scope='month', date=maps.anchor, company=company_id) }}"
+         {% if maps.scope == 'month' %}aria-current="true"{% endif %}>Monthly</a>
+    </span>
+    <span class="seg mapnav">
+      <a href="/maps{{ qs(scope=maps.scope, date=maps.prev.date, company=company_id) }}"
+         title="Previous {{ maps.scope }}" rel="prev">&larr;</a>
+      {% if maps.next_is_future %}
+      <span class="disabled" title="No data in the future" aria-disabled="true">&rarr;</span>
+      {% else %}
+      <a href="/maps{{ qs(scope=maps.scope, date=maps.next.date, company=company_id) }}"
+         title="Next {{ maps.scope }}" rel="next">&rarr;</a>
+      {% endif %}
+    </span>
+  </div>
+</div>
+
+{% if not maps.geo_available %}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>The ZIP-centroid lookup is missing.</strong>
+    <code>towbook_agent/web/geo/oh_zip_centroids.json</code> could not be read,
+    so nothing can be placed on a map. Rebuild it with
+    <code>scripts/build_zip_centroids.sh</code>. Every other view is unaffected.
+  </span>
+</div>
+{% endif %}
+
+{% if not maps.has_data %}
+  {{ m.empty_state('No jobs in this window', 'No requests were offered in ' ~ maps.label ~ '. Try a wider scope, or step back with the arrows above.') }}
+{% else %}
+
+{#- The data the Leaflet maps read. Same single-quoted attribute + tojson
+    pattern the charts use; markers carry no markup and are placed as text. -#}
+<div id="maps-data" hidden data-maps='{{ maps_js|tojson }}'></div>
+
+<div class="stats">
+  {{ m.stat('Offered', maps.offered.total|num, sub=maps.offered.zip_count ~ ' ZIP areas · ' ~ (maps.offered.unmapped|num) ~ ' unmapped') }}
+  <div class="stat">
+    <div class="label">Not accepted</div>
+    <div class="value">{{ maps.declines.total|num }}</div>
+    <div class="sub"><span class="dim">
+      {{ maps.declines.by_bucket.no_response|num }} no response &middot;
+      {{ maps.declines.by_bucket.declined|num }} declined &middot;
+      {{ maps.declines.by_bucket.client_withdrew|num }} withdrew</span></div>
+  </div>
+  <div class="stat stat-flag">
+    <div class="label">Light service given away</div>
+    <div class="value hero">{{ maps.light_service.total_value|money }}</div>
+    <div class="sub"><span class="dim">{{ maps.light_service.count|num }} declined light jobs &times;
+      ${{ '%0.0f'|format(maps.light_service.unit_value) }} each</span></div>
+  </div>
+</div>
+
+{# ------------------------------------------------- MAP 1: offered heat #}
+
+<section class="card">
+  <header>
+    <h2>Where jobs were offered</h2>
+    <span class="hint">
+      A heat map of every offer in {{ maps.label }}, placed at the centre of its
+      pickup ZIP. Brighter is more work. The cold parts of the market are the
+      point: that is where offers are <em>not</em> coming from.
+    </span>
+  </header>
+
+  <div id="offered-map" class="jobmap" role="img"
+       aria-label="Heat map of where jobs were offered across the service market"></div>
+
+  <div class="heat-legend" style="margin-top: 12px">
+    <span>Offers per ZIP</span>
+    <span>low</span>
+    <span class="ramp">
+      <i style="background: var(--seq-1)"></i>
+      <i style="background: var(--seq-2)"></i>
+      <i style="background: var(--seq-3)"></i>
+      <i style="background: var(--seq-4)"></i>
+      <i style="background: var(--seq-5)"></i>
+      <i style="background: var(--seq-6)"></i>
+    </span>
+    <span>high ({{ maps.offered.max_weight|num }})</span>
+    {% if maps.offered.unmapped %}
+    <span class="muted" style="margin-left:12px">
+      {{ maps.offered.unmapped|num }} offer(s) had no mappable ZIP and are not shown.
+    </span>
+    {% endif %}
+  </div>
+
+  <details style="margin-top: 14px">
+    <summary class="small muted" style="cursor: pointer">Busiest ZIP areas as a table</summary>
+    <div class="table-scroll" style="margin-top: 10px">
+      <table class="data">
+        <thead>
+          <tr><th>ZIP</th><th class="num">Offered</th><th class="num">Accepted</th><th class="num">Rate</th></tr>
+        </thead>
+        <tbody>
+          {% for zone in maps.offered.zones[:20] %}
+          <tr>
+            <td class="nowrap">{{ zone.zip }}</td>
+            <td class="num">{{ zone.offers|num }}</td>
+            <td class="num">{{ zone.accepted|num }}</td>
+            <td class="num">{{ m.rate(zone.accepted / zone.offers if zone.offers else None) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+{# ------------------------------------------------- MAP 2: declined jobs #}
+
+<section class="card">
+  <header>
+    <h2>Jobs we did not accept</h2>
+    <span class="hint">
+      Every offer we did not get, one pin each. Hover or tap a pin for the
+      Towbook reference, the service, when it was offered, whether it was
+      answered and by whom, and the reason. Pins in the same ZIP are fanned out
+      so none hides another.
+    </span>
+  </header>
+
+  <div class="map-legend">
+    <span class="key"><i class="dot" style="background: var(--map-no-response)"></i> No response ({{ maps.declines.by_bucket.no_response|num }})</span>
+    <span class="key"><i class="dot" style="background: var(--map-declined)"></i> Declined ({{ maps.declines.by_bucket.declined|num }})</span>
+    <span class="key"><i class="dot" style="background: var(--map-withdrew)"></i> Client withdrew ({{ maps.declines.by_bucket.client_withdrew|num }})</span>
+    <span class="key"><i class="dot" style="background: var(--map-accept-failed)"></i> Accept failed ({{ maps.declines.by_bucket.accept_failed|num }})</span>
+    <span class="key"><i class="ring"></i> light service</span>
+  </div>
+
+  <div id="declines-map" class="jobmap" role="img"
+       aria-label="Map of individual jobs that were not accepted"></div>
+
+  <p class="small muted" style="margin-top: 10px">
+    {{ maps.declines.mapped|num }} of {{ maps.declines.total|num }} not-accepted jobs are shown.
+    {% if maps.declines.unmapped %}{{ maps.declines.unmapped|num }} had no mappable ZIP.{% endif %}
+    {% if maps.declines.truncated %}<strong>Only the first {{ maps.declines.mapped|num }} pins are drawn</strong> to keep the page fast &mdash; narrow the window to see the rest.{% endif %}
+  </p>
+</section>
+
+{# ------------------------------- the $ tally: what light service costs us #}
+
+<section class="card">
+  <header>
+    <h2>Light service we are giving away</h2>
+    <span class="hint">
+      The light-service jobs above &mdash; tire changes, jump starts, lockouts,
+      fuel, and the like &mdash; that we did not accept, valued at a flat
+      ${{ '%0.0f'|format(maps.light_service.unit_value) }} each. This is what we
+      are choosing to turn down.
+    </span>
+  </header>
+
+  {% if maps.light_service.count %}
+  <div class="stats tight">
+    {{ m.stat('Declined light jobs', maps.light_service.count|num) }}
+    {{ m.stat('Per job', '$' ~ '%0.0f'|format(maps.light_service.unit_value)) }}
+    <div class="stat">
+      <div class="label">Value given away</div>
+      <div class="value hero">{{ maps.light_service.total_value|money }}</div>
+    </div>
+  </div>
+
+  <div class="table-scroll" style="margin-top: 14px">
+    <table class="data">
+      <thead>
+        <tr><th>Service type</th><th class="num">Declined</th><th class="num">Value (&times; ${{ '%0.0f'|format(maps.light_service.unit_value) }})</th></tr>
+      </thead>
+      <tbody>
+        {% for row in maps.light_service.by_type %}
+        <tr>
+          <td>{{ row.service_type|midtrunc(40) }}</td>
+          <td class="num">{{ row.count|num }}</td>
+          <td class="num">{{ row.value|money }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="total-row">
+          <td><strong>Total</strong></td>
+          <td class="num"><strong>{{ maps.light_service.count|num }}</strong></td>
+          <td class="num"><strong>{{ maps.light_service.total_value|money }}</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-top: 10px">{{ maps.light_service.note }}</p>
+  {% else %}
+    {{ m.empty_inline('No light-service jobs were declined in this window.') }}
+  {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/vendor/leaflet.js"></script>
+<script src="/static/vendor/leaflet-heat.js"></script>
+<script src="/static/maps.js"></script>
+{% endblock %}

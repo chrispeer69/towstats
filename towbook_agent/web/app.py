@@ -113,6 +113,7 @@ TABS = (
 #: of them on the URL it has always had -- no redirects, nothing renamed.
 DETAIL_NAV = (
     ("missed", "Missed work", "/"),
+    ("maps", "Maps", "/maps"),
     ("blind_spots", "Blind spots", "/blind-spots"),
     ("closeoff", "Close-off", "/close-off"),
     ("live", "Live", "/live"),
@@ -937,6 +938,44 @@ def view_trends(request: HTTPRequest) -> HTMLResponse:
 
 
 # ==========================================================================
+# Maps -- the offered heat map and the declined-jobs map
+# ==========================================================================
+
+
+@app.get("/maps", response_class=HTMLResponse)
+def view_maps(request: HTTPRequest) -> HTMLResponse:
+    """Two maps of the service market, over a day / week / month.
+
+    MAP 1 is a heat map of where jobs were OFFERED -- where the work is, and the
+    question the owner actually asked, where it is NOT. MAP 2 marks every job we
+    did NOT accept; each popup carries the Towbook reference, the service, the
+    time it was offered, whether it was actioned and by whom, and the decline
+    reason. The light-service jobs among them are tallied at a flat per-job
+    dollar value so the owner can see what he is choosing to give away.
+
+    Daily is the default -- the board is opened through the day -- with a week
+    and a month for review, and prev/next to walk the windows.
+    """
+    company = _company(request)
+    scope = (request.query_params.get("scope") or q.DEFAULT_MAP_SCOPE).strip()
+    if scope not in q.MAP_SCOPES:
+        scope = q.DEFAULT_MAP_SCOPE
+    # "Today" is a question about THIS company's clock -- resolve the default
+    # anchor inside its timezone, exactly as the daily view does.
+    with _companies.use_company(company):
+        anchor = q.parse_date(request.query_params.get("date"), q.today_local())
+    data = q.maps_snapshot(scope=scope, anchor=anchor, company_id=company)
+    return _render(
+        request,
+        "maps.html",
+        # `maps` drives the server-rendered stats and tables; `maps_js` is the
+        # same data made JSON-safe (dates -> ISO strings) for the Leaflet map,
+        # embedded in the page so the maps need no second round-trip to render.
+        _shell(request, "maps", maps=data, maps_js=q.jsonable(data), company=company),
+    )
+
+
+# ==========================================================================
 # View 5 -- Rules
 # ==========================================================================
 
@@ -1364,6 +1403,42 @@ def api_client_detail(
                 "trajectory": data["trajectory"],
                 "services": data["services"],
                 "denial_mix": data["denial_mix"],
+                "has_data": data["has_data"],
+            }
+        )
+    )
+
+
+@app.get("/api/maps")
+def api_maps(
+    request: HTTPRequest,
+    scope: str = Query(default=q.DEFAULT_MAP_SCOPE),
+    date: str | None = Query(default=None),
+    company: str | None = Query(default=None),
+) -> JSONResponse:
+    """Both maps as JSON. ``scope`` is ``day`` / ``week`` / ``month``.
+
+    The HTML view embeds this same data in the page, so nothing here is needed
+    to render a map; the endpoint exists for parity with the other views and so
+    the data behind a screenshot can be pulled and diffed.
+    """
+    company_id = _api_company(request, company)
+    if scope not in q.MAP_SCOPES:
+        scope = q.DEFAULT_MAP_SCOPE
+    with _companies.use_company(company_id):
+        anchor = q.parse_date(date, q.today_local())
+    data = q.maps_snapshot(scope=scope, anchor=anchor, company_id=company_id)
+    return JSONResponse(
+        q.jsonable(
+            {
+                "scope": data["scope"],
+                "first_day": data["first_day"],
+                "last_day": data["last_day"],
+                "label": data["label"],
+                "offered": data["offered"],
+                "declines": data["declines"],
+                "light_service": data["light_service"],
+                "geo_available": data["geo_available"],
                 "has_data": data["has_data"],
             }
         )

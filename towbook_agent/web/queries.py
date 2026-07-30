@@ -56,6 +56,7 @@ from ..core.models import (
     towbook_ref_kind,
     towbook_ref_label,
 )
+from . import geo
 
 __all__ = [
     "DEFAULT_TIMEZONE",
@@ -109,6 +110,13 @@ __all__ = [
     "RESPONSE_WINDOW",
     "HEADLINE_BUCKETS",
     "MISSED_WORK_WINDOW_DAYS",
+    # -- the maps (offered heat + declined jobs) --------------------------
+    "maps_snapshot",
+    "map_window",
+    "map_tiles",
+    "light_service_value",
+    "MAP_SCOPES",
+    "DEFAULT_MAP_SCOPE",
 ]
 
 logger = logging.getLogger(__name__)
@@ -366,9 +374,10 @@ _REQUEST_COLUMNS = (
     # car it was.
     Request.vehicle,
     Request.pickup_location,
-    # The ZIP the API states as its own field. Territory is decided on it -- see
-    # :func:`territory_of` -- with pickup_location as the fallback for
-    # CSV-ingested rows, which carry no ZIP.
+    # The ZIP the API states as its own field (populated on 3,122 of 3,124
+    # records). Territory is decided on it -- see :func:`territory_of` -- with
+    # pickup_location as the fallback for CSV-ingested rows, which carry no ZIP,
+    # and the maps views geocode against it (there is no lat/long in the feed).
     Request.pickup_zip,
     Request.dropoff_location,
     Request.truck_assigned,
@@ -3572,6 +3581,346 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
 
     result["has_data"] = bool(result.get("counts", {}).get("requests"))
     return result
+
+
+# ==========================================================================
+# Maps -- the offered heat map and the declined-jobs map
+# ==========================================================================
+#
+# Two questions, one data source, no new model. Both maps are built by
+# :func:`maps_snapshot` from the same ``requests`` rows every other view reads,
+# bucketed by the same ``agents.missed_work`` code, so a job is "declined" here
+# in exactly the sense it is declined everywhere else.
+#
+#   MAP 1 -- OFFERED HEAT. Every offer in the window, placed at its pickup ZIP
+#   centroid and summed per ZIP, so the owner can see where work concentrates
+#   and -- the point he made -- where it does NOT.
+#
+#   MAP 2 -- DECLINED / NOT ACCEPTED. Every offer we did not get, as an
+#   individual marker whose popup carries the Towbook reference, the service,
+#   the time it was offered, whether it was actioned and by whom, and the
+#   decline reason. Within it, the light-service jobs are tallied at a flat
+#   per-job dollar value so the owner can see what he is choosing to give away.
+#
+# THERE IS NO LAT/LONG IN THE FEED. Placement is by pickup ZIP against the
+# committed centroid lookup in :mod:`towbook_agent.web.geo`; a job whose ZIP is
+# unknown or out of state is counted as ``unmapped`` and reported, never hidden.
+
+#: The three review cadences the maps offer. Daily is the default -- the owner
+#: opens the board through the day -- with a week and a month for review.
+MAP_SCOPES = ("day", "week", "month")
+DEFAULT_MAP_SCOPE = "day"
+
+#: Columbus, OH -- the middle of this account's market. Used only as the opening
+#: view of a window that has no mappable jobs; a window with jobs fits to them.
+DEFAULT_MAP_CENTER = (39.9612, -82.9988)
+DEFAULT_MAP_ZOOM = 10
+
+#: The one external dependency of these views: raster basemap tiles. There is no
+#: offline street basemap, so tiles default to OpenStreetMap. It is config
+#: (``dashboard.map_tiles`` in rules.yaml) so an operator can point it at their
+#: own tile server, or blank the URL to draw markers on a plain background with
+#: no third-party request at all -- the markers and heat still render.
+DEFAULT_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+DEFAULT_TILE_ATTRIBUTION = "© OpenStreetMap contributors"
+
+#: Flat dollar value of one light-service job we declined, for the "what are we
+#: giving away" tally on the declined map. This is NOT offerAmount (empty on
+#: every record) and NOT the tow averages in ``job_value_by_client`` (those are
+#: tow values and must never touch light service). It is a separate owner figure,
+#: overridable at ``missed_work.light_service_value`` in rules.yaml.
+DEFAULT_LIGHT_SERVICE_VALUE = 35
+
+#: Buckets that mean "we did not get this job". ``won`` (we took it),
+#: ``in_flight`` (still deciding) and ``unknown_status`` (unreadable -- a data
+#: defect, not a lost job) are excluded. ``client_withdrew`` IS included: the job
+#: did not happen for us, and the popup names it as the client's doing so the two
+#: are never conflated.
+NOT_ACCEPTED_BUCKETS = ("declined", "no_response", "accept_failed", "client_withdrew")
+
+#: Human labels for the outcome buckets shown on the declined map.
+BUCKET_LABELS = {
+    "declined": "Declined",
+    "no_response": "No response (expired)",
+    "accept_failed": "Accept failed",
+    "client_withdrew": "Client withdrew",
+    "won": "Accepted",
+    "in_flight": "Still deciding",
+    "unknown_status": "Unreadable status",
+}
+
+#: Defensive ceiling on how many individual markers one window emits. A month of
+#: this account's declines is a few hundred, well under this; the cap only stops
+#: a pathological window from producing a multi-megabyte page, and when it bites
+#: the page says so rather than quietly dropping pins.
+MAX_MARKERS = 5000
+
+
+def light_service_value() -> float:
+    """The flat dollar value of a declined light-service job. Config, not code."""
+    try:
+        configured = (company_rules().get("missed_work") or {}).get("light_service_value")
+    except Exception:
+        configured = None
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool) and configured >= 0:
+        return float(configured)
+    return float(DEFAULT_LIGHT_SERVICE_VALUE)
+
+
+def map_tiles() -> dict[str, str]:
+    """Basemap tile URL and attribution, overridable in rules.yaml."""
+    try:
+        configured = (company_rules().get("dashboard") or {}).get("map_tiles") or {}
+    except Exception:
+        configured = {}
+    url = configured.get("url", DEFAULT_TILE_URL)
+    attribution = configured.get("attribution", DEFAULT_TILE_ATTRIBUTION)
+    return {
+        "url": "" if url is None else str(url),
+        "attribution": "" if attribution is None else str(attribution),
+    }
+
+
+def map_window(scope: str, anchor: _date) -> tuple[_date, _date]:
+    """The inclusive local-day span a scope+anchor covers."""
+    scope = scope if scope in MAP_SCOPES else DEFAULT_MAP_SCOPE
+    if scope == "day":
+        return anchor, anchor
+    if scope == "week":
+        first = week_start_for(anchor)
+        return first, first + timedelta(days=6)
+    first = anchor.replace(day=1)
+    if first.month == 12:
+        nxt = first.replace(year=first.year + 1, month=1)
+    else:
+        nxt = first.replace(month=first.month + 1)
+    return first, nxt - timedelta(days=1)
+
+
+def _map_label(scope: str, first: _date, last: _date) -> str:
+    if scope == "day":
+        return first.strftime("%A, %b %d, %Y").replace(" 0", " ")
+    if scope == "week":
+        return (
+            f"Week of {first.strftime('%b %d').replace(' 0', ' ')} – "
+            f"{last.strftime('%b %d, %Y').replace(' 0', ' ')}"
+        )
+    return first.strftime("%B %Y")
+
+
+def _map_neighbors(scope: str, first: _date, last: _date) -> tuple[_date, _date]:
+    """Anchor dates for the previous and next window of the same scope."""
+    if scope == "day":
+        return first - timedelta(days=1), first + timedelta(days=1)
+    if scope == "week":
+        return first - timedelta(days=7), first + timedelta(days=7)
+    prev = (first - timedelta(days=1)).replace(day=1)
+    return prev, last + timedelta(days=1)
+
+
+def _dt_label(value: datetime | None) -> str:
+    """A local offered-at time as ``"Jul 29, 3:14 PM"``. Empty when unknown."""
+    if not isinstance(value, datetime):
+        return ""
+    return value.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+
+
+def _geocode_row(row: dict[str, Any]) -> tuple[tuple[float, float] | None, str | None]:
+    """Return ``((lat, lng), zip5)`` for a row, or ``(None, zip5_or_None)``.
+
+    The ZIP comes from ``pickup_zip`` (the API field) first, then a best-effort
+    ZIP parsed out of the free-text address for a CSV-ingested row that never
+    carried one. A ZIP with no centroid (out of state, or not in the lookup)
+    yields ``(None, zip5)`` so the caller can count it as unmapped.
+    """
+    zip5 = geo.normalize_zip(row.get("pickup_zip")) or geo.zip_from_text(row.get("pickup_location"))
+    if not zip5:
+        return None, None
+    return geo.centroid_for_zip(zip5), zip5
+
+
+def _decline_marker(row: dict[str, Any], bucket: str) -> dict[str, Any]:
+    """The display fields for one declined/not-accepted job.
+
+    ``responded`` answers the owner's "was it responded to": true when a person
+    at this company actioned it (a named ``driver_assigned`` -- the API's
+    ``ownerUserName``) or the outcome itself required an action (we declined, or
+    an accept was attempted and failed). ``no_response`` is exactly the case
+    where nobody answered, so it reads false, which is the honest signal -- the
+    feed carries no response timestamp to say otherwise.
+    """
+    actioned_by = (row.get("driver_assigned") or "").strip()
+    responded = bool(actioned_by) or bucket in ("declined", "accept_failed")
+    offered = row.get("offered_local")
+    return {
+        "ref": str(row.get("request_id") or "").strip(),
+        "service_type": (row.get("service_type_raw") or "").strip() or "(unspecified)",
+        "service_class": row.get("service_class"),
+        "offered_at": offered.isoformat() if isinstance(offered, datetime) else None,
+        "offered_label": _dt_label(offered),
+        "outcome": bucket,
+        "outcome_label": BUCKET_LABELS.get(bucket, bucket.replace("_", " ")),
+        "responded": responded,
+        "responded_by": actioned_by,
+        "reason": (row.get("denial_reason") or "").strip(),
+        "address": (row.get("pickup_location") or "").strip(),
+        "zip": row.get("_zip5") or "",
+        "is_light": row.get("service_class") == "light_service",
+    }
+
+
+@for_company
+def maps_snapshot(
+    scope: str = DEFAULT_MAP_SCOPE,
+    anchor: _date | None = None,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Both maps for one window: the offered heat map and the declined map.
+
+    ``scope`` is ``day`` (default), ``week`` or ``month``; ``anchor`` is any date
+    inside the window (defaults to today). Everything is recomputed from
+    ``requests`` on each load, exactly like the rest of this module.
+    """
+    scope = scope if scope in MAP_SCOPES else DEFAULT_MAP_SCOPE
+    anchor = anchor or today_local()
+    first_day, last_day = map_window(scope, anchor)
+    start_utc, end_utc = local_span_bounds(first_day, last_day)
+    rules = rules_snapshot()
+    unit_value = light_service_value()
+
+    rows = fetch_requests(start_utc, end_utc, company_id=company_id)
+
+    # ---- MAP 1: offered heat, aggregated per pickup ZIP ------------------
+    offered_by_zip: dict[str, dict[str, Any]] = {}
+    offered_total = 0
+    offered_unmapped = 0
+    for row in rows:
+        offered_total += 1
+        latlng, zip5 = _geocode_row(row)
+        if latlng is None:
+            offered_unmapped += 1
+            continue
+        zone = offered_by_zip.get(zip5)
+        if zone is None:
+            zone = {"zip": zip5, "lat": latlng[0], "lng": latlng[1], "offers": 0, "accepted": 0}
+            offered_by_zip[zip5] = zone
+        zone["offers"] += 1
+        if row["status"] == "accepted":
+            zone["accepted"] += 1
+
+    offered_points = [[z["lat"], z["lng"], z["offers"]] for z in offered_by_zip.values()]
+    max_weight = max((z["offers"] for z in offered_by_zip.values()), default=0)
+    offered_zones = sorted(
+        offered_by_zip.values(), key=lambda z: (-z["offers"], z["zip"])
+    )
+
+    # ---- MAP 2: declined / not-accepted markers -------------------------
+    not_accepted: list[dict[str, Any]] = []
+    for row in rows:
+        bucket = bucket_of(row, rules)
+        if bucket not in NOT_ACCEPTED_BUCKETS:
+            continue
+        latlng, zip5 = _geocode_row(row)
+        row["_bucket"] = bucket
+        row["_latlng"] = latlng
+        row["_zip5"] = zip5
+        not_accepted.append(row)
+
+    mapped_per_zip = Counter(r["_zip5"] for r in not_accepted if r["_latlng"] is not None)
+    zip_seen: Counter[str] = Counter()
+    markers: list[dict[str, Any]] = []
+    declines_unmapped = 0
+    bucket_counts: Counter[str] = Counter()
+    light_rows: list[dict[str, Any]] = []
+    truncated = False
+
+    for row in not_accepted:
+        bucket = row["_bucket"]
+        bucket_counts[bucket] += 1
+        display = _decline_marker(row, bucket)
+        if display["is_light"]:
+            light_rows.append(display)
+
+        latlng = row["_latlng"]
+        if latlng is None:
+            declines_unmapped += 1
+            continue
+        if len(markers) >= MAX_MARKERS:
+            truncated = True
+            continue
+        zip5 = row["_zip5"]
+        index = zip_seen[zip5]
+        zip_seen[zip5] += 1
+        lat, lng = geo.place(latlng[0], latlng[1], index, mapped_per_zip[zip5])
+        marker = dict(display)
+        marker["lat"] = round(lat, 6)
+        marker["lng"] = round(lng, 6)
+        markers.append(marker)
+
+    # ---- light-service $ tally (does not depend on being mappable) -------
+    light_counter: Counter[str] = Counter(r["service_type"] for r in light_rows)
+    light_by_type = [
+        {"service_type": name, "count": count, "value": round(count * unit_value, 2)}
+        for name, count in light_counter.most_common()
+    ]
+    light_count = len(light_rows)
+
+    prev_anchor, next_anchor = _map_neighbors(scope, first_day, last_day)
+    today = today_local()
+    tiles = map_tiles()
+
+    return {
+        "scope": scope,
+        "scopes": list(MAP_SCOPES),
+        "anchor": anchor,
+        "first_day": first_day,
+        "last_day": last_day,
+        "label": _map_label(scope, first_day, last_day),
+        "prev": {"scope": scope, "date": prev_anchor.isoformat()},
+        "next": {"scope": scope, "date": next_anchor.isoformat()},
+        "is_future": first_day > today,
+        # Disable the "next" arrow once it would point past today: there is no
+        # data in the future, and an arrow that leads to a guaranteed empty page
+        # reads as broken.
+        "next_is_future": map_window(scope, next_anchor)[0] > today,
+        "center": list(DEFAULT_MAP_CENTER),
+        "zoom": DEFAULT_MAP_ZOOM,
+        "tiles": tiles,
+        "geo_available": geo.centroid_count() > 0,
+        "centroid_count": geo.centroid_count(),
+        "offered": {
+            "total": offered_total,
+            "mapped": offered_total - offered_unmapped,
+            "unmapped": offered_unmapped,
+            "points": offered_points,
+            "max_weight": max_weight,
+            "zones": offered_zones,
+            "zip_count": len(offered_by_zip),
+        },
+        "declines": {
+            "total": len(not_accepted),
+            "mapped": len(markers),
+            "unmapped": declines_unmapped,
+            "truncated": truncated,
+            "by_bucket": {name: bucket_counts.get(name, 0) for name in NOT_ACCEPTED_BUCKETS},
+            "bucket_labels": {name: BUCKET_LABELS[name] for name in NOT_ACCEPTED_BUCKETS},
+            "markers": markers,
+        },
+        "light_service": {
+            "unit_value": unit_value,
+            "count": light_count,
+            "total_value": round(light_count * unit_value, 2),
+            "by_type": light_by_type,
+            "note": (
+                f"Each declined light-service job is valued at a flat "
+                f"${unit_value:,.0f} (owner-supplied, gross). This is a separate "
+                "figure from the tow averages, which are never applied to light "
+                "service. Towbook publishes no offer amount."
+            ),
+        },
+        "ranking_note": RANKING_NOTE,
+        "has_data": offered_total > 0,
+    }
 
 
 # ==========================================================================

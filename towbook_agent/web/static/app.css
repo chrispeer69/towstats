@@ -59,6 +59,14 @@
   --seq-5: #184f95;
   --seq-6: #0d366b;
 
+  /* Map marker colours. Defined once: markers sit on basemap tiles, not on the
+     themed app surface, so they read the same in dark and light. */
+  --map-no-response:   #d03b3b;   /* nobody answered -- the big one */
+  --map-declined:      #e07b1a;   /* we said no */
+  --map-withdrew:      #7c8792;   /* client pulled it */
+  --map-accept-failed: #9085e9;   /* we tried to accept and it failed */
+  --map-light-ring:    #f2c94c;   /* gold ring == light service */
+
   --radius:    10px;
   --radius-sm: 6px;
   --shadow:    0 1px 2px rgba(0, 0, 0, 0.35);
@@ -1154,6 +1162,86 @@ footer.foot {
   gap: 16px;
   flex-wrap: wrap;
 }
+
+/* ==========================================================================
+   MAPS  (/maps -- the offered heat map and the declined-jobs map)
+   ==========================================================================
+
+   The map container gets its own stacking context (`isolation: isolate`) so
+   Leaflet's internal high z-indexes -- panes, popups, zoom control -- stay
+   inside the card and never rise over the sticky top bar. A neutral background
+   means a window with no tiles (or before they load) is a plain surface, not a
+   black hole. */
+
+.jobmap {
+  height: 460px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+
+@media (max-width: 640px) {
+  .jobmap { height: 340px; }
+}
+
+/* Leaflet draws its own text; keep it in the board's font. Popups stay on
+   Leaflet's light bubble (readable over any basemap in either theme), so their
+   text is a fixed dark, not a themed variable. */
+.leaflet-container { font-family: var(--sans); }
+
+.map-popup { color: #1a1a19; min-width: 180px; }
+.map-popup .pop-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
+.map-popup .pop-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.map-popup .pop-k { color: #6f6d68; flex: 0 0 74px; }
+.map-popup .pop-v { color: #1a1a19; flex: 1 1 auto; word-break: break-word; }
+
+/* The bucket legend above the declined map. */
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.map-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.map-legend .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.map-legend .ring {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  background: transparent;
+  border: 2.5px solid var(--map-light-ring);
+}
+
+/* Prev/next window arrows next to the scope selector. */
+.seg.mapnav a, .seg.mapnav .disabled { padding: 4px 10px; }
+.seg.mapnav .disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
+
+/* A tighter stat row for the tally card, and its total row. */
+.stats.tight { margin: 0 0 4px; }
+table.data tr.total-row td { border-top: 2px solid var(--border-strong); }
 
 /* ==========================================================================
    PRINT
