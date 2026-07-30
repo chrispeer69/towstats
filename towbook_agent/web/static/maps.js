@@ -150,7 +150,7 @@
     head.textContent = marker.outcome_label + (marker.is_light ? " · light service" : "");
     box.appendChild(head);
 
-    field(box, "Towbook ref", marker.ref || "—");
+    field(box, "Towbook ref", marker.ref_label || marker.ref || "—");
     field(box, "Service", marker.service_type);
     field(box, "Offered", marker.offered_label);
     field(box, "Responded", marker.responded ? "Yes" : "No");

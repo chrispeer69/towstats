@@ -3753,7 +3753,13 @@ def _decline_marker(row: dict[str, Any], bucket: str) -> dict[str, Any]:
     responded = bool(actioned_by) or bucket in ("declined", "accept_failed")
     offered = row.get("offered_local")
     return {
-        "ref": str(row.get("request_id") or "").strip(),
+        # The reference the owner quotes: the Towbook job number when there is
+        # one, the Digital Request id otherwise (the usual case for work we did
+        # not accept). Uses the same helper the reports use, so a pin and a
+        # report row name the same job the same way.
+        "ref": str(row.get("towbook_ref") or row.get("request_id") or "").strip(),
+        "ref_label": str(row.get("towbook_ref_label") or "").strip(),
+        "ref_kind": row.get("towbook_ref_kind") or "",
         "service_type": (row.get("service_type_raw") or "").strip() or "(unspecified)",
         "service_class": row.get("service_class"),
         "offered_at": offered.isoformat() if isinstance(offered, datetime) else None,
