@@ -20,7 +20,7 @@ is untouched. Nothing here starts a server.
 from __future__ import annotations
 
 import socket
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -741,3 +741,57 @@ def test_printing_repaints_the_charts_instead_of_printing_black_boxes() -> None:
     # The swap must not be persisted -- printing is not a theme preference.
     before = js.split("beforeprint", 1)[1].split("afterprint", 1)[0]
     assert "localStorage" not in before
+
+
+# --------------------------------------------------------------------------
+# The Towbook reference
+#
+# The reports are read with the portal open, so every list of individual jobs
+# has to say WHICH job. Towbook only issues a job number once an offer becomes
+# a job, so on the jobs we did not take the reference is usually the Digital
+# Request id -- and a blank cell there would make the list unusable.
+# --------------------------------------------------------------------------
+
+
+def test_the_missed_page_lists_the_jobs_with_a_towbook_reference(
+    client: TestClient, seeded
+) -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    assert "Jobs we did not get" in body
+    assert "Towbook ref" in body
+    # Both kinds of reference are labelled. A bare number would leave the
+    # reader guessing which of two different Towbook screens to search.
+    assert "Req " in body
+    assert "never became a job" in body, "the page must explain the blank job numbers"
+
+
+def test_the_daily_variance_table_says_which_jobs(client: TestClient, seeded) -> None:
+    """Policy variance is a list of individual decisions to review."""
+    response = client.get(f"/daily?date={END_DATE.isoformat()}")
+    assert response.status_code == 200
+    assert "Towbook ref" in response.text
+
+
+def test_a_job_number_is_shown_as_a_job_number(client: TestClient, seeded) -> None:
+    """An accepted job carries a real Towbook call number, and it is labelled."""
+    from towbook_agent.web import queries as q
+
+    rows = q.fetch_requests(
+        *q.local_span_bounds(END_DATE - timedelta(days=DAYS), END_DATE)
+    )
+    numbered = [row for row in rows if row["job_number"]]
+    assert numbered, "the fixture has no accepted job carrying a call number"
+
+    for row in numbered:
+        assert row["towbook_ref_kind"] == "job"
+        assert row["towbook_ref"] == row["job_number"]
+
+    unnumbered = [row for row in rows if not row["job_number"]]
+    assert unnumbered, "the fixture has no offer without a call number"
+    for row in unnumbered:
+        # NEVER blank: the request id is what finds an offer we did not take.
+        assert row["towbook_ref"] == row["request_id"]
+        assert row["towbook_ref_kind"] == "request"

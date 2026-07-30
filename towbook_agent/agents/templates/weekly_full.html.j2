@@ -196,6 +196,10 @@
   {% endif %}
   {% endif %}
 
+  {# Which jobs, by the reference Towbook searches on. A week misses more than
+     the list shows, so it caps and says so -- the dashboard pages the rest. #}
+  {% include "_missed_jobs.html.j2" %}
+
   {% if blind_spots %}
   <h3 style="font-size:14px;margin:0 0 4px 0;">Blind spots &mdash; when offers go unanswered</h3>
   <div style="color:#666;font-size:11px;margin-bottom:8px;">

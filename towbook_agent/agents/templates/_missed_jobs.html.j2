@@ -1,0 +1,81 @@
+{#
+  _missed_jobs -- "Jobs we did not get", one row per job, with the reference
+  that finds it in Towbook. Included by daily_full / weekly_full / monthly_full
+  so all three reports say the same thing the same way.
+
+  WHY IT LEADS WITH A REFERENCE. Every other table in these reports is an
+  aggregate, and an aggregate cannot answer "why did we not take that one".
+  Answering that means opening the offer in Towbook, and that needs the number
+  Towbook searches on.
+
+  There are two such numbers and they are NOT interchangeable:
+
+    Job #125169     the Towbook job / call number, searched in Dispatching.
+                    Only exists once an offer became a job -- which on this
+                    list is the minority, because Towbook does not issue one
+                    for an offer nobody accepted.
+    Req 324417205   the Digital Request id, found in the Request Log. Present
+                    on every offer ever made, so it is what references the
+                    ones we turned down or never answered.
+
+  `towbook_ref_label` carries the right one already prefixed; `towbook_ref_kind`
+  says which it is. Neither is ever blank -- that is the point of the fallback.
+
+  Context: missed_jobs (list) and missed_jobs_meta (dict), from
+  agents/notifier.py -> missed_work_context.
+#}
+{% if missed_jobs %}
+<h3 style="font-size:14px;margin:0 0 4px 0;">Jobs we did not get &mdash; Towbook reference</h3>
+<div style="color:#666;font-size:11px;margin-bottom:8px;">
+  Every job below is one we were offered and did not run. Quote the reference in
+  Towbook to pull the offer up.
+  {% if missed_jobs_meta %}
+    <strong>{{ missed_jobs_meta.with_job_number | num }}</strong> of
+    {{ missed_jobs_meta.shown | num }} carry a Towbook job number;
+    the rest never became a job, so they are referenced by their request id.
+  {% endif %}
+</div>
+<table role="presentation" cellpadding="0" cellspacing="0"
+       style="border-collapse:collapse;width:100%;margin-bottom:8px;font-size:13px;">
+  <tr style="background:#f0f1f3;">
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Towbook ref</th>
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Offered</th>
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Client</th>
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Service</th>
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">What happened</th>
+    <th align="left" style="padding:6px 8px;border-bottom:1px solid #ddd;">Reason</th>
+  </tr>
+  {% for row in missed_jobs or [] %}
+  <tr>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;white-space:nowrap;
+               font-family:Consolas,Menlo,monospace;
+               {% if row.towbook_ref_kind == 'job' %}font-weight:600;color:#1c1c1c;{% else %}color:#555;{% endif %}">
+      {{ row.towbook_ref_label or row.towbook_ref }}
+    </td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;white-space:nowrap;color:#444;">
+      {{ row.offered_display or row.offered_at_local }}
+    </td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.client }}</td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#444;">{{ row.service_type_raw }}</td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;">
+      {# The VERBATIM portal status. "Another Provider Responded" and "Expired"
+         are the same canonical status and completely different explanations. #}
+      {{ row.status_raw or row.status }}
+      {% if row.cause and row.cause != 'none' %}<div style="color:#666;font-size:11px;">{{ row.cause }}</div>{% endif %}
+    </td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#444;">
+      {{ row.denial_reason or '&mdash;' | safe }}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<div style="color:#888;font-size:11px;margin-bottom:20px;">
+  {% if missed_jobs_meta and missed_jobs_meta.truncated %}
+    Showing {{ missed_jobs_meta.shown | num }} of
+    {{ missed_jobs_meta.missed_in_window | num }} jobs; the dashboard lists them all.
+  {% endif %}
+  {% if missed_jobs_meta and missed_jobs_meta.job_number_note %}
+    {{ missed_jobs_meta.job_number_note }}
+  {% endif %}
+</div>
+{% endif %}

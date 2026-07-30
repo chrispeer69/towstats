@@ -207,6 +207,7 @@ _DATETIME_FIELDS: tuple[str, ...] = ("offered_at", "responded_at", "expires_at")
 _DECIMAL_FIELDS: tuple[str, ...] = ("amount", "distance_miles")
 _CANONICAL_FIELDS: tuple[str, ...] = (
     "request_id",
+    "job_number",
     "client_name",
     "offered_at",
     "responded_at",
@@ -234,6 +235,10 @@ _REQUIRED_FIELDS: tuple[str, ...] = ("request_id", "offered_at", "status")
 _UPSERT_COLUMNS: tuple[str, ...] = (
     "request_id",
     "company_id",
+    # The Towbook job / call number. Stored, never keyed on, and NULL on most of
+    # what we did not accept because Towbook does not issue one until an offer
+    # becomes a job -- see models.Request.job_number.
+    "job_number",
     "client_name",
     "client_key",
     "offered_at",
@@ -260,14 +265,15 @@ _UPSERT_COLUMNS: tuple[str, ...] = (
     "source_run_id",
 )
 
-#: Rows per statement. 22 columns x 40 rows = 880 bound parameters, under the
-#: 999 limit of SQLite builds older than 3.32 but no longer comfortably: three
-#: more columns at this chunk size would cross it. Was 50 while the record had
-#: 17 columns; status_raw and status_code took it to 950, which is why it came
-#: down to 40. If the record grows again, LOWER THIS FIRST -- the failure mode
-#: is an sqlite3 "too many SQL variables" error at ingest, which surfaces as a
-#: pipeline_failure rather than silently, but only once real data hits it.
-_UPSERT_CHUNK: int = 40
+#: Rows per statement. 23 columns x 38 rows = 874 bound parameters, under the
+#: 999 limit of SQLite builds older than 3.32. Was 50 while the record had 17
+#: columns; status_raw and status_code took it to 950, which is why it came down
+#: to 40, and job_number is the 23rd column -- 23 x 40 = 920, which still fits
+#: but leaves room for only one more field. If the record grows again, LOWER
+#: THIS FIRST: the failure mode is an sqlite3 "too many SQL variables" error at
+#: ingest, which surfaces as a pipeline_failure rather than silently, but only
+#: once real data hits it.
+_UPSERT_CHUNK: int = 38
 #: Ids per IN (...) lookup.
 _SELECT_CHUNK: int = 400
 
@@ -377,6 +383,12 @@ class _Cleanup:
     collapse: bool
     verbatim_fields: frozenset[str]
     amount_strip: tuple[str, ...]
+    #: Fields where a source value of 0 means "there is none". Deliberately NOT
+    #: a global null token: 0 is a real answer for amount, for distance, for any
+    #: count. Towbook sends `callNumber: 0` on an offer that never became a job
+    #: rather than omitting the key, and a report that prints "Job #0" hands the
+    #: owner a reference that finds nothing in Towbook.
+    zero_means_absent: frozenset[str]
 
     @classmethod
     def from_schema(cls, schema: Mapping[str, Any]) -> "_Cleanup":
@@ -391,10 +403,30 @@ class _Cleanup:
                 _as_list(block.get("preserve_verbatim_fields")) or ["service_type_raw"]
             ),
             amount_strip=tuple(_as_list(block.get("amount_strip_chars")) or ["$", ",", " "]),
+            zero_means_absent=frozenset(
+                name.strip() for name in _as_list(block.get("zero_means_absent"))
+            ),
         )
 
     def is_null(self, text: str) -> bool:
         return text.strip().casefold() in self.null_tokens
+
+    def is_absent_zero(self, field: str, text: str) -> bool:
+        """True when ``text`` is a zero that this field reads as "no value".
+
+        Matches "0", "0.0" and "00" -- Towbook's JSON sends the integer 0, but a
+        CSV export of the same column may well write it any of those ways, and
+        a job number that is really zero does not exist.
+        """
+        if field not in self.zero_means_absent:
+            return False
+        probe = text.strip()
+        if not probe:
+            return False
+        try:
+            return float(probe) == 0.0
+        except ValueError:
+            return False
 
 
 def _clean_text(value: Any, cleanup: _Cleanup, *, verbatim: bool) -> str | None:
@@ -421,6 +453,54 @@ def _clean_text(value: Any, cleanup: _Cleanup, *, verbatim: bool) -> str | None:
     if verbatim:
         return value if isinstance(value, str) else text
     return probe if cleanup.collapse else text.strip()
+
+
+def _clean_identifier(value: Any, cleanup: _Cleanup, field: str) -> str | None:
+    """Normalise a cell that holds a REFERENCE rather than a number or a name.
+
+    ``job_number`` is the case this exists for. It arrives as an integer from
+    the JSON API and as a spreadsheet cell from the CSV export, and it has to
+    end up as the same string either way, because it is what a human types into
+    Towbook -- "125169", never "125169.0" and never "0".
+
+    Two things happen here that :func:`_clean_text` must not do generally:
+
+    * an integral float is rendered without its ``.0``. openpyxl hands back
+      ``125169.0`` for a plain numeric cell, and a report that prints that has
+      invented a reference nobody can look up.
+    * a zero becomes None, for the fields schema.yaml lists under
+      ``value_cleanup.zero_means_absent``. Towbook sends ``callNumber: 0`` on an
+      offer that never became a job -- 1,731 of 3,124 archived records -- rather
+      than omitting the key.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # A boolean is not a reference. Nothing sends one; refuse it rather than
+        # storing "true" as a job number.
+        return None
+    if isinstance(value, float) and value.is_integer():
+        text = str(int(value))
+    elif isinstance(value, int):
+        text = str(value)
+    else:
+        cleaned = _clean_text(value, cleanup, verbatim=False)
+        if cleaned is None:
+            return None
+        text = cleaned
+        # "125169.0" out of a CSV is the same reference as 125169.
+        try:
+            number = float(text)
+        except ValueError:
+            pass
+        else:
+            if number.is_integer():
+                text = str(int(number))
+
+    probe = _collapse(text)
+    if cleanup.is_null(probe) or cleanup.is_absent_zero(field, probe):
+        return None
+    return probe or None
 
 
 def parse_datetime(
@@ -1350,6 +1430,15 @@ def _build_record(
         )
 
     record["client_key"] = client_key_for(record["client_name"])
+
+    # The Towbook job / call number, if this offer ever got one. It is a
+    # reference, not text and not a quantity, so it goes through
+    # _clean_identifier: no ".0" tail, and a 0 from the source becomes NULL
+    # rather than the job number zero. Blank on most unaccepted offers by
+    # design -- see models.Request.job_number.
+    record["job_number"] = _clean_identifier(
+        _cell(row, column_map.get("job_number")), cleanup, "job_number"
+    )
 
     for name in _DATETIME_FIELDS:
         index = column_map.get(name)

@@ -75,6 +75,11 @@ __all__ = [
     "utcnow",
     "to_utc_naive",
     "client_key_for",
+    "towbook_ref",
+    "towbook_ref_kind",
+    "towbook_ref_label",
+    "TOWBOOK_REF_KINDS",
+    "TOWBOOK_REF_PREFIXES",
     "company_column",
     "Request",
     "Run",
@@ -147,6 +152,61 @@ def client_key_for(client_name: str | None) -> str:
     return (client_name or "").strip().casefold()
 
 
+#: What ``towbook_ref_kind`` returns, and what the labels below are keyed on.
+#: "job" is a Towbook call number; "request" is a Digital Request id.
+TOWBOOK_REF_KINDS: tuple[str, ...] = ("job", "request")
+
+#: How each kind of reference is introduced in a report, an SMS or a table cell.
+#: Two different numbers in two different Towbook screens -- a call number is
+#: searched in Dispatching, a request id is found in the Request Log -- so they
+#: are never rendered as one anonymous "Ref: 324417205".
+TOWBOOK_REF_PREFIXES: dict[str, str] = {"job": "Job #", "request": "Req "}
+
+
+def towbook_ref(job_number: str | None, request_id: str | None) -> str:
+    """The reference to quote for one offer: job number, else request id.
+
+    THE POINT OF THIS FUNCTION. The owner reviews a job by pulling it up in
+    Towbook, and the number that does that is the call number -- which Towbook
+    does not issue until an offer becomes a job. On the offers this system
+    exists to explain, the ones we did NOT accept, it is blank 84% of the time
+    (0 of 817 Expired, 1 of 428 Rejected across the archived records).
+
+    So the fallback is not a nicety, it is the whole feature: ``request_id`` is
+    the Digital Request id, populated on 3,124 of 3,124 records, and it is what
+    finds an unaccepted offer in the Request Log. Every report shows one or the
+    other and never an empty cell.
+
+    Derived at read time rather than stored, so the day Towbook starts
+    numbering unanswered offers the reports improve with no migration.
+    """
+    number = (job_number or "").strip()
+    if number:
+        return number
+    return (request_id or "").strip()
+
+
+def towbook_ref_kind(job_number: str | None) -> str:
+    """``"job"`` when a Towbook call number exists, otherwise ``"request"``.
+
+    Carried beside the value everywhere it is shown, because the two numbers
+    live in two different Towbook screens and are not interchangeable.
+    """
+    return "job" if (job_number or "").strip() else "request"
+
+
+def towbook_ref_label(job_number: str | None, request_id: str | None) -> str:
+    """The reference with its kind spelled out: ``Job #125169`` / ``Req 3244…``.
+
+    For anywhere there is no column header to say which number this is -- SMS
+    bodies, email prose, CSV exports read outside the dashboard.
+    """
+    value = towbook_ref(job_number, request_id)
+    if not value:
+        return ""
+    return f"{TOWBOOK_REF_PREFIXES[towbook_ref_kind(job_number)]}{value}"
+
+
 class UTCDateTime(TypeDecorator):
     """DateTime that accepts aware or naive values and stores naive UTC.
 
@@ -201,6 +261,29 @@ class Request(Base):
     #: ``Request.account_id == x`` and ``Request(account_id=x)`` both resolve to
     #: ``company_id``, so no caller had to change.
     account_id = synonym("company_id")
+    #: The Towbook JOB / CALL NUMBER -- the reference a human types into Towbook
+    #: to pull this job back up. Sourced from the API's ``callNumber`` (the CSV
+    #: export's "Call #"), stored as text because it is an identifier, not a
+    #: quantity: nothing may sum, average or compare it.
+    #:
+    #: NULL ON MOST OF WHAT WE DID NOT ACCEPT, AND THAT IS TOWBOOK, NOT A BUG.
+    #: Towbook issues a call number when an offer becomes a job. Measured over
+    #: the 3,124 archived records: 1,074 of 1,085 accepted offers carry one, and
+    #: only 319 of 2,039 unaccepted ones do -- 0 of 817 Expired, 1 of 428
+    #: Rejected, 0 of 25 Another Provider Responded. The 319 are the offers we
+    #: accepted first and lost afterwards (GOA, cancelled, service failure).
+    #:
+    #: So the reference for reviewing *why we did not take a job* cannot be this
+    #: column alone. It is ``request_id`` -- the Digital Request id, the API's
+    #: callRequestId, present on 3,124 of 3,124 records and searchable in the
+    #: Request Log. Read paths pair the two through ``towbook_ref``
+    #: (agents/metrics.py, web/queries.py): the job number when there is one,
+    #: the request id when there is not, never a blank cell.
+    #:
+    #: NEVER AN IDENTITY. ``request_id`` is the key. This value is written after
+    #: the offer is answered, so keying on it would give one offer two keys
+    #: across two pulls and count it twice -- see config/schema.yaml.
+    job_number: Mapped[Optional[str]] = mapped_column(String(64))
     client_name: Mapped[Optional[str]] = mapped_column(String(255))
     #: trimmed + casefolded client_name -- see client_key_for()
     client_key: Mapped[Optional[str]] = mapped_column(String(255))
@@ -287,6 +370,10 @@ class Request(Base):
         # Territory is asked as "this company, was this ZIP ours", so the ZIP
         # index leads with company_id for the same reason the one above does.
         Index("ix_requests_company_zip", "company_id", "pickup_zip"),
+        # "The owner is holding a Towbook job number and wants the offer behind
+        # it" is a lookup, not a scan, and it is asked per company -- two
+        # tenants number their jobs independently and 125169 exists in both.
+        Index("ix_requests_company_job_number", "company_id", "job_number"),
         Index("ix_requests_source_run_id", "source_run_id"),
     )
 

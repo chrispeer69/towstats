@@ -276,6 +276,75 @@
   {% endif %}
 </section>
 
+{# ---------------------------------------------------------------- job list #}
+{#- THE ONLY ROW-LEVEL SECTION ON THIS PAGE, and the reason the rest of it is
+    actionable. Everything above answers "what should we change"; the owner
+    also asks "why did we not take THAT one", and answering that means opening
+    the offer in Towbook -- which needs the number Towbook searches on.
+
+    The Towbook ref column is deliberately first. It is what the row is for. -#}
+{% if missed.missed_jobs %}
+<section class="card">
+  <header>
+    <h2>Jobs we did not get</h2>
+    <span class="hint">
+      Every one is an offer we did not run. Quote the reference in Towbook to pull it up.
+      {% if missed.missed_jobs_meta.shown %}
+        {{ missed.missed_jobs_meta.with_job_number|num }} of
+        {{ missed.missed_jobs_meta.shown|num }} have a Towbook job number.
+      {% endif %}
+    </span>
+  </header>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Towbook ref</th>
+          <th>Offered</th>
+          <th>Client</th>
+          <th class="wrap-text">Service</th>
+          <th>What happened</th>
+          <th>Cause</th>
+          <th class="wrap-text">Reason</th>
+          <th class="wrap-text">Pickup</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in missed.missed_jobs %}
+        <tr>
+          <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
+          <td class="nowrap muted">{{ row.offered_display or row.offered_at_local }}</td>
+          <td>{{ row.client }}</td>
+          <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
+          {# The VERBATIM portal status. "Another Provider Responded" and
+             "Expired" collapse onto the same canonical status and are
+             completely different explanations. #}
+          <td class="nowrap">{{ row.status_raw or row.status }}</td>
+          <td class="muted">{{ row.cause or DASH }}</td>
+          <td class="wrap-text muted">{{ row.denial_reason or DASH }}</td>
+          <td class="wrap-text muted">{{ row.pickup_location or DASH }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="8" class="small muted">
+            {% if missed.missed_jobs_meta.truncated %}
+              Showing {{ missed.missed_jobs_meta.shown|num }} of
+              {{ missed.missed_jobs_meta.missed_in_window|num }} missed jobs in this window.
+              Narrow the window to see the rest.
+            {% else %}
+              All {{ missed.missed_jobs_meta.shown|num }} missed jobs in this window.
+            {% endif %}
+            {{ missed.missed_jobs_meta.job_number_note }}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 {# ------------------------------------------------------------ cause detail #}
 
 <div class="grid side top">

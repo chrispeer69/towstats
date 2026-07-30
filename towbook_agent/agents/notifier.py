@@ -1015,6 +1015,17 @@ def _inventory_rows(document: dict) -> list[dict[str, Any]]:
     return rows[:limit] if limit and limit > 0 else rows
 
 
+def _missed_job_rows(document: dict) -> list[dict[str, Any]]:
+    """The per-job lookup table, already capped and ordered by missed_work.py.
+
+    One row per job we did not get, each carrying ``towbook_ref`` -- the
+    Towbook job number when the offer became a job, the Digital Request id when
+    it did not. It is the section the owner reads with Towbook open.
+    """
+    rows = document.get("missed_jobs")
+    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
 def _blind_spot_rows(document: dict) -> list[dict[str, Any]]:
     spots = (document.get("blind_spots") or {}).get("blind_spots")
     return [dict(row) for row in spots if isinstance(row, dict)] if isinstance(spots, list) else []
@@ -1173,6 +1184,12 @@ def missed_work_context(
         # -- the inventory ---------------------------------------------------
         "missed_inventory": _inventory_rows(document),
         "missed_inventory_meta": document.get("inventory_meta") or None,
+        # -- the job list, one row per job we did not get ----------------------
+        # The only row-level section in the report. It is what makes the report
+        # actionable job by job: every row carries the reference that finds the
+        # offer in Towbook.
+        "missed_jobs": _missed_job_rows(document),
+        "missed_jobs_meta": document.get("missed_jobs_meta") or None,
         # -- blind spots -----------------------------------------------------
         "blind_spots": blind_spots,
         "blind_spot_count": len(blind_spots),

@@ -113,6 +113,9 @@ from ..core.models import (
     MetricsWeekly,
     Request,
     client_key_for,
+    towbook_ref,
+    towbook_ref_kind,
+    towbook_ref_label,
     utcnow,
 )
 
@@ -690,8 +693,21 @@ def _row_view(request: Request, rules: dict[str, Any], default_class: str) -> di
     amount = float(request.amount) if request.amount is not None else None
     denial_raw = (request.denial_reason or "").strip() or None
 
+    job_number = (request.job_number or "").strip() or None
+
     return {
         "request_id": request.request_id,
+        # THE REFERENCE THE OWNER LOOKS THE JOB UP BY. `job_number` is the
+        # Towbook call number and is NULL on most of what we did not accept --
+        # Towbook does not issue one until an offer becomes a job -- so
+        # `towbook_ref` falls back to the Digital Request id, which every record
+        # has. `towbook_ref_kind` says which of the two you are holding, because
+        # they are searched in two different Towbook screens. See
+        # core/models.towbook_ref.
+        "job_number": job_number,
+        "towbook_ref": towbook_ref(job_number, request.request_id),
+        "towbook_ref_kind": towbook_ref_kind(job_number),
+        "towbook_ref_label": towbook_ref_label(job_number, request.request_id),
         "company_id": request.company_id,
         #: Deprecated alias, same value. Kept so that alert expressions and
         #: fixtures written against the single-company build still resolve.
@@ -912,6 +928,14 @@ def _policy_variance(
     def _detail(view: dict[str, Any]) -> dict[str, Any]:
         return {
             "request_id": view["request_id"],
+            # Every one of these rows is a job we did not take, which is exactly
+            # the population the owner reviews one by one in Towbook. The
+            # reference goes in the row itself so the report is usable without
+            # cross-referencing anything.
+            "job_number": view["job_number"],
+            "towbook_ref": view["towbook_ref"],
+            "towbook_ref_kind": view["towbook_ref_kind"],
+            "towbook_ref_label": view["towbook_ref_label"],
             "client": view["client"],
             "client_key": view["client_key"],
             "service_class": view["service_class"],
@@ -993,6 +1017,14 @@ def _row_context(
     """
     context: dict[str, Any] = {
         "request_id": view["request_id"],
+        # An alert about one offer names it the way the owner would look it up.
+        # Both are exposed to rules.yaml expressions, so a rule can say
+        # `job_number == ""` to mean "this never became a job" without going
+        # near the status vocabulary.
+        "job_number": view.get("job_number") or "",
+        "towbook_ref": view.get("towbook_ref") or view["request_id"],
+        "towbook_ref_kind": view.get("towbook_ref_kind") or "request",
+        "towbook_ref_label": view.get("towbook_ref_label") or "",
         "company_id": view.get("company_id") or view.get("account_id"),
         "account_id": view.get("account_id") or view.get("company_id"),
         "client": view["client"],
@@ -1123,11 +1155,18 @@ def _alert_detail(context: dict[str, Any], kind: str) -> str:
             f"{context.get('client', '?')}: {accepted}/{offered} accepted "
             f"({format_rate(rate)}) in last {context.get('window_hours', 24)}h"
         )
+    # A row alert is about ONE job, so it leads with the reference that finds
+    # that job in Towbook -- the job number if the offer became one, the Digital
+    # Request id if it did not. Roughly 15 characters against a 320-character
+    # SMS cap, and without it the text says a job went wrong without saying
+    # which one.
     parts = [
+        str(context.get("towbook_ref_label") or context.get("request_id") or ""),
         str(context.get("client") or "unknown client"),
         str(context.get("service_type_raw") or "?"),
         str(context.get("status") or "?"),
     ]
+    parts = [part for part in parts if part]
     reason = context.get("denial_reason_normalized") or context.get("denial_reason")
     if reason:
         parts.append(str(reason))

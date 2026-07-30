@@ -153,6 +153,13 @@ ROW_LEVEL_KEYS: frozenset[str] = frozenset(
         "request_ids",
         "detail_rows",
         "line_items",
+        # The missed-work document's per-job lookup table (missed_work.py ->
+        # _job_list_from). Every row is one offer, named by the reference the
+        # owner searches Towbook with. It is dropped by name as well as by
+        # shape: the shape test would catch it today, and naming it means a
+        # future row that happens to carry only one identity field cannot
+        # quietly start reaching the model.
+        "missed_jobs",
     }
 )
 
@@ -174,6 +181,12 @@ ROW_LEVEL_FIELDS: frozenset[str] = frozenset(
         "ingested_at",
         "source_run_id",
         "call_number",
+        # The Towbook job number and the reference derived from it. Both name
+        # ONE job, so a mapping carrying either alongside any other identity
+        # field is a row and never reaches the model.
+        "job_number",
+        "towbook_ref",
+        "towbook_ref_label",
         "po",
         "po#",
         "po_number",

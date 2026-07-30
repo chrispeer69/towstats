@@ -181,6 +181,11 @@
   </table>
   {% endif %}
 
+  {# The aggregates above say what to change. This says which jobs, by the
+     reference Towbook searches on -- the daily window is small enough that
+     the list is normally complete. #}
+  {% include "_missed_jobs.html.j2" %}
+
   {% if blind_spots %}
   <h3 style="font-size:14px;margin:0 0 4px 0;">Blind spots &mdash; when offers go unanswered</h3>
   <div style="color:#666;font-size:11px;margin-bottom:8px;">

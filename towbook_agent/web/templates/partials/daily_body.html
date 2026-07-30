@@ -221,6 +221,11 @@
       <thead>
         <tr>
           <th>Variance</th>
+          {#- The reference that pulls this offer up in Towbook: the job number
+              when it became a job, the Digital Request id when it did not.
+              Every row here is a job that went against policy, which is
+              exactly the population somebody reviews one by one. -#}
+          <th>Towbook ref</th>
           <th>Time</th>
           <th>Client</th>
           <th>Service class</th>
@@ -233,6 +238,7 @@
         {% for row in daily.variance.missed %}
         <tr>
           <td><span class="pill pill-denied">missed</span></td>
+          <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
           <td class="nowrap">{{ row.offered_local|clock }}</td>
           <td><a href="/clients/{{ (row.client_key or EMPTY_CLIENT_KEY)|urlencode }}">{{ row.client_name or '(no client name)' }}</a></td>
           <td>{{ row.service_class }}</td>
@@ -244,6 +250,7 @@
         {% for row in daily.variance.against %}
         <tr>
           <td><span class="pill pill-pending">off-policy</span></td>
+          <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
           <td class="nowrap">{{ row.offered_local|clock }}</td>
           <td><a href="/clients/{{ (row.client_key or EMPTY_CLIENT_KEY)|urlencode }}">{{ row.client_name or '(no client name)' }}</a></td>
           <td>{{ row.service_class }}</td>

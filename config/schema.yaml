@@ -114,6 +114,30 @@ columns:
     - "RequestId"
     - "Digital Request ID"
 
+  job_number:
+    # The Towbook JOB / CALL NUMBER -- what the owner types into Towbook to pull
+    # a job back up. VERIFIED as the "Call #" column of the real export.
+    #
+    # READ THIS BEFORE RELYING ON IT. Towbook does not issue a call number until
+    # the offer becomes a job, which means it is BLANK on ~84% of the offers we
+    # did not accept (0 of 817 Expired, 1 of 428 Rejected, 0 of 25 Another
+    # Provider Responded across 3,124 archived records). It is populated on 99%
+    # of accepted offers and on the cancelled/GOA rows that were accepted first.
+    #
+    # That is a fact about Towbook, not a gap in the mapping, and it is why
+    # every report pairs this with the Digital Request id (`request_id`, the
+    # API's callRequestId), which is present on 3,124 of 3,124 records. The
+    # reference shown for an offer we did not take is the request id.
+    #
+    # STILL NOT AN IDENTITY. See `columns.request_id` below: "Call #" is filled
+    # in after the fact, so keying on it would give one offer two different keys
+    # across two exports and count it twice. It is stored, never keyed on.
+    - "Call #"
+    - "Call Number"
+    - "Call#"
+    - "Job #"
+    - "Job Number"
+
   client_name:
     # VERIFIED: the real column is "Provider" ("Agero (Swoop)", "NSD", ...).
     # "Contractor ID" is a separate numeric column and is NOT the client.
@@ -234,7 +258,6 @@ columns:
 optional_columns:
   # VERIFIED present in the real export.
   - "Contractor ID"
-  - "Call #"
   - "PO #"
   - "Expiration Date"
   - "ETA"
@@ -243,7 +266,8 @@ optional_columns:
   - "PO#"
   - "Request Expiration Time"
   - "Provider/Contractor ID"
-  - "Call Number"
+  # "Call #" / "Call Number" were here and are now mapped canonical fields --
+  # see columns.job_number above.
 
 # --------------------------------------------------------------------------
 # identity -- how a row gets its request_id when the export has no id column.
@@ -441,6 +465,16 @@ value_cleanup:
   amount_strip_chars: ["$", ",", " ", " ", "USD"]
   # Cell values treated as empty rather than as literal text.
   null_tokens: ["", "-", "--", "n/a", "N/A", "NA", "null", "NULL", "None", "TBD"]
+  # Fields where a source value of 0 means "there is none", NOT the number zero.
+  #
+  # This is not a general rule and must never become one: 0 is a perfectly real
+  # answer for `amount`, for `distance_miles`, for any count. It is listed here
+  # only for `job_number`, because Towbook's JSON sends `callNumber: 0` on every
+  # offer that never became a job rather than omitting the key. Without this,
+  # 1,731 of 3,124 archived offers would report a job number of "0", and a fake
+  # reference is worse than a blank one -- it is the kind of number somebody
+  # types into Towbook, gets nothing back for, and stops trusting the report.
+  zero_means_absent: ["job_number"]
   # Every string cell is stripped of leading/trailing whitespace, and internal
   # runs of whitespace are collapsed to a single space. service_type_raw is
   # exempt: it is stored verbatim, hard constraint #6.
@@ -515,6 +549,22 @@ api:
     # the entire reason the API path exists.
     request_id:
       - callRequestId
+
+    # The Towbook job / call number. VERIFIED: `callNumber` is an INTEGER and is
+    # `0` -- not null, not absent -- on every offer that never became a job.
+    # `value_cleanup.zero_means_absent` below is what turns that 0 into NULL, so
+    # no report can ever print "Job #0".
+    #
+    # Population, measured over the 3,124 archived records:
+    #   accepted        1,074 / 1,085  (99%)
+    #   NOT accepted      319 / 2,039  (16%)  -- and 0 of 817 Expired
+    #
+    # Towbook issues it when the offer becomes a job, so the population that
+    # carries one is very nearly "the jobs we took". The reference that exists
+    # for the offers we did NOT take is `request_id` (callRequestId, 3,124 of
+    # 3,124), which is what the reports fall back to.
+    job_number:
+      - callNumber
 
     # VERIFIED: the motor club offering the job ("Agero (Swoop)", "NSD", ...).
     # NOT companyName, which is always this company.
@@ -634,8 +684,11 @@ api:
     - contractorId
     - accountId
     - masterAccountId
-    - callNumber
+    # callNumber was here and is now a mapped canonical field -- see
+    # columns.job_number above.
     - purchaseOrderNumber
+    - dispatchEntryId
+    - ownerUserId
     # expirationDate, distance and zip were listed here and discarded for the
     # first year of this system. They are now mapped canonical fields above.
     - etaGiven

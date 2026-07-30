@@ -33,6 +33,26 @@
     <div class="sub"><span class="dim">{{ m.miss(hourly.totals.unanswered_rate) }} of today's offers</span></div>
   </div>
 
+  {#- Work this company would actually take, beside the raw rate and never
+      instead of it. The raw number is what the club sees and what the contract
+      is judged on; this one is what the owner can act on. Hidden entirely when
+      every offer today was addressable, because then the two are the same
+      number and a second tile saying so is furniture. -#}
+  {% if hourly.totals.not_ours %}
+  <div class="stat">
+    <div class="label">Of it, ours to take</div>
+    <div class="value band band-{{ hourly.totals.addressable_band }}">{{ hourly.totals.addressable_rate|pct }}</div>
+    <div class="sub">
+      <span class="dim">{{ hourly.totals.addressable_accepted|num }} of
+        {{ hourly.totals.addressable|num }} &mdash; excludes
+        {%- if hourly.totals.policy_declined %} {{ hourly.totals.policy_declined|num }} light service{% endif %}
+        {%- if hourly.totals.policy_declined and hourly.totals.out_of_territory %},{% endif %}
+        {%- if hourly.totals.out_of_territory %} {{ hourly.totals.out_of_territory|num }} out of area{% endif %}
+      </span>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="stat">
     <div class="label">Same hour, usual day</div>
     <div class="value">{{ hourly.current.baseline_offered }}</div>

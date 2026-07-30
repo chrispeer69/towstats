@@ -462,6 +462,32 @@ missed_work:
     top_clients: 5
     top_service_types: 5
 
+  # ------------------------------------------------------------------------
+  # 3b. THE JOB LIST -- one row per job we did not get.
+  #
+  # Everything above this is an aggregate, which is what you want for deciding
+  # what to change and useless for the other thing these reports are used for:
+  # pulling one job up in Towbook and asking why THAT one went the way it did.
+  #
+  # Each row leads with the reference Towbook searches on: the job (call)
+  # number when the offer became a job, and the Digital Request id when it did
+  # not. Towbook does not issue a call number for an offer nobody accepted --
+  # 0 of 817 Expired offers in the archived data have one -- so on this list
+  # the request id is the normal case, not the exception. Both are shown with
+  # their kind spelled out, because they are searched in two different Towbook
+  # screens and are not interchangeable.
+  # ------------------------------------------------------------------------
+  job_list:
+    # Rows per report before it says "and N more". A day misses ~60 offers on
+    # this account, so 100 shows a daily window whole; weekly and monthly
+    # windows truncate, say so, and point at the dashboard for the full set.
+    max_rows: 100
+    # FALSE ON PURPOSE, unlike the inventory above. That section is about work
+    # we want, so it filters to acceptance_policy.should_accept. This one is a
+    # lookup table, and "why did we turn that lockout down" is a fair question
+    # about a class the policy declines.
+    restrict_to_should_accept: false
+
   # DOLLAR RANKING IS ON. Values supplied by the owner on 2026-07-28.
   #
   # offerAmount arrives EMPTY on every record from Towbook, so money can only

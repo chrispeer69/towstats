@@ -731,6 +731,68 @@ def missed_work_document(
             "missed_in_inventory": unanswered_tows + 4,
             "missed_in_window": missed,
         },
+        # The per-job lookup table. One job with a Towbook call number and one
+        # without, because the second is the normal shape for work we did not
+        # take and the reference has to survive its absence.
+        "missed_jobs": [
+            {
+                "towbook_ref": "125169",
+                "towbook_ref_kind": "job",
+                "towbook_ref_label": "Job #125169",
+                "job_number": "125169",
+                "request_id": "324417205",
+                "offered_at_local": "2026-07-20T09:12:00",
+                "offered_display": "Jul 20, 9:12 AM",
+                "client": "Agero",
+                "client_key": "agero",
+                "service_type_raw": "Tow",
+                "service_class": "tow",
+                "status_raw": "Goa Approved By Motor Club",
+                "status": "canceled",
+                "bucket": "client_withdrew",
+                "cause": "client",
+                "denial_reason": None,
+                "coverage_label": "covered",
+                "pickup_location": "1 Woodward Ave, Detroit MI",
+                "recoverable": False,
+            },
+            {
+                "towbook_ref": "324418880",
+                "towbook_ref_kind": "request",
+                "towbook_ref_label": "Req 324418880",
+                "job_number": None,
+                "request_id": "324418880",
+                "offered_at_local": "2026-07-20T18:40:00",
+                "offered_display": "Jul 20, 6:40 PM",
+                "client": "Agero",
+                "client_key": "agero",
+                "service_type_raw": "Tow",
+                "service_class": "tow",
+                "status_raw": "Expired",
+                "status": "expired",
+                "bucket": "no_response",
+                "cause": "attention",
+                "denial_reason": None,
+                "coverage_label": "uncovered",
+                "pickup_location": "500 Main St, Detroit MI",
+                "recoverable": True,
+            },
+        ],
+        "missed_jobs_meta": {
+            "max_rows": 100,
+            "restricted_to_should_accept": False,
+            "service_classes": [],
+            "shown": 2,
+            "missed_in_window": missed,
+            "truncated": missed > 2,
+            "with_job_number": 1,
+            "job_number_note": (
+                "Towbook issues a job (call) number when an offer becomes a job, so "
+                "most offers we did not accept never got one. Those rows are "
+                "referenced by their Digital Request id, which the Request Log "
+                "searches."
+            ),
+        },
         "blind_spots": {
             "rows": 7,
             "cols": 24,
@@ -1246,3 +1308,40 @@ def test_an_early_hour_does_not_roll_the_date_back_a_day(notifier, monkeypatch) 
     assert context["date"] == "2026-07-27", (
         "a 02:00 local hour reported under the previous calendar day"
     )
+
+
+def test_every_full_report_names_the_jobs_it_says_we_missed(
+    notifier, write_config
+) -> None:
+    """The reports are read with Towbook open, so they have to say WHICH job.
+
+    Both kinds of reference appear and both are labelled: a Towbook job number
+    for the offer that became a job, and the Digital Request id for the one
+    that never did -- which is the usual case for work we did not take. A blank
+    cell there would leave the owner with a list they cannot act on.
+    """
+    write_config("notifications", _notifications(quiet_start="00:00", quiet_end="00:00"))
+
+    document = missed_work_document(unanswered_tows=21)
+    for report_type, template, extra in (
+        ("daily", "daily_full", {"date": "2026-07-20"}),
+        ("weekly", "weekly_full", {"week_start": "2026-07-20"}),
+        ("monthly", "monthly_full", {"month_start": "2026-07-01"}),
+    ):
+        metrics = {
+            "report_type": report_type,
+            "totals": {"offered": 120, "accepted": 80},
+            "rate_pct": 67,
+            "missed_work": document,
+            **extra,
+        }
+        context = notifier.build_context(report_type, metrics)
+        text = notifier._html_to_text(notifier.render_template(template, context).body)
+
+        assert "Jobs we did not get" in text, f"{template}: no job list\n{text[:800]}"
+        assert "Job #125169" in text, f"{template}: the job number is missing"
+        assert "Req 324418880" in text, (
+            f"{template}: the offer with no job number lost its reference"
+        )
+        # The blanks are explained rather than left to look like a bug.
+        assert "never got one" in text, f"{template}: the note about job numbers is missing"

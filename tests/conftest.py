@@ -548,6 +548,14 @@ def attr(obj: Any, *names: str, default: Any = _MISSING) -> Any:
 # --------------------------------------------------------------------------
 
 
+#: Source status strings that mean the offer became a job, and therefore that
+#: Towbook issued a call number for it. Only the ones :func:`make_row` is
+#: called with -- config/schema.yaml holds the full vocabulary.
+_ACCEPTED_STATUS_STRINGS: frozenset[str] = frozenset(
+    {"accepted", "accept", "accept sent", "completed", "complete", "dispatched"}
+)
+
+
 def make_row(
     request_id: str,
     *,
@@ -583,7 +591,19 @@ def make_row(
         "truck_assigned": "Unit 7",
         "driver_assigned": "M. Alvarez",
         "amount": amount,
-        "Call Number": f"C{abs(hash(request_id)) % 900000 + 100000}",
+        # The Towbook call number, which maps to `job_number`. Present only on
+        # an accepted row, because that is when Towbook issues one -- an offer
+        # that expired or was rejected never became a job and never got a
+        # number. Pass `**{"Call Number": ...}` to override.
+        #
+        # Derived from request_id with a stable arithmetic, NOT hash(): str
+        # hashing is salted per process, so that version handed the same row a
+        # different job number on every run.
+        "Call Number": (
+            f"C{100000 + sum(ord(char) for char in request_id) % 900000}"
+            if str(status).strip().casefold() in _ACCEPTED_STATUS_STRINGS
+            else ""
+        ),
         "PO#": "",
         "Vehicle": "2019 Ford F-150",
         "Request Expiration Time": (offered_at + timedelta(minutes=8)).strftime(

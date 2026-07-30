@@ -1521,3 +1521,227 @@ def test_the_row_alert_context_carries_the_coverage_label(missed_work, seeded) -
         "covered",
         "uncovered",
     }
+
+
+# ==========================================================================
+# Territory -- "was this even our job to take?"
+# ==========================================================================
+
+
+def test_a_zip_in_no_band_is_outside_the_service_area(missed_work) -> None:
+    """Chillicothe: 26 offers and no jobs in 30 days, and the clubs know it."""
+    assert missed_work.territory_band({"pickup_zip": "45601"}) == "outside"
+    assert missed_work.in_territory({"pickup_zip": "45601"}) is False
+
+
+def test_the_bands_are_reported_apart(missed_work) -> None:
+    """core 39.6% accepted against edge 9.1% is a real operating fact.
+
+    Flattening the two into one "in territory" answer would hide that the long
+    runs are barely worked.
+    """
+    assert missed_work.territory_band({"pickup_zip": "43201"}) == "core"
+    assert missed_work.territory_band({"pickup_zip": "43040"}) == "edge"
+    assert missed_work.territory_band({"pickup_zip": "43025"}) == "ext"
+    for zip_code in ("43201", "43040", "43025"):
+        assert missed_work.in_territory({"pickup_zip": zip_code}) is True
+
+
+def test_an_unplaceable_offer_counts_as_ours(missed_work) -> None:
+    """THE DIRECTION THAT MATTERS.
+
+    A row we cannot place must not be called out-of-territory, because that
+    would quietly delete it from the missed-work inventory. Hiding work is the
+    one failure this model must not have, so unknown is counted as ours and
+    reported as unknown.
+    """
+    assert missed_work.territory_band({"pickup_zip": None}) == "territory_unknown"
+    assert missed_work.territory_band({"pickup_zip": "not a zip"}) == "territory_unknown"
+    assert missed_work.in_territory({"pickup_zip": None}) is True
+
+
+def test_the_zip_is_read_from_the_address_when_the_row_has_no_zip_field(
+    missed_work,
+) -> None:
+    """CSV-ingested rows carry no ZIP field at all -- only the address text."""
+    row = {"pickup_location": "4650 Kenny Rd, Columbus, OH 43220"}
+    assert missed_work.territory_band(row) == "core"
+    # ZIP+4 and a trailing country have to land on the same key.
+    assert missed_work.territory_band(
+        {"pickup_location": "1 Main St, Columbus, OH 43220-1234, USA"}
+    ) == "core"
+
+
+def test_a_zip_the_config_wrote_as_a_number_still_matches(
+    missed_work, write_config
+) -> None:
+    """YAML turns an unquoted 43201 into an int, and 01234 into 1234.
+
+    The loader has to normalise either way or a New England tenant silently has
+    no territory at all.
+    """
+
+    def renumber(data: dict[str, Any]) -> None:
+        data["missed_work"]["territory"]["bands"] = [
+            {"name": "core", "zips": [43201, 1234]}
+        ]
+
+    rules = rewrite_rules(write_config, renumber)
+    assert missed_work.territory_band({"pickup_zip": "43201"}, rules) == "core"
+    assert missed_work.territory_band({"pickup_zip": "01234"}, rules) == "core"
+
+
+def test_redrawing_the_service_area_is_a_yaml_edit(missed_work, write_config) -> None:
+    """Same property coverage and the buckets have: config, not code."""
+    assert missed_work.territory_band({"pickup_zip": "45601"}) == "outside"
+
+    def widen(data: dict[str, Any]) -> None:
+        data["missed_work"]["territory"]["bands"].append(
+            {"name": "expansion", "zips": ["45601"]}
+        )
+
+    rules = rewrite_rules(write_config, widen)
+    assert missed_work.territory_band({"pickup_zip": "45601"}, rules) == "expansion"
+
+
+def test_a_zip_in_two_bands_belongs_to_the_nearer_one(
+    missed_work, write_config
+) -> None:
+    """Bands are nearest-first, so config order is the tie-break."""
+
+    def overlap(data: dict[str, Any]) -> None:
+        data["missed_work"]["territory"]["bands"] = [
+            {"name": "core", "zips": ["43201"]},
+            {"name": "edge", "zips": ["43201", "43040"]},
+        ]
+
+    rules = rewrite_rules(write_config, overlap)
+    assert missed_work.territory_band({"pickup_zip": "43201"}, rules) == "core"
+    assert missed_work.territory_band({"pickup_zip": "43040"}, rules) == "edge"
+
+
+def test_no_territory_configured_means_every_offer_is_ours(
+    missed_work, write_config
+) -> None:
+    """The behaviour every install had before the block existed.
+
+    Deleting the block must not silently reclassify a whole roster as
+    out-of-area.
+    """
+
+    def strip(data: dict[str, Any]) -> None:
+        data["missed_work"].pop("territory", None)
+
+    rules = rewrite_rules(write_config, strip)
+    assert missed_work.territory_band({"pickup_zip": "45601"}, rules) == "territory_unknown"
+    assert missed_work.in_territory({"pickup_zip": "45601"}, rules) is True
+
+
+# ==========================================================================
+# Section 10 -- the job list
+#
+# Every other section of the document is an aggregate. This one is the lookup
+# table: one row per job we did not get, each carrying the reference that finds
+# it in Towbook. The thing worth pinning is not the formatting, it is that a
+# row is NEVER left without a reference -- because on this list the Towbook job
+# number is usually absent, and a blank cell here means the report cannot be
+# acted on.
+# ==========================================================================
+
+
+def test_the_job_list_holds_every_job_we_did_not_get(missed_work, seeded) -> None:
+    document = compute(missed_work, persist=False)
+
+    rows = document["missed_jobs"]
+    meta = document["missed_jobs_meta"]
+    assert len(rows) == MISSED
+    assert meta["missed_in_window"] == MISSED
+    assert meta["shown"] == MISSED
+    assert meta["truncated"] is False
+    # Won and in-flight offers are not missed work and are not in the list.
+    assert all(row["bucket"] not in {"won", "in_flight"} for row in rows)
+
+
+def test_every_job_carries_a_reference_even_with_no_job_number(
+    missed_work, seeded
+) -> None:
+    """The point of the whole feature.
+
+    Towbook does not issue a job number until an offer becomes a job, so on
+    this list -- offers we did NOT take -- there is usually none. A row with no
+    reference at all is a row the owner cannot look up, which would make the
+    list decorative.
+    """
+    document = compute(missed_work, persist=False)
+
+    for row in document["missed_jobs"]:
+        assert row["towbook_ref"], f"{row['request_id']} has no reference at all"
+        assert row["towbook_ref_kind"] in {"job", "request"}
+        # These rows were inserted with no job_number, which is exactly the
+        # production shape for unaccepted work.
+        assert row["job_number"] is None
+        assert row["towbook_ref_kind"] == "request"
+        assert row["towbook_ref"] == row["request_id"]
+        assert row["towbook_ref_label"] == f"Req {row['request_id']}"
+
+    assert document["missed_jobs_meta"]["with_job_number"] == 0
+
+
+def test_a_job_number_is_preferred_over_the_request_id(missed_work) -> None:
+    """When Towbook did issue one -- accepted first, lost afterwards -- it wins."""
+    add_requests(
+        [
+            {
+                "request_id": "MW-JOB-1",
+                "account_id": "default",
+                "client_name": "Agero",
+                "client_key": client_key_for("Agero"),
+                "offered_at": datetime(2026, 7, 20, 9, 0),
+                "job_number": "125169",
+                "status": "canceled",
+                "status_raw": "Goa Approved By Motor Club",
+                "status_code": 71,
+                "service_type_raw": TOW,
+                "service_class": "tow",
+            }
+        ]
+    )
+
+    document = compute(missed_work, persist=False)
+    row = next(r for r in document["missed_jobs"] if r["request_id"] == "MW-JOB-1")
+
+    assert row["job_number"] == "125169"
+    assert row["towbook_ref"] == "125169"
+    assert row["towbook_ref_kind"] == "job"
+    assert row["towbook_ref_label"] == "Job #125169"
+    assert document["missed_jobs_meta"]["with_job_number"] == 1
+
+
+def test_the_job_list_is_capped_and_says_so(missed_work, seeded, write_config) -> None:
+    """A month misses more jobs than any email should carry.
+
+    Truncation is fine; silent truncation is not -- a list that stops at the
+    cap without saying so reads as "that was all of them".
+    """
+    rewrite_rules(
+        write_config,
+        lambda data: data["missed_work"].__setitem__("job_list", {"max_rows": 5}),
+    )
+
+    document = compute(missed_work, persist=False)
+    meta = document["missed_jobs_meta"]
+
+    assert len(document["missed_jobs"]) == 5
+    assert meta["shown"] == 5
+    assert meta["missed_in_window"] == MISSED
+    assert meta["truncated"] is True
+
+
+def test_the_job_list_is_chronological_and_stable(missed_work, seeded) -> None:
+    """Same window, same list, same order -- so the stored blob is comparable."""
+    first = compute(missed_work, persist=False)["missed_jobs"]
+    second = compute(missed_work, persist=False)["missed_jobs"]
+
+    assert [row["request_id"] for row in first] == [row["request_id"] for row in second]
+    offered = [row["offered_at_local"] for row in first]
+    assert offered == sorted(offered)

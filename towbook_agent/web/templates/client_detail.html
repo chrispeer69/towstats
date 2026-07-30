@@ -132,6 +132,13 @@
     <table class="data">
       <thead>
         <tr>
+          {#- The Towbook reference, first: this table is read with the portal
+              open. It is the job number when the offer became a job and the
+              Digital Request id when it did not -- which is most of the rows
+              that matter here. The old bare "Request ID" column at the far
+              right said the same thing for a third of the rows and nothing
+              useful for the rest. -#}
+          <th>Towbook ref</th>
           <th>Offered</th>
           <th>Responded</th>
           <th>Status</th>
@@ -143,12 +150,12 @@
           <th>Driver</th>
           <th class="num">Amount</th>
           <th class="wrap-text">Denial reason</th>
-          <th>Request ID</th>
         </tr>
       </thead>
       <tbody>
         {% for row in client.requests %}
         <tr>
+          <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
           <td class="nowrap">{{ row.offered_local|dt("%b %d %I:%M %p") }}</td>
           <td class="nowrap muted">{{ row.responded_local|dt("%b %d %I:%M %p") }}</td>
           <td>{{ m.status_pill(row.status) }}</td>
@@ -160,7 +167,6 @@
           <td class="muted">{{ row.driver_assigned or DASH }}</td>
           <td class="num">{{ row.amount|money }}</td>
           <td class="wrap-text muted">{{ row.denial_reason or DASH }}</td>
-          <td class="mono-sm muted">{{ row.request_id|midtrunc(18) }}</td>
         </tr>
         {% endfor %}
       </tbody>

@@ -766,3 +766,38 @@ def test_analyze_reports_how_it_ranked(analyst) -> None:
     result = analyst.analyze(metrics_blob(), "daily", persist_proposals=False)
     assert result["ranking_basis"] == "job_count"
     assert result["revenue_available"] is False
+
+
+def test_the_missed_work_job_list_never_reaches_the_model(analyst) -> None:
+    """The one row-level section of the missed-work document.
+
+    It exists so the owner can look a job up in Towbook, which means it carries
+    a reference, a client, a pickup address and a decline reason for named
+    individual jobs. None of that is aggregate and none of it goes to an API.
+    """
+    metrics = metrics_blob()
+    metrics["missed_work"] = {
+        "totals": {"offers": 30, "missed": 18},
+        "missed_jobs": [
+            {
+                "towbook_ref": "125169",
+                "towbook_ref_kind": "job",
+                "job_number": "125169",
+                "request_id": "324417205",
+                "client": "Agero (Swoop)",
+                "pickup_location": "COOPER RD, COLUMBUS OH 43231",
+                "denial_reason": "Equipment Not Available",
+            }
+        ],
+        "missed_jobs_meta": {"shown": 1, "with_job_number": 1},
+    }
+
+    clean, removed = analyst.sanitize_metrics(metrics)
+
+    assert "missed_jobs" not in clean["missed_work"]
+    assert any("missed_jobs" in path for path in removed)
+    serialised = repr(clean)
+    assert "125169" not in serialised
+    assert "COOPER RD" not in serialised
+    # The aggregate half of the same document is untouched.
+    assert clean["missed_work"]["totals"]["missed"] == 18

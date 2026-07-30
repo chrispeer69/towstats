@@ -68,6 +68,30 @@
 <span class="pill pill-{{ status }}">{{ status }}</span>
 {%- endmacro %}
 
+{#- The reference the owner quotes in Towbook to pull one offer up.
+
+    There are TWO such numbers and they are not interchangeable:
+
+      Job #125169    the Towbook job / call number, searched in Dispatching.
+                     Only exists once an offer became a job, so on the jobs we
+                     did NOT accept it is usually absent -- Towbook does not
+                     issue one for an offer nobody took.
+      Req 324417205  the Digital Request id, found in the Request Log. Present
+                     on every offer ever made, which is why it is the fallback.
+
+    `kind` comes from the row (`towbook_ref_kind`) and decides the label, so a
+    reader is never left guessing which of the two screens to search. Neither
+    is ever blank; that is the whole point of the fallback. -#}
+{% macro towbook_ref(value, kind='request') -%}
+  {%- if not value -%}
+    <span class="muted">{{ DASH }}</span>
+  {%- elif kind == 'job' -%}
+    <span class="mono-sm" title="Towbook job number -- search it in Dispatching"><span class="dim">Job #</span>{{ value }}</span>
+  {%- else -%}
+    <span class="mono-sm muted" title="Digital Request id -- find it in the Towbook Request Log. This offer never became a job, so it has no job number."><span class="dim">Req </span>{{ value }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% macro meter(value, band='') -%}
   {%- if value is none -%}
     <span class="muted">{{ DASH }}</span>

@@ -9,6 +9,7 @@ an acceptable outcome.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -415,3 +416,117 @@ def test_an_empty_sheet_is_not_a_crash(ingestion, tmp_path: Path) -> None:
     result, error = ingest_file(ingestion, path, run_id="run-empty")
     assert error is None, f"an empty export must not raise: {error!r}"
     assert count_rows(Request) == 0
+
+
+# --------------------------------------------------------------------------
+# job_number -- the Towbook reference the reports are read with
+#
+# The column exists so a report can say WHICH job it is talking about. What
+# makes it interesting is that Towbook does not issue a job (call) number until
+# an offer becomes a job, so it is blank on most of the offers this system
+# exists to explain. These tests pin both halves: the number is stored when
+# there is one, and nothing is invented when there is not.
+# --------------------------------------------------------------------------
+
+
+def _json_archive(path: Path, records: list[dict]) -> Path:
+    """Write records in the envelope agents/acquisition_api.py archives."""
+    path.write_text(json.dumps({"pages": [{"records": records}]}), encoding="utf-8")
+    return path
+
+
+def test_the_call_number_is_stored_as_the_job_number(ingestion, tmp_path: Path) -> None:
+    row = make_row("DR-JOB", status="Accepted", **{"Call Number": "125169"})
+    path = write_rows_xlsx(tmp_path / "job.xlsx", [row])
+
+    _, error = ingest_file(ingestion, path, run_id="run-job")
+    assert error is None
+
+    stored = get_request("DR-JOB")
+    assert stored is not None
+    assert stored.job_number == "125169"
+
+
+def test_a_blank_call_number_stores_nothing(ingestion, tmp_path: Path) -> None:
+    """The normal case for work we did not take, and it must not invent a value."""
+    row = make_row("DR-NOJOB", status="Expired", **{"Call Number": ""})
+    path = write_rows_xlsx(tmp_path / "nojob.xlsx", [row])
+
+    _, error = ingest_file(ingestion, path, run_id="run-nojob")
+    assert error is None
+
+    stored = get_request("DR-NOJOB")
+    assert stored is not None
+    assert stored.job_number is None
+
+
+def test_a_zero_call_number_is_absence_not_the_number_zero(
+    ingestion, tmp_path: Path
+) -> None:
+    """Towbook sends ``callNumber: 0`` rather than omitting the key.
+
+    1,731 of the 3,124 archived records carry a zero. Storing it would put
+    "Job #0" on the reports -- a reference somebody types into Towbook, gets
+    nothing back for, and afterwards stops trusting the number. See
+    schema.yaml -> value_cleanup.zero_means_absent.
+    """
+    records = [
+        {
+            "callRequestId": 900001,
+            "requestDate": "2026-07-26T18:31:39.71",
+            "status": 5,
+            "statusName": "Expired",
+            "serviceNeeded": "Light Tow",
+            "providerName": "Agero (Swoop)",
+            "callNumber": 0,
+        },
+        {
+            "callRequestId": 900002,
+            "requestDate": "2026-07-26T19:02:11.10",
+            "status": 1,
+            "statusName": "Accepted",
+            "serviceNeeded": "Light Tow",
+            "providerName": "Agero (Swoop)",
+            "callNumber": 125169,
+        },
+    ]
+    path = _json_archive(tmp_path / "callnumbers.json", records)
+
+    _, error = ingest_file(ingestion, path, run_id="run-zero")
+    assert error is None
+
+    expired = get_request("900001")
+    accepted = get_request("900002")
+    assert expired is not None and accepted is not None
+    assert expired.job_number is None, "a zero call number is not a job number"
+    # An integer from JSON becomes the string a human would type, with no
+    # float tail.
+    assert accepted.job_number == "125169"
+
+
+def test_the_job_number_never_becomes_the_identity(ingestion, tmp_path: Path) -> None:
+    """The same offer, re-exported after it was accepted and given a number.
+
+    Keying on the call number would make this two rows -- one offer counted
+    twice, inflating the offered denominator. It upserts on request_id, and the
+    later, more truthful pull wins.
+    """
+    offered = datetime(2026, 7, 20, 14, 0, 0)
+    first = write_rows_xlsx(
+        tmp_path / "before.xlsx",
+        [make_row("DR-SAME", status="Expired", offered_at=offered, **{"Call Number": ""})],
+    )
+    _, error = ingest_file(ingestion, first, run_id="run-before")
+    assert error is None
+
+    second = write_rows_xlsx(
+        tmp_path / "after.xlsx",
+        [make_row("DR-SAME", status="Accepted", offered_at=offered, **{"Call Number": "125170"})],
+    )
+    _, error = ingest_file(ingestion, second, run_id="run-after")
+    assert error is None
+
+    assert count_rows(Request) == 1, "the call number arriving late created a second row"
+    stored = get_request("DR-SAME")
+    assert stored is not None
+    assert stored.job_number == "125170"

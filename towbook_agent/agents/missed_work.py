@@ -213,6 +213,23 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "top_clients": 5,
         "top_service_types": 5,
     },
+    # THE JOB LIST. Every other section of this document is an aggregate --
+    # which is right for deciding what to change, and useless for the other
+    # thing the owner does with these reports: pull one job up in Towbook and
+    # ask why that one went the way it did. That needs the reference Towbook
+    # searches on, per job, which is what this section carries.
+    "job_list": {
+        # Rows per report before it says "and N more". A day misses ~60 offers
+        # on this account, so 100 shows a daily window whole; a weekly or
+        # monthly one truncates, says so, and points at the dashboard, which
+        # pages the full set.
+        "max_rows": 100,
+        # False on purpose. The inventory restricts itself to should_accept
+        # classes because it is about work we want. This list is a lookup
+        # table, and "why did we turn down that lockout" is a question the
+        # owner is entitled to ask about a class the policy declines.
+        "restrict_to_should_accept": False,
+    },
     "client_comparison": {
         "min_offers": 20,
         "gap_pp": 20.0,
@@ -2042,6 +2059,140 @@ def _inventory_from(
     return inventory, meta
 
 
+def _display_moment(value: Any) -> str:
+    """A local ISO timestamp as ``Jul 28  2:14 PM``, or "" if it cannot be read.
+
+    Presentation, and deliberately lossy -- the machine-readable value travels
+    beside it as ``offered_at_local``. An unparseable value returns empty
+    rather than raising: a report that renders every other column is worth more
+    than one that fails whole over a formatting detail.
+    """
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            moment = datetime.fromisoformat(text)
+        except ValueError:
+            return text
+    # %-d / %-I are not portable to Windows, which is where this also runs, so
+    # the zero is stripped by hand.
+    return moment.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+
+
+def _job_list_from(
+    views: Sequence[Mapping[str, Any]],
+    rules: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``(one row per job we did not get, metadata)`` -- the lookup table.
+
+    WHY THIS EXISTS. Everything else in this document is an aggregate, and an
+    aggregate cannot answer the question the owner actually asks at the end of
+    a day: *that one -- why did we not take that one?* Answering it means
+    opening the offer in Towbook, and opening it means having the number
+    Towbook searches on.
+
+    Each row therefore leads with ``towbook_ref``: the Towbook job / call
+    number when the offer ever became a job, and the Digital Request id when it
+    did not -- which is the usual case here, because Towbook does not issue a
+    call number for an offer nobody accepted (0 of 817 Expired rows in the
+    archived data carry one). ``towbook_ref_kind`` says which of the two it is,
+    since they are searched in two different Towbook screens.
+
+    Chronological, not ranked. This is a log to scan alongside a memory of the
+    shift, so it reads in the order the offers arrived; the ranked views of the
+    same rows are ``inventory`` and ``by_cause`` above.
+    """
+    cfg = _cfg(rules, "job_list")
+    max_rows = max(0, int(cfg["max_rows"]))
+    restrict = bool(cfg["restrict_to_should_accept"])
+
+    wanted, _ = _metrics._policy_classes(rules)
+    wanted_set = set(wanted)
+
+    missed_buckets = _name_set(rules, "missed_buckets")
+    recoverable_buckets = _name_set(rules, "recoverable_buckets")
+    if _block(rules).get("count_client_withdrew_as_recoverable"):
+        recoverable_buckets = recoverable_buckets | {"client_withdrew"}
+
+    missed_views = [view for view in views if view.get("bucket") in missed_buckets]
+    if restrict:
+        missed_views = [
+            view
+            for view in missed_views
+            if str(view.get("service_class") or "") in wanted_set
+        ]
+
+    # Offer time, then request id: the same deterministic order every list in
+    # this system uses, so a recompute of an unchanged window is byte
+    # identical and the stored blob stays comparable.
+    missed_views.sort(
+        key=lambda view: (
+            str(view.get("offered_at_local") or ""),
+            str(view.get("request_id") or ""),
+        )
+    )
+
+    rows: list[dict[str, Any]] = []
+    for view in missed_views[:max_rows]:
+        rows.append(
+            {
+                # THE LOOKUP KEY, first because it is what the row is for.
+                "towbook_ref": view.get("towbook_ref") or view.get("request_id") or "",
+                "towbook_ref_kind": view.get("towbook_ref_kind") or "request",
+                "towbook_ref_label": view.get("towbook_ref_label") or "",
+                # Both halves as well as the resolved reference, so a consumer
+                # that wants to say "no job number was ever issued" can.
+                "job_number": view.get("job_number") or None,
+                "request_id": view.get("request_id") or "",
+                "offered_at_local": view.get("offered_at_local"),
+                # Formatted here rather than in each template. The emailed
+                # reports have no date filter -- their Jinja environment
+                # carries `num` and `pct` and nothing else -- and three
+                # templates each parsing an ISO string is three chances to
+                # print a different clock.
+                "offered_display": _display_moment(view.get("offered_at_local")),
+                "client": view.get("client") or "",
+                "client_key": view.get("client_key") or "",
+                "service_type_raw": view.get("service_type_raw") or "",
+                "service_class": view.get("service_class") or "",
+                # The VERBATIM portal status, not the five-value canonical one:
+                # "Another Provider Responded" and "Expired" are the same
+                # canonical `expired` and completely different explanations.
+                "status_raw": view.get("status_raw") or "",
+                "status": view.get("status") or "",
+                "bucket": view.get("bucket") or "",
+                "cause": view.get("cause") or "",
+                "denial_reason": view.get("denial_reason") or None,
+                "coverage_label": view.get("coverage_label") or "",
+                "pickup_location": view.get("pickup_location") or "",
+                "recoverable": view.get("bucket") in recoverable_buckets,
+            }
+        )
+
+    meta = {
+        "max_rows": max_rows,
+        "restricted_to_should_accept": restrict,
+        "service_classes": sorted(wanted_set) if restrict else [],
+        "shown": len(rows),
+        "missed_in_window": len(missed_views),
+        "truncated": len(missed_views) > len(rows),
+        # How many of the shown rows can be looked up by a real Towbook job
+        # number. Stated rather than left to be noticed, because it is low by
+        # nature and a reader who does not know that reads the blanks as a bug.
+        "with_job_number": sum(1 for row in rows if row["job_number"]),
+        "job_number_note": (
+            "Towbook issues a job (call) number when an offer becomes a job, so "
+            "most offers we did not accept never got one. Those rows are "
+            "referenced by their Digital Request id, which the Request Log "
+            "searches."
+        ),
+    }
+    return rows, meta
+
+
 def _by_cause_from(
     views: Sequence[Mapping[str, Any]],
     rules: Mapping[str, Any],
@@ -2274,6 +2425,7 @@ def _compute_missed_work(
         inventory, inventory_meta = _inventory_from(
             views, resolved, book, priced_classes
         )
+        missed_jobs, missed_jobs_meta = _job_list_from(views, resolved)
         coverage = _coverage_from(views, resolved, book, priced_classes)
 
         # THE HEADLINE RECOVERABLE FIGURE IS THE OUTSIDE-HOURS ONE, promoted
@@ -2324,6 +2476,16 @@ def _compute_missed_work(
             "by_cause": _by_cause_from(views, resolved, book, priced_classes),
             "inventory": inventory,
             "inventory_meta": inventory_meta,
+            # THE ONLY ROW-LEVEL SECTION IN THIS DOCUMENT, and the one the
+            # owner opens Towbook with: every job we did not get, each carrying
+            # the reference Towbook searches on. Every other section here
+            # answers "what should we change"; this answers "why that one".
+            #
+            # It is row level on purpose, which means agents/analyst.py drops it
+            # before any LLM call -- see ROW_LEVEL_KEYS there. That guard is
+            # correct and this section is not an exception to it.
+            "missed_jobs": missed_jobs,
+            "missed_jobs_meta": missed_jobs_meta,
             # THE OPERATING WINDOW, as a first-class dimension. Sits above the
             # 7 x 24 grid deliberately: the grid finds which hours leak, this
             # says whether anybody was rostered, and only the second one is an

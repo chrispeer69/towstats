@@ -605,7 +605,28 @@ def _build_row(
         truck_assigned=rng.choice(TRUCKS) if outcome == "accepted" else None,
         driver_assigned=rng.choice(DRIVERS) if outcome == "accepted" else None,
         amount=amount,
-        call_number=f"C{100000 + sequence}",
+        # THE TOWBOOK CALL NUMBER, AND IT IS BLANK ON MOST OF WHAT WE DID NOT
+        # TAKE. Towbook issues one when an offer becomes a job, so in the real
+        # export it is present on 99% of accepted offers, on 45% of cancelled
+        # ones (accepted first, lost afterwards), and on essentially none of
+        # the expired or rejected ones -- 0 of 817 Expired across the archived
+        # payloads.
+        #
+        # It used to be filled in on every fixture row, which made the seeded
+        # demo data lie about the exact thing the reports now show: it never
+        # exercised the request-id fallback, so a reader of the demo would
+        # expect a job number on every missed job and find none in production.
+        # The 45% of cancellations is decided from `sequence`, NOT from `rng`.
+        # Every other value in this fixture is drawn from that generator in a
+        # fixed order, so consuming one more number here would shift the whole
+        # stream and silently rewrite the fixture -- different clients,
+        # different service types, and tests that assert on the shape of the
+        # seeded data failing for a reason that has nothing to do with them.
+        call_number=(
+            f"C{100000 + sequence}"
+            if outcome == "accepted" or (outcome == "canceled" and sequence % 20 < 9)
+            else ""
+        ),
         po_number=f"PO-{700000 + sequence}" if rng.random() < 0.6 else "",
         vehicle=rng.choice(VEHICLES),
         expires_at=expires_at,

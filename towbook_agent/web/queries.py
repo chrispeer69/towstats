@@ -51,6 +51,9 @@ from ..core.models import (
     MetricsWeekly,
     Request,
     Run,
+    towbook_ref,
+    towbook_ref_kind,
+    towbook_ref_label,
 )
 
 __all__ = [
@@ -335,6 +338,12 @@ def _delta(current: float | None, baseline: float | None) -> float | None:
 _REQUEST_COLUMNS = (
     Request.request_id,
     Request.company_id,
+    # The Towbook call number, when the offer ever became a job. Selected on
+    # every row read because "which job was that?" is the first question asked
+    # of any line in these tables -- and because it is NULL on most of the
+    # not-accepted rows, which is why :func:`_row_to_dict` pairs it with the
+    # request id rather than showing an empty cell.
+    Request.job_number,
     Request.client_name,
     Request.client_key,
     Request.offered_at,
@@ -351,6 +360,10 @@ _REQUEST_COLUMNS = (
     Request.service_type_raw,
     Request.service_class,
     Request.pickup_location,
+    # The ZIP the API states as its own field. Territory is decided on it -- see
+    # :func:`territory_of` -- with pickup_location as the fallback for
+    # CSV-ingested rows, which carry no ZIP.
+    Request.pickup_zip,
     Request.dropoff_location,
     Request.truck_assigned,
     Request.driver_assigned,
@@ -373,6 +386,14 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     data["status"] = (data.get("status") or "pending").strip().casefold() or "pending"
     data["service_class"] = (data.get("service_class") or "unclassified").strip() or "unclassified"
     data["client_key"] = (data.get("client_key") or "").strip()
+    # The reference the owner quotes for this offer. The job number when Towbook
+    # issued one, the Digital Request id when it did not -- which is the usual
+    # case for anything we did not accept. See core/models.towbook_ref.
+    job_number = (data.get("job_number") or "").strip() or None
+    data["job_number"] = job_number
+    data["towbook_ref"] = towbook_ref(job_number, data.get("request_id"))
+    data["towbook_ref_kind"] = towbook_ref_kind(job_number)
+    data["towbook_ref_label"] = towbook_ref_label(job_number, data.get("request_id"))
     data["offered_local"] = to_local(data.get("offered_at"))
     data["responded_local"] = to_local(data.get("responded_at"))
     return data
@@ -860,6 +881,73 @@ def coverage_of(row: dict[str, Any], rules: dict[str, Any] | None = None) -> str
         return ""
 
 
+def territory_of(row: dict[str, Any], rules: dict[str, Any] | None = None) -> str:
+    """Which service-area band an offer's pickup falls in, or the outside label.
+
+    Same contract as :func:`coverage_of`: delegates to the missed-work model so
+    the board and the reports can never disagree about whether a job was even
+    in this company's area.
+    """
+    module = _missed_work_module()
+    if module is None:
+        return ""
+    try:
+        return str(
+            module.territory_band(
+                {
+                    "pickup_zip": row.get("pickup_zip"),
+                    "pickup_location": row.get("pickup_location"),
+                },
+                rules if rules is not None else None,
+            )
+        )
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def is_addressable(row: dict[str, Any], rules: dict[str, Any] | None = None) -> bool:
+    """Was this offer ours to take at all?
+
+    Two independent reasons an offer is not, and neither is a failure the owner
+    should be judged on:
+
+    * **Out of territory.** Outside the service area in
+      ``missed_work.territory``. The clubs send them anyway.
+    * **Declined by written policy.** A service class this company has decided
+      it does not do -- ``acceptance_policy.should_decline``, which is light
+      service here. 431 offers a month producing 13 jobs.
+
+    Together those are 18.8% of everything this company is offered, and folding
+    them into one acceptance rate is what makes an honest operation read as a
+    bad one.
+
+    Anything we cannot place counts as addressable. Same direction as
+    ``territory_band``: the cost of wrongly excluding real work is far higher
+    than the cost of including a little noise.
+    """
+    if str(row.get("service_class") or "") in _declined_classes():
+        return False
+    band = territory_of(row, rules)
+    return band != outside_territory_label()
+
+
+def _declined_classes() -> set[str]:
+    """Service classes the written policy says we do NOT want. Config, not code."""
+    return {name for name, verdict in policy_map().items() if verdict == "decline"}
+
+
+def outside_territory_label(rules: dict[str, Any] | None = None) -> str:
+    """The label for "not in our area". Config, never hardcoded."""
+    module = _missed_work_module()
+    default = "outside"
+    if module is None:
+        return default
+    try:
+        return str(getattr(module, "OUTSIDE_TERRITORY_LABEL", default) or default)
+    except Exception:  # pragma: no cover - defensive
+        return default
+
+
 def uncovered_label(rules: dict[str, Any] | None = None) -> str:
     """The label used for "nobody was rostered". Config, never hardcoded."""
     module = _missed_work_module()
@@ -1070,6 +1158,12 @@ def missed_work_snapshot(
             "secondary_buckets": secondary,
             "inventory": inventory,
             "inventory_meta": document.get("inventory_meta") or {},
+            # One row per job we did not get, each carrying the reference that
+            # finds it in Towbook. The inventory above says what to change;
+            # this is what the owner reads with the portal open, and it is the
+            # only row-level section on the page.
+            "missed_jobs": document.get("missed_jobs") or [],
+            "missed_jobs_meta": document.get("missed_jobs_meta") or {},
             "causes": causes,
             "blind_spots": {
                 "count": spots.get("blind_spot_count", 0),
@@ -1420,8 +1514,18 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
     base_start, base_end = local_span_bounds(today - timedelta(days=28), today - timedelta(days=1))
     baseline_rows = fetch_requests(base_start, base_end, company_id=company_id)
 
+    outside = outside_territory_label()
+    declined_classes = _declined_classes()
     for row in rows:
         row["bucket"] = bucket_of(row, rules)
+        # Why an offer was never ours, kept as two separate reasons rather than
+        # one "not addressable" flag: "they keep sending us tire changes" and
+        # "they keep sending us Chillicothe" are different conversations with
+        # the client, and the report has to be able to name which one.
+        row["territory"] = territory_of(row, rules)
+        row["out_of_territory"] = row["territory"] == outside
+        row["policy_declined"] = row["service_class"] in declined_classes
+        row["addressable"] = not (row["out_of_territory"] or row["policy_declined"])
 
     day_counts: Counter[str] = Counter()
     per_hour: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -1461,6 +1565,16 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
             if row["bucket"] == "no_response" and row["service_class"] in wanted
         )
 
+        # The same hour counted only over work this company would actually take.
+        # Shown BESIDE the raw rate, never instead of it: the raw number is what
+        # the club sees and what the contract is judged on, and quietly
+        # replacing it would be marking our own homework.
+        addressable_rows = [r for r in hour_rows if r["addressable"]]
+        addressable_offered = len(addressable_rows)
+        addressable_accepted = sum(
+            1 for r in addressable_rows if r["bucket"] == "won"
+        )
+
         hours.append(
             {
                 "hour": hour,
@@ -1468,6 +1582,11 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
                 "range_label": _hour_range_label(hour),
                 "offered": offered,
                 "accepted": accepted,
+                "addressable_offered": addressable_offered,
+                "addressable_accepted": addressable_accepted,
+                "addressable_rate": ratio(addressable_accepted, addressable_offered),
+                "out_of_territory": sum(1 for r in hour_rows if r["out_of_territory"]),
+                "policy_declined": sum(1 for r in hour_rows if r["policy_declined"]),
                 "unanswered": unanswered,
                 "declined": counts.get("declined", 0),
                 "withdrew": counts.get("client_withdrew", 0),
@@ -1498,6 +1617,15 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
     day_unanswered = day_counts.get("no_response", 0)
     day_rate = ratio(day_accepted, day_offered)
 
+    day_addressable_rows = [r for r in rows if r["addressable"]]
+    day_addressable = len(day_addressable_rows)
+    day_addressable_accepted = sum(
+        1 for r in day_addressable_rows if r["bucket"] == "won"
+    )
+    day_addressable_rate = ratio(day_addressable_accepted, day_addressable)
+    day_out_of_territory = sum(1 for r in rows if r["out_of_territory"])
+    day_policy_declined = sum(1 for r in rows if r["policy_declined"])
+
     day_wanted_unanswered = Counter(
         row["service_class"]
         for row in rows
@@ -1516,6 +1644,21 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
     ]
     if current["alert_line"]:
         text_lines.append(current["alert_line"])
+    # Appended, never substituted. The two lines above are the message this
+    # system replaced a person typing, and MISSED_WORK_MODEL.md fixes their
+    # shape; this adds a line only when some of the day's offers were never
+    # ours, which is the only time it says anything.
+    day_not_ours = day_offered - day_addressable
+    if day_not_ours:
+        reasons = []
+        if day_policy_declined:
+            reasons.append(f"{day_policy_declined} light service")
+        if day_out_of_territory:
+            reasons.append(f"{day_out_of_territory} out of area")
+        text_lines.append(
+            f"Of ours: {day_addressable} / {day_addressable_accepted} "
+            f"({_sms_pct(day_addressable_rate)}%) - excludes {', '.join(reasons)}"
+        )
 
     return {
         "date": today,
@@ -1535,6 +1678,15 @@ def hourly_snapshot(company_id: str | None = None) -> dict[str, Any]:
             "band": rate_band(day_rate),
             "unanswered_rate": ratio(day_unanswered, day_offered),
             "unanswered_band": miss_band(ratio(day_unanswered, day_offered)),
+            # Work this company would actually take, and the two reasons the
+            # rest was never theirs. Over 30 days these are 18.8% of all offers.
+            "addressable": day_addressable,
+            "addressable_accepted": day_addressable_accepted,
+            "addressable_rate": day_addressable_rate,
+            "addressable_band": rate_band(day_addressable_rate),
+            "out_of_territory": day_out_of_territory,
+            "policy_declined": day_policy_declined,
+            "not_ours": day_not_ours,
         },
         "day_alert_line": _missed_work_line(dict(day_wanted_unanswered), "daily"),
         "text_block": "\n".join(text_lines),
