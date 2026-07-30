@@ -314,7 +314,7 @@
         <tr>
           <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
           <td class="nowrap muted">{{ row.offered_display or row.offered_at_local }}</td>
-          <td>{{ row.client }}</td>
+          <td>{{ row.client }} {{ m.repeat_badge(row.duplicate_count, row.duplicate_of) }}</td>
           <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
           {# The VERBATIM portal status. "Another Provider Responded" and
              "Expired" collapse onto the same canonical status and are
@@ -337,6 +337,7 @@
               All {{ missed.missed_jobs_meta.shown|num }} missed jobs in this window.
             {% endif %}
             {{ missed.missed_jobs_meta.job_number_note }}
+            {{ m.duplicate_note(missed.duplicates) }}
           </td>
         </tr>
       </tfoot>

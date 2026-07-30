@@ -605,7 +605,11 @@ def make_row(
             else ""
         ),
         "PO#": "",
-        "Vehicle": "2019 Ford F-150",
+        # One car per offer. A constant here would make every row in a test
+        # export the same customer's job to `duplicate_offers`, and a two-row
+        # fixture would silently become a one-row report. Pass
+        # `**{"Vehicle": ...}` to make two rows deliberately the same car.
+        "Vehicle": f"2019 Ford F-150 #{request_id}",
         "Request Expiration Time": (offered_at + timedelta(minutes=8)).strftime(
             "%m/%d/%Y %I:%M:%S %p"
         ),

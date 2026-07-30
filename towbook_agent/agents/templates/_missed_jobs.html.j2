@@ -55,7 +55,15 @@
     <td style="padding:6px 8px;border-bottom:1px solid #eee;white-space:nowrap;color:#444;">
       {{ row.offered_display or row.offered_at_local }}
     </td>
-    <td style="padding:6px 8px;border-bottom:1px solid #eee;">{{ row.client }}</td>
+    <td style="padding:6px 8px;border-bottom:1px solid #eee;">
+      {{ row.client }}
+      {# The club asked for this one job more than once and the repeats were
+         counted once. Named on the row itself so a reader who remembers three
+         pages for the same car can see the report knows it was one job. #}
+      {% if row.duplicate_count and row.duplicate_count > 1 %}
+      <div style="color:#666;font-size:11px;">asked {{ row.duplicate_count }}&times; &mdash; counted once</div>
+      {% endif %}
+    </td>
     <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#444;">{{ row.service_type_raw }}</td>
     <td style="padding:6px 8px;border-bottom:1px solid #eee;">
       {# The VERBATIM portal status. "Another Provider Responded" and "Expired"

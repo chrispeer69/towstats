@@ -1074,6 +1074,46 @@ def _trend_cause_rows(metrics: dict) -> list[dict[str, Any]]:
     return rows
 
 
+def _duplicate_block(metrics: dict) -> dict[str, Any]:
+    """The collapse report, from wherever this window's document carries it.
+
+    ``compute_daily`` and friends put it at the top level; the missed-work
+    document carries its own. They describe the same collapse over the same
+    rows, so the first one found is used and the missed-work copy is the
+    fallback for a metrics blob written before the rule existed.
+    """
+    block = metrics.get("duplicates")
+    if isinstance(block, dict) and block:
+        return dict(block)
+    document = _missed_document(metrics)
+    block = document.get("duplicates") if isinstance(document, dict) else None
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def _duplicates_note(block: dict) -> str | None:
+    """One sentence a report can print verbatim, or None when there is nothing.
+
+    Names the biggest suppressed outcome, because "12 collapsed" is a curiosity
+    and "12 collapsed, 9 of them declines" is the reason the decline count in
+    this report is lower than the one in the portal.
+    """
+    suppressed = _as_int(block.get("suppressed")) or 0
+    if not suppressed:
+        return None
+    clusters = _as_int(block.get("clusters")) or 0
+    jobs = "job" if clusters == 1 else "jobs"
+    offers = "offer" if suppressed == 1 else "offers"
+    note = (
+        f"{suppressed} repeat {offers} counted once: {clusters} {jobs} the client "
+        f"asked for more than once inside the hour."
+    )
+    by_status = block.get("by_status")
+    if isinstance(by_status, dict) and by_status:
+        worst, count = max(by_status.items(), key=lambda item: (item[1], item[0]))
+        note += f" {count} of them had already been recorded as {worst}."
+    return note
+
+
 def missed_work_context(
     report_type: str,
     metrics: dict,
@@ -1316,6 +1356,18 @@ def build_context(
     # `denied` (the canonical status, which historically did not) are two
     # different numbers, and the report must lead with the first.
     context.update(missed_work_context(report_type, metrics, formatting))
+
+    # -- what this report did not count twice ---------------------------------
+    # A motor club that gets no answer asks again, and the repeat is collapsed
+    # before anything above is counted. Every number in the report is smaller
+    # for it, so the report says so out loud: an owner who reconciles a total
+    # against the portal and finds it 8% short must be able to see why from the
+    # report itself. See agents/duplicates.py.
+    duplicates = _duplicate_block(metrics)
+    context["duplicates"] = duplicates
+    context["duplicates_suppressed"] = _as_int(duplicates.get("suppressed")) or 0
+    context["duplicate_clusters"] = _as_int(duplicates.get("clusters")) or 0
+    context["duplicates_note"] = _duplicates_note(duplicates)
 
     # The Analyst's own missed-work answers, alongside the computed inventory.
     # Absent keys render as empty lists so a degraded (or LLM-free) analysis

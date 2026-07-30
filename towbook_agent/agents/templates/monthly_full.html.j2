@@ -574,5 +574,10 @@
     Towbook Job Acceptance Intelligence &middot; report {{ report_type }} &middot; times are local
     ({{ generated_at }}). The rules that produced these numbers are version {{ rules_version }}.
     <strong>{{ ranking_note }}</strong>
+    {# WHY THESE TOTALS ARE LOWER THAN THE PORTAL'S. A club that gets no answer
+       asks again; the repeat is the same job and is counted once. Stated on
+       every report, because an owner reconciling a total against Towbook and
+       finding it short is owed the reason without having to ask. #}
+    {% if duplicates_note %}<br><strong>{{ duplicates_note }}</strong>{% endif %}
   </div>
 </div>

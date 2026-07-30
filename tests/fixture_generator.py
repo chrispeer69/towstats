@@ -399,6 +399,12 @@ VEHICLES: tuple[str, ...] = (
     "2020 Tesla Model 3",
 )
 
+#: Colour words, combined with a vehicle above and the row's sequence number to
+#: make each fixture offer carry its own car. See _build_row.
+VEHICLE_COLOURS: tuple[str, ...] = (
+    "White", "Black", "Silver", "Grey", "Red", "Blue", "Green", "Gold",
+)
+
 #: Relative offer volume by local hour. Nights are quiet, the morning commute
 #: and the afternoon are busy. Index is the hour, 0..23.
 HOUR_WEIGHTS: tuple[int, ...] = (
@@ -628,7 +634,20 @@ def _build_row(
             else ""
         ),
         po_number=f"PO-{700000 + sequence}" if rng.random() < 0.6 else "",
-        vehicle=rng.choice(VEHICLES),
+        # ONE CAR PER OFFER, because that is what the portal shows: 2,481
+        # distinct vehicle strings across the 3,124 archived records.
+        #
+        # This used to be a bare rng.choice over seven cars, which was harmless
+        # until `duplicate_offers` started matching on the vehicle -- at seven
+        # cars and 800 rows, every busy hour looked like one job offered eleven
+        # times and the fixture collapsed to a third of itself. A fixture whose
+        # cardinality does not resemble the source will fail a rule that is
+        # correct.
+        #
+        # The rng.choice draw is KEPT so the random stream is unchanged (see
+        # call_number above for why that matters); the colour is what makes the
+        # string unique, and it is derived from `sequence`.
+        vehicle=f"{rng.choice(VEHICLES)} {VEHICLE_COLOURS[sequence % len(VEHICLE_COLOURS)]} #{sequence}",
         expires_at=expires_at,
     )
 

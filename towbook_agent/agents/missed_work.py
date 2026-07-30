@@ -133,6 +133,7 @@ from ..core import companies as _companies
 from ..core.config_loader import rules_version
 from ..core.db import get_session
 from ..core.models import MetricsMissedWork, utcnow
+from . import duplicates as _duplicates
 from . import metrics as _metrics
 
 __all__ = [
@@ -953,10 +954,24 @@ def _load_views(
     companies". Every public function in this module loads through here, so
     there is exactly one place a tenant filter could go missing and it does
     not.
+
+    DUPLICATE OFFERS ARE COLLAPSED HERE, not inherited from
+    ``metrics._views``: this module builds its views itself, because a view
+    here carries the bucket, cause and coverage window that module knows
+    nothing about. The rule is applied AFTER bucketing so a cluster is resolved
+    on what each offer actually became, and so the surviving row keeps the
+    bucket it earned.
+
+    One job a club asked for three times is one missed job. Left uncollapsed it
+    would appear three times in the inventory, three times in the blind-spot
+    grid, and three times in the close-off case against that client -- the last
+    of which is an argument made with a number that is 8.4% too big.
     """
     _, default_class = _metrics._service_class_order(rules)
     rows = _metrics._load_rows(session, start_utc, end_utc, company_id)
-    return [_view(row, rules, default_class) for row in rows]
+    views = [_view(row, rules, default_class) for row in rows]
+    collapsed, _ = _duplicates.collapse(views, rules)
+    return collapsed
 
 
 def _window(
@@ -2167,6 +2182,14 @@ def _job_list_from(
                 "cause": view.get("cause") or "",
                 "denial_reason": view.get("denial_reason") or None,
                 "coverage_label": view.get("coverage_label") or "",
+                # How many times the club asked for THIS job. 1 for almost
+                # every row; more when it re-broadcast and the repeats were
+                # collapsed into this one. Shown in the report so a reader who
+                # remembers three pages for the same car can see that the
+                # report knows it was one job.
+                "duplicate_count": int(view.get("duplicate_count") or 1),
+                "duplicate_of": list(view.get("duplicate_of") or []),
+                "vehicle": view.get("vehicle") or "",
                 "pickup_location": view.get("pickup_location") or "",
                 "recoverable": view.get("bucket") in recoverable_buckets,
             }
@@ -2524,6 +2547,15 @@ def _compute_missed_work(
             ),
             # Which of the three status maps answered, per row. A document
             # resting on the coarse canonical-status map says so out loud.
+            # WHAT THIS DOCUMENT DID NOT COUNT TWICE. A club that gets no
+            # answer asks again, and on this account that is 8.4% of every
+            # offer -- mostly Cancelled -> Cancelled and Expired -> Expired,
+            # which is to say mostly in the numbers this document exists to
+            # report. The collapse happens in _load_views before anything here
+            # is counted; this states how much of it there was, because a
+            # missed-work total that quietly shrank by 8% is a total nobody
+            # can reconcile against the portal.
+            "duplicates": _duplicates.summarize(views),
             "bucket_sources": bucket_sources,
             "unknown_statuses": _unknown_status_examples(views, bucket_default),
             "counts": {

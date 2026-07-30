@@ -196,6 +196,10 @@ _TEXT_FIELDS: tuple[str, ...] = (
     "client_name",
     "denial_reason",
     "service_type_raw",
+    # The customer's car, verbatim. Stored because it is the only field in the
+    # feed that identifies the customer's job, and therefore the only thing
+    # `duplicate_offers` can recognise a re-broadcast offer by.
+    "vehicle",
     "pickup_location",
     "pickup_zip",
     "dropoff_location",
@@ -209,6 +213,7 @@ _CANONICAL_FIELDS: tuple[str, ...] = (
     "request_id",
     "job_number",
     "client_name",
+    "vehicle",
     "offered_at",
     "responded_at",
     "status",
@@ -253,6 +258,7 @@ _UPSERT_COLUMNS: tuple[str, ...] = (
     "denial_reason",
     "service_type_raw",
     "service_class",
+    "vehicle",
     "pickup_location",
     "pickup_zip",
     "dropoff_location",
@@ -265,15 +271,14 @@ _UPSERT_COLUMNS: tuple[str, ...] = (
     "source_run_id",
 )
 
-#: Rows per statement. 23 columns x 38 rows = 874 bound parameters, under the
+#: Rows per statement. 24 columns x 36 rows = 864 bound parameters, under the
 #: 999 limit of SQLite builds older than 3.32. Was 50 while the record had 17
 #: columns; status_raw and status_code took it to 950, which is why it came down
-#: to 40, and job_number is the 23rd column -- 23 x 40 = 920, which still fits
-#: but leaves room for only one more field. If the record grows again, LOWER
-#: THIS FIRST: the failure mode is an sqlite3 "too many SQL variables" error at
-#: ingest, which surfaces as a pipeline_failure rather than silently, but only
-#: once real data hits it.
-_UPSERT_CHUNK: int = 38
+#: to 40; job_number and vehicle have since taken the record to 24 columns. If
+#: the record grows again, LOWER THIS FIRST: the failure mode is an sqlite3
+#: "too many SQL variables" error at ingest, which surfaces as a
+#: pipeline_failure rather than silently, but only once real data hits it.
+_UPSERT_CHUNK: int = 36
 #: Ids per IN (...) lookup.
 _SELECT_CHUNK: int = 400
 

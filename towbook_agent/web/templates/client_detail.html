@@ -158,7 +158,7 @@
           <td class="nowrap">{{ m.towbook_ref(row.towbook_ref, row.towbook_ref_kind) }}</td>
           <td class="nowrap">{{ row.offered_local|dt("%b %d %I:%M %p") }}</td>
           <td class="nowrap muted">{{ row.responded_local|dt("%b %d %I:%M %p") }}</td>
-          <td>{{ m.status_pill(row.status) }}</td>
+          <td>{{ m.status_pill(row.status) }} {{ m.repeat_badge(row.duplicate_count, row.duplicate_of) }}</td>
           <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
           <td>{{ row.service_class }}</td>
           <td class="wrap-text muted">{{ row.pickup_location or DASH }}</td>

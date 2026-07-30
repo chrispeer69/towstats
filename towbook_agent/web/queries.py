@@ -39,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
+from ..agents import duplicates as _duplicates
 from ..core import companies as _companies
 from ..core import db as core_db
 from ..core.config_loader import CONFIG, ConfigError
@@ -359,6 +360,11 @@ _REQUEST_COLUMNS = (
     Request.denial_reason,
     Request.service_type_raw,
     Request.service_class,
+    # The customer's car. Selected on every row because it is the key the
+    # duplicate rule matches a re-broadcast offer on -- this feed carries no
+    # customer name -- and because a collapsed row has to be able to say which
+    # car it was.
+    Request.vehicle,
     Request.pickup_location,
     # The ZIP the API states as its own field. Territory is decided on it -- see
     # :func:`territory_of` -- with pickup_location as the fallback for
@@ -413,6 +419,14 @@ def fetch_requests(
     this module reads its rows through here, so this is the one place the
     filter could go missing -- and it cannot.
 
+    DUPLICATE OFFERS ARE COLLAPSED, exactly as they are for the agents: one
+    job a club asked for three times is one row, carrying ``duplicate_count``
+    and the references of the offers it stands for. Every dashboard view reads
+    its rows through here, so the board and the emailed report cannot disagree
+    about how many jobs a day held -- which they would the moment one of them
+    counted a re-broadcast twice. :func:`duplicates.summarize` rebuilds the
+    "N collapsed" line from the returned rows.
+
     Rows with a NULL ``offered_at`` cannot be placed on a timeline and are
     excluded here; :func:`health_view` counts them so they are never invisible.
     """
@@ -430,7 +444,10 @@ def fetch_requests(
         statement = statement.limit(limit)
 
     with core_db.get_session(commit=False) as session:
-        return [_row_to_dict(row) for row in session.execute(statement).mappings()]
+        rows = [_row_to_dict(row) for row in session.execute(statement).mappings()]
+
+    collapsed, _ = _duplicates.collapse(rows, company_rules())
+    return collapsed
 
 
 def has_any_data(company_id: str | None = None) -> bool:
@@ -1164,6 +1181,9 @@ def missed_work_snapshot(
             # only row-level section on the page.
             "missed_jobs": document.get("missed_jobs") or [],
             "missed_jobs_meta": document.get("missed_jobs_meta") or {},
+            # How many repeat offers this window collapsed. Every count on the
+            # page is smaller for it, so the page says so.
+            "duplicates": document.get("duplicates") or {},
             "causes": causes,
             "blind_spots": {
                 "count": spots.get("blind_spot_count", 0),

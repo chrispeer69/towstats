@@ -409,5 +409,10 @@
     ({{ generated_at }}). Counts come from the archived Request Log; the rules that
     produced them are version {{ rules_version }}.
     <strong>{{ ranking_note }}</strong>
+    {# WHY THESE TOTALS ARE LOWER THAN THE PORTAL'S. A club that gets no answer
+       asks again; the repeat is the same job and is counted once. Stated on
+       every report, because an owner reconciling a total against Towbook and
+       finding it short is owed the reason without having to ask. #}
+    {% if duplicates_note %}<br><strong>{{ duplicates_note }}</strong>{% endif %}
   </div>
 </div>

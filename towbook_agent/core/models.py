@@ -318,6 +318,20 @@ class Request(Base):
     service_type_raw: Mapped[Optional[str]] = mapped_column(Text)
     #: derived from service_type_raw by the classifier; safe to recompute
     service_class: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The vehicle as the portal writes it: "2012 HONDA ODYSSEY EX red".
+    #: VERIFIED populated on 3,124 of 3,124 records, 2,481 of them distinct.
+    #:
+    #: WHY IT IS STORED. It is the only thing in this feed that identifies the
+    #: CUSTOMER's job. There is no customer name field -- none of the 30 keys
+    #: the API returns carries one -- so when a motor club re-broadcasts a job
+    #: we did not take, the car is what says "this is the same job again".
+    #: agents/duplicates.py keys on it; without this column that rule cannot
+    #: run at all, and 8.4% of offers count twice.
+    #:
+    #: Free text from the club, never normalised in place. Matching folds case
+    #: and whitespace at read time (duplicates.normalize_value), so a rule
+    #: change needs no migration and the stored string stays what Towbook sent.
+    vehicle: Mapped[Optional[str]] = mapped_column(Text)
     pickup_location: Mapped[Optional[str]] = mapped_column(Text)
     #: The pickup ZIP as the API states it, NOT parsed back out of
     #: ``pickup_location``. The JSON feed carries it as its own field on 3,122

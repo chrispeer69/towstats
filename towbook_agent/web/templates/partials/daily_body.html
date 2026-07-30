@@ -243,7 +243,7 @@
           <td><a href="/clients/{{ (row.client_key or EMPTY_CLIENT_KEY)|urlencode }}">{{ row.client_name or '(no client name)' }}</a></td>
           <td>{{ row.service_class }}</td>
           <td class="wrap-text mono-sm">{{ row.service_type_raw or DASH }}</td>
-          <td>{{ m.status_pill(row.status) }}</td>
+          <td>{{ m.status_pill(row.status) }} {{ m.repeat_badge(row.duplicate_count, row.duplicate_of) }}</td>
           <td class="wrap-text muted">{{ row.denial_reason or DASH }}</td>
         </tr>
         {% endfor %}

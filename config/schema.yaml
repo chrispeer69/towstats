@@ -204,6 +204,20 @@ columns:
     - "Call Reason"
     - "Job Type"
 
+  vehicle:
+    # VERIFIED present in the real export. The customer's car, as the club
+    # wrote it. It is what `duplicate_offers` in rules.yaml matches on, because
+    # this feed carries no customer name at all.
+    #
+    # STILL A FINGERPRINT INGREDIENT. "Vehicle" also appears under
+    # `identity.fallback_source_columns` below, and must stay there: it is one
+    # of the raw columns that keeps two genuinely different CSV rows apart.
+    # A field can be both mapped and part of the fallback identity; removing it
+    # from that list would re-key every CSV-ingested offer.
+    - "Vehicle"
+    - "Vehicle Description"
+    - "Unit Description"
+
   pickup_location:
     # ASSUMPTION: unconfirmed. Not among the documented columns.
     - "Pickup Location"
@@ -261,7 +275,8 @@ optional_columns:
   - "PO #"
   - "Expiration Date"
   - "ETA"
-  - "Vehicle"
+  # "Vehicle" was here and is now a mapped canonical field -- see
+  # columns.vehicle above. It remains in `identity.fallback_source_columns`.
   # Documented but not observed; harmless to keep recognised.
   - "PO#"
   - "Request Expiration Time"
@@ -609,6 +624,13 @@ api:
     service_type_raw:
       - serviceNeeded
 
+    # VERIFIED populated on 3,124 of 3,124 records, 2,481 of them distinct
+    # ("2012 HONDA ODYSSEY EX red"). The only field in this feed that
+    # identifies the customer's job -- there is no customer name key -- so it
+    # is what `duplicate_offers` matches a re-broadcast job on.
+    vehicle:
+      - vehicle
+
     pickup_location:
       - startingLocation
 
@@ -678,7 +700,8 @@ api:
     # ALWAYS "0001-01-01T00:00:00". NEVER USE IT. See offered_at above.
     - requestDateUtc
     - reason
-    - vehicle
+    # vehicle was here and is now a mapped canonical field -- see
+    # columns.vehicle above.
     - companyId
     - companyName
     - contractorId

@@ -223,6 +223,86 @@ denial_reason_normalization:
     normalized: other
 
 # ==========================================================================
+# duplicate_offers -- ONE JOB OFFERED TWICE IS ONE JOB.
+#
+# A motor club that does not get an answer asks again. Same car, same address,
+# same service, ten to twenty minutes later, a brand new callRequestId. Counted
+# as written that job lands in the report twice: twice in `offered`, and twice
+# in the decline or no-response count if we did not take it. The harder a club
+# re-asks, the worse this account looks.
+#
+# MEASURED over the 3,124 archived records: 228 clusters, 261 suppressed
+# offers -- 8.4% of everything offered in 30 days. The outcome simply repeats:
+#
+#     Cancelled -> Cancelled      56 clusters
+#     Expired   -> Expired        44
+#     Rejected  -> Rejected       29
+#     Rejected  -> Cancelled       9
+#     Expired   -> Rejected        8
+#     Expired   -> Accepted        5    <- asked again, and we took it that time
+#     Cancelled -> Accepted        5
+#
+# Median gap between consecutive offers in a cluster: 16 minutes. Longest: 59.
+#
+# NOTHING IS DELETED. This is applied when a window is READ, so the `requests`
+# table keeps every offer Towbook ever made and re-cutting this block re-cuts
+# every report with no migration and no re-pull. Every report says how many
+# offers it collapsed; the rule is never allowed to work silently.
+# ==========================================================================
+duplicate_offers:
+  # Off makes every count 8.4% higher on this account's traffic, in the
+  # direction that flatters the clubs and not the owner.
+  enabled: true
+
+  # How long after the FIRST offer a repeat still counts as the same job.
+  # The window is anchored to that first offer, not chained from the previous
+  # one, so a cluster can never stretch beyond this however many times a club
+  # asks. 60 covers the whole observed distribution -- the longest real gap was
+  # 59.5 minutes.
+  window_minutes: 60
+
+  # What two offers must share to be one job.
+  #
+  # THERE IS NO CUSTOMER NAME IN THIS FEED. All 30 keys the API returns were
+  # checked: the club is there, the address is there, the person is not. The
+  # car is the only thing that says whose job it is.
+  #
+  # `client_key` stays in the key deliberately. Two DIFFERENT clubs offering
+  # the same car is the customer's insurer and their roadside app both looking
+  # for a truck -- two real offers to us -- and collapsing across clients would
+  # corrupt the per-client rates the close-off decisions rest on.
+  #
+  # `pickup_location` is deliberately NOT here. It is free text and the clubs
+  # rewrite it: of the 18 same-car, same-club, inside-the-hour pairs whose
+  # addresses differed, all 18 were one job written two ways --
+  #   "I-270 N, Dublin, OH, 43017"  vs  "I-270, Dublin, OH, USA 43017"
+  # Matching on it would split every one of them back apart. `pickup_zip` is
+  # the stricter option that does survive rewording, if you want one.
+  match_fields: [client_key, vehicle]
+
+  # A row missing any of these can never be a duplicate of anything. Without
+  # it, every row with no vehicle would key alike and collapse into one -- the
+  # classic way a dedupe rule quietly eats unrelated records. Rows skipped this
+  # way are counted and reported, never just dropped from the logic.
+  require_fields: [vehicle]
+
+  # Which offer represents the job. First match wins; ties go to the earliest.
+  #
+  # This order is a claim about what happened, and it is the honest one: if a
+  # club asked twice, we missed the first and rejected the second, then we were
+  # asked once and we said no. That is a decline, not a no-response -- and
+  # recording it as a no-response would send the blind-spot analysis after a
+  # staffing gap that was never there.
+  outcome_precedence: [accepted, denied, canceled, expired, pending]
+
+  # THE ONE THING NEVER COLLAPSED: two offers that both became real Towbook
+  # jobs, with two different job numbers. Towbook does not issue a number until
+  # work is opened, so two numbers is two pieces of work, and merging them
+  # would understate what the company actually did. One such cluster exists in
+  # the 30-day sample.
+  keep_distinct_accepted: true
+
+# ==========================================================================
 # missed_work -- THE HEADLINE OF EVERY REPORT.
 #
 # The owner's question is not "what are we accepting". It is:

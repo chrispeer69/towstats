@@ -99,6 +99,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import duplicates as _duplicates
 from ..core import companies as _companies
 from ..core import events
 from ..core.config_loader import get_notifications, rules_version
@@ -724,11 +725,21 @@ def _row_view(request: Request, rules: dict[str, Any], default_class: str) -> di
         # on rows ingested before those columns existed.
         "status_raw": (request.status_raw or "").strip(),
         "status_code": request.status_code,
+        # The status as STORED, before the display default above turns a NULL
+        # into "pending". A status the ingester could not read is not an
+        # outcome, and the dedupe rule must not let it win a cluster on
+        # precedence as though it were one.
+        "status_stored": (request.status or "").strip().casefold(),
         "is_accepted": status == "accepted",
         "service_class": service_class,
         "service_type_raw": request.service_type_raw or "",
         "denial_reason": denial_raw,
         "denial_reason_normalized": _normalize_denial_reason(denial_raw, rules),
+        # The customer's car, verbatim. Carried on every view because it is
+        # what agents/duplicates.py recognises a re-broadcast job by -- this
+        # feed has no customer name -- and because a reader looking at a
+        # collapsed row wants to see which car it was.
+        "vehicle": request.vehicle or "",
         "pickup_location": request.pickup_location or "",
         "dropoff_location": request.dropoff_location or "",
         "truck_assigned": request.truck_assigned or "",
@@ -746,7 +757,27 @@ def _row_view(request: Request, rules: dict[str, Any], default_class: str) -> di
 def _views(
     rows: Iterable[Request], rules: dict[str, Any], default_class: str
 ) -> list[dict[str, Any]]:
-    return [_row_view(row, rules, default_class) for row in rows]
+    """Row views for a window, with duplicate offers already collapsed.
+
+    THE ONE PLACE THE DEDUPE RULE IS APPLIED for everything this module counts,
+    and by extension for agents/missed_work.py, which builds on these views.
+    Every metrics computation reaches its rows through here, so there is
+    exactly one place the rule could go missing and it does not.
+
+    A motor club that gets no answer asks again -- same car, same job, a new
+    callRequestId ten minutes later -- and on this account that is 8.4% of all
+    offers. Counted as written they inflate the offered denominator and the
+    decline count together. See agents/duplicates.py for the evidence and
+    config/rules.yaml -> duplicate_offers for the knobs.
+
+    Nothing is dropped from the database: this is a read-time collapse, and
+    every survivor carries ``duplicate_count`` and the references of the offers
+    it stands for, so :func:`duplicates.summarize` can rebuild the full report
+    anywhere downstream without threading it through six call sites.
+    """
+    views = [_row_view(row, rules, default_class) for row in rows]
+    collapsed, _ = _duplicates.collapse(views, rules)
+    return collapsed
 
 
 def _reason_for(view: dict[str, Any]) -> str:
@@ -1682,6 +1713,13 @@ def _compute_hourly(
             "by_client": _by_client(window_views, int(detail_cfg["max_denial_examples"])),
             "by_service_class": _by_service_class(window_views, rules),
             "policy_variance": _policy_variance(window_views, rules, int(detail_cfg["max_rows"])),
+            # WHAT THIS DOCUMENT DOES NOT COUNT TWICE. A motor club that gets
+            # no answer asks again -- same car, same job, a new callRequestId
+            # minutes later -- and those repeats are collapsed before anything
+            # here is counted. Reported rather than assumed, because every
+            # number above is smaller for it and a reader is entitled to know
+            # by how much. See agents/duplicates.py.
+            "duplicates": _duplicates.summarize(window_views),
             "counts": {
                 "requests": window_totals["offered"],
                 "clients": len({view["client_key"] for view in window_views}),
@@ -1853,6 +1891,13 @@ def _compute_daily(
             "by_service_class": _by_service_class(views, rules),
             "policy_variance": _policy_variance(views, rules, max_rows),
             "hourly_distribution": _hourly_distribution(views),
+            # WHAT THIS DOCUMENT DOES NOT COUNT TWICE. A motor club that gets
+            # no answer asks again -- same car, same job, a new callRequestId
+            # minutes later -- and those repeats are collapsed before anything
+            # here is counted. Reported rather than assumed, because every
+            # number above is smaller for it and a reader is entitled to know
+            # by how much. See agents/duplicates.py.
+            "duplicates": _duplicates.summarize(views),
             "counts": {"requests": totals["offered"], "clients": len(by_client)},
             # THE HEADLINE, and deliberately the LAST key in the document.
             #
@@ -2401,6 +2446,13 @@ def _compute_weekly(
             "capacity_signal": _capacity_signal(
                 current, start_day, int(weekly_cfg["capacity_min_offers"])
             ),
+            # WHAT THIS DOCUMENT DOES NOT COUNT TWICE. A motor club that gets
+            # no answer asks again -- same car, same job, a new callRequestId
+            # minutes later -- and those repeats are collapsed before anything
+            # here is counted. Reported rather than assumed, because every
+            # number above is smaller for it and a reader is entitled to know
+            # by how much. See agents/duplicates.py.
+            "duplicates": _duplicates.summarize(current),
             "counts": {
                 "requests": totals["offered"],
                 "prior_requests": prior_totals["offered"],
@@ -2801,6 +2853,8 @@ def _compute_monthly(
             "outliers": _outliers(trend, weekly_cfg),
             # Hour by hour, this month against last -- the coverage argument.
             "coverage_trend": _coverage_trend(missed, prior_missed),
+            # What this month did not count twice -- see compute_daily.
+            "duplicates": _duplicates.summarize(current),
             "counts": {
                 "requests": totals["offered"],
                 "prior_requests": prior_totals["offered"],

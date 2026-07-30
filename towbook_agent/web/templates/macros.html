@@ -92,6 +92,36 @@
   {%- endif -%}
 {%- endmacro %}
 
+{#- "The club asked for this job N times; we counted it once."
+
+    Rendered next to a row that survived the duplicate-offer collapse. It reads
+    as an explanation, not a warning: nothing went wrong, and the row is the
+    job rather than the offer. Silent for the ordinary row that was asked once,
+    because a badge on every line is furniture. -#}
+{% macro repeat_badge(count, refs=None) -%}
+  {%- if count and count > 1 -%}
+    <span class="pill pill-pending" title="{{ count }} offers for this one job were collapsed into this row{% if refs %} ({{ refs | map(attribute='ref') | join(', ') }}){% endif %}">asked {{ count }}&times;</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{#- The one-line explanation of why a total is lower than the portal's. Shown
+    wherever a count is shown, because an owner reconciling against Towbook and
+    finding the number short is owed the reason without having to ask. -#}
+{% macro duplicate_note(block) -%}
+  {%- if block and block.suppressed -%}
+    <p class="small muted" style="margin-bottom:0">
+      <span class="ico">&#8505;</span>
+      {{ block.suppressed|num }} repeat offer{{ '' if block.suppressed == 1 else 's' }}
+      counted once &mdash; {{ block.clusters|num }} job{{ '' if block.clusters == 1 else 's' }}
+      the client asked for more than once inside the hour.
+      {%- if block.by_status %}
+      Already recorded as:
+      {%- for status, count in block.by_status.items() %} {{ count }} {{ status }}{{ ',' if not loop.last }}{% endfor %}.
+      {%- endif %}
+    </p>
+  {%- endif -%}
+{%- endmacro %}
+
 {% macro meter(value, band='') -%}
   {%- if value is none -%}
     <span class="muted">{{ DASH }}</span>
