@@ -30,11 +30,35 @@ run ``discover-selectors`` / ``bootstrap-session``. Choose between them with
 ``source: api`` / ``source: ui`` in ``config/schedule.yaml``, or ``--source``
 on the CLI. ``api`` is the default.
 
+ONE LOGIN, SEVERAL COMPANIES
+----------------------------
+The endpoint has no ``companyId`` parameter. It returns whatever company the
+**session** is currently switched to -- the book icon in the top right of the
+portal -- and a fresh login lands on the user's home company.
+
+An account that carries more than one towing company therefore pulls only the
+home one unless the session is switched first. On this install that is exactly
+what hid the HONK work: it is assigned through **Auto Lyft USA, Inc (254467)**,
+while every pull ever made ran on **Roadside Towing and Recovery Inc (61343)**.
+Nothing was mis-parsed; the other company was simply never asked for.
+
+:func:`select_company` performs the switch and, critically, CONFIRMS it, and
+:func:`_verify_records_company` then confirms the returned rows agree. Both are
+fatal on mismatch, because rows filed under the wrong company are permanent and
+invisible -- see :class:`CompanyMismatch`.
+
 Public entry points
 -------------------
-    acquire_api(start_date, end_date, account_id="default") -> Path
-        Authenticate, page the callrequests endpoint, archive the raw JSON
-        verbatim under raw/YYYY/MM/DD/run_<ts>.json, return that path.
+    acquire_api(start_date, end_date, company_id="default") -> Path
+        Authenticate, switch the session to that company, page the callrequests
+        endpoint, archive the raw JSON verbatim under
+        raw/YYYY/MM/DD/run_<ts>.json, return that path.
+
+    select_company(client, towbook_company_id) -> dict
+        Switch an authenticated client onto a Towbook company and prove it took.
+
+    current_company_id(client) -> str | None
+        Which Towbook company the session is on right now.
 
     login_api(client) -> None
         Authenticate ``client`` in place. Returns None on success, raises
@@ -65,6 +89,20 @@ Everything verified live against the real account on 2026-07-28
   past the end returns ``[]``.
 * ``endDate`` is inclusive of that calendar day; there is no time-of-day
   filter, so an hourly job pulls the calendar day and metrics trims the hour.
+
+Company switching, verified live 2026-08-01
+--------------------------------------------
+* ``GET /change?c=<companyId>&returnUrl=%2F`` switches the session. 302, then
+  the portal renders as that company. **No browser is needed** -- it works on
+  the same cookie jar the login produced.
+* Every authenticated page carries ``<body data-current-company-id="61343">``.
+  That attribute is the confirmation; a switch is never assumed to have worked.
+* The switcher menu lists the companies this login may switch to, as
+  ``href="/change?c=254467&returnUrl=%2F"``. ``companies`` on the CLI prints them.
+* Same 30-day window, same query, session switched:
+      61343 Roadside Towing and Recovery Inc -> 2,984 records, 5 providers
+      254467 Auto Lyft USA, Inc              ->   201 records, 100% "Honk"
+  Every row's ``companyId`` matched the session in both cases.
 
 Design rules this module obeys
 ------------------------------
@@ -100,10 +138,12 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
+from ..core import companies as _companies
 from ..core import events
 from ..core.config_loader import CONFIG, ConfigError
 from ..core.logging_setup import get_logger, redact
@@ -143,9 +183,12 @@ __all__ = [
     "acquire_api",
     "login_api",
     "login_check_api",
+    "current_company_id",
+    "select_company",
     "MAX_PAGE_SIZE",
     "ApiError",
     "ApiUnavailable",
+    "CompanyMismatch",
     "LOGIN_OUTCOMES",
 ]
 
@@ -184,6 +227,20 @@ class ApiUnavailable(AcquisitionError):
     """httpx is not installed in this interpreter."""
 
 
+class CompanyMismatch(AcquisitionError):
+    """The session is not on the company this run is about.
+
+    Raised when the switch could not be made, could not be confirmed, or when
+    the rows that came back carry a different ``companyId`` than the one asked
+    for. Every one of those means the same thing: the records in hand belong to
+    a different tenant than the ``company_id`` they are about to be stamped
+    with. Filing them anyway would double-count one company's jobs under
+    another's name, permanently and with no error -- which is precisely the
+    silently-wrong number this system exists to prevent. So it is fatal, and it
+    is deliberately NOT retried.
+    """
+
+
 # ==========================================================================
 # Configuration -- selectors.yaml section `api`, with code fallbacks
 # ==========================================================================
@@ -195,6 +252,17 @@ _API_DEFAULTS: dict[str, list[str]] = {
     "login_url": ["/Security/Login"],
     "callrequests_url": ["/api/digitaldispatch/callrequests"],
     "request_log_referer": ["/requestLog/"],
+    # --- the company switcher (the book icon, top right of the portal) ------
+    # VERIFIED 2026-08-01 against the live account: the switcher's menu item is
+    # a plain link, `GET /change?c=<towbook company id>&returnUrl=%2F`, and it
+    # works on a cookie session with no browser at all.
+    "switch_company_url": ["/change"],
+    "switch_company_param": ["c"],
+    # Every authenticated page carries the active company on the <body> tag:
+    #     <body data-current-company-id="61343">
+    # That is what makes the switch VERIFIABLE rather than merely requested.
+    "current_company_attribute": ["data-current-company-id"],
+    "home_url": ["/Index", "/"],
     "antiforgery_field": ["RequestVerificationToken", "__RequestVerificationToken"],
     "submit_field": ["bSignIn"],
     "submit_value": ["Log in"],
@@ -594,6 +662,190 @@ def login_api(client: "httpx.Client", account_id: str = DEFAULT_ACCOUNT_ID) -> N
     )
 
 
+# ==========================================================================
+# The active company -- the book icon, top right of the portal
+#
+# Towbook scopes /api/digitaldispatch/callrequests to whatever company the
+# SESSION is currently switched to. There is no companyId parameter on the
+# endpoint; asking for a date range returns that one company's offers and
+# nothing else. A login lands on the user's home company and stays there.
+#
+# So an account with more than one company -- one login, several towing
+# entities, switched with the book icon -- pulls only its home company unless
+# something switches it. That is why HONK work assigned through Auto Lyft USA
+# (companyId 254467) was absent from every report while Roadside (61343) was
+# complete: not a parsing bug, an unasked question.
+#
+# VERIFIED LIVE 2026-08-01:
+#     GET /change?c=254467&returnUrl=%2F   -> 302, session now on 254467
+#     the same callrequests query then returns 201 records, 100% providerName
+#     "Honk", every row companyId 254467.
+# ==========================================================================
+
+_CURRENT_COMPANY = re.compile(
+    r"""data-current-company-id\s*=\s*["'](\d+)["']""", re.IGNORECASE
+)
+
+
+def _current_company_pattern() -> "re.Pattern[str]":
+    """Regex for the <body> attribute naming the active company."""
+    attribute = _api_first("current_company_attribute")
+    if not attribute or attribute == "data-current-company-id":
+        return _CURRENT_COMPANY
+    return re.compile(rf"""{re.escape(attribute)}\s*=\s*["'](\d+)["']""", re.IGNORECASE)
+
+
+def current_company_id(client: "httpx.Client") -> str | None:
+    """The Towbook company id this session is currently on, or None.
+
+    Read from the ``data-current-company-id`` attribute that every
+    authenticated page carries on its ``<body>`` tag. None means the attribute
+    was not found -- a portal change, or a page served while logged out --
+    which is treated as "cannot confirm" rather than "wrong", because the two
+    need very different responses.
+    """
+    pattern = _current_company_pattern()
+    for path in _api_config("home_url"):
+        try:
+            response = client.get(_abs_url(path))
+        except Exception as exc:  # noqa: BLE001 - try the next candidate URL
+            logger.debug("could not read the active company from %s: %s", path, exc)
+            continue
+        if _looks_logged_out(str(response.url)):
+            continue
+        match = pattern.search(response.text or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def select_company(client: "httpx.Client", towbook_company_id: str | int | None) -> dict[str, Any]:
+    """Switch the authenticated session onto ``towbook_company_id``.
+
+    Returns a diagnostic dict recorded in the run envelope. Raises
+    :class:`CompanyMismatch` if the switch did not take, or could not be
+    confirmed to have taken.
+
+    ``None`` / blank means the company has no ``towbook_company_id`` in
+    companies.yaml. That is the single-company install, and the correct
+    behaviour there is to leave the session exactly where the login put it --
+    so this reports what it found and changes nothing.
+
+    Confirmation is not optional. A ``/change`` that answers 200 while leaving
+    the session where it was would hand the caller another company's rows to
+    file under this company's name, and nothing downstream could tell.
+    """
+    result: dict[str, Any] = {
+        "requested": str(towbook_company_id or "").strip() or None,
+        "before": None,
+        "after": None,
+        "switched": False,
+        "confirmed": False,
+    }
+
+    before = current_company_id(client)
+    result["before"] = before
+
+    wanted = result["requested"]
+    if not wanted:
+        # Nothing to switch to. Report the session's own company so the archive
+        # still records which tenant the rows actually came from.
+        logger.info(
+            "no towbook_company_id configured; leaving the session on company %s",
+            before or "(unknown)",
+        )
+        result["after"] = before
+        result["confirmed"] = before is not None
+        return result
+
+    if before == wanted:
+        logger.info("session is already on Towbook company %s; no switch needed", wanted)
+        result["after"] = before
+        result["confirmed"] = True
+        return result
+
+    url = _abs_url(_api_first("switch_company_url") or "/change")
+    param = _api_first("switch_company_param") or "c"
+    logger.info("switching session from company %s to %s", before or "(unknown)", wanted)
+
+    try:
+        response = client.get(url, params={param: wanted, "returnUrl": "/"})
+    except Exception as exc:  # noqa: BLE001 - reported as a mismatch below
+        raise CompanyMismatch(
+            f"Could not switch the session to Towbook company {wanted}: "
+            f"{type(exc).__name__}: {exc}. GET {url}?{param}={wanted} is what the portal's "
+            "company switcher (the book icon, top right) does."
+        ) from exc
+
+    result["switch_http_status"] = response.status_code
+    result["switch_final_url"] = str(response.url)
+    result["switched"] = True
+
+    after = current_company_id(client)
+    result["after"] = after
+
+    if after is None:
+        raise CompanyMismatch(
+            f"The session was asked to switch to Towbook company {wanted} (HTTP "
+            f"{response.status_code}), but the active company could not be read back from the "
+            f"portal, so the switch cannot be confirmed. This run is abandoned rather than "
+            f"risk filing another company's jobs under this one. Reconcile "
+            f"api.current_company_attribute in config/selectors.yaml -- the portal marks the "
+            f"active company on the <body> tag."
+        )
+
+    if after != wanted:
+        raise CompanyMismatch(
+            f"The session was asked to switch to Towbook company {wanted} but is on {after}. "
+            f"Either this login has no access to company {wanted} -- open the book icon in the "
+            f"portal, top right, and check it is listed -- or towbook_company_id is wrong for "
+            f"this company in config/companies.yaml."
+        )
+
+    result["confirmed"] = True
+    logger.info("session confirmed on Towbook company %s", after)
+    return result
+
+
+def _verify_records_company(
+    records: list[dict[str, Any]], towbook_company_id: str | None
+) -> dict[str, Any]:
+    """Check the rows really are the company we asked for.
+
+    ``config/schema.yaml`` has declared ``account_id: [companyId]`` as the
+    source of record for exactly this check since before there was a second
+    company to run it against. This is that check.
+
+    Belt and braces over :func:`select_company`: the switch is confirmed from
+    the portal's own ``<body>`` attribute, and then the payload is confirmed
+    against the rows themselves. A disagreement between the two is a hard stop,
+    because the alternative is stamping one tenant's jobs with another's id.
+    """
+    seen = Counter(
+        str(record.get("companyId")) for record in records if record.get("companyId") is not None
+    )
+    summary: dict[str, Any] = {
+        "expected": towbook_company_id,
+        "seen": dict(seen),
+        "records_without_company_id": sum(1 for r in records if r.get("companyId") is None),
+    }
+    if not towbook_company_id or not seen:
+        return summary
+
+    foreign = {value: count for value, count in seen.items() if value != towbook_company_id}
+    summary["foreign"] = foreign
+    if foreign:
+        detail = ", ".join(f"{value} ({count} row(s))" for value, count in sorted(foreign.items()))
+        raise CompanyMismatch(
+            f"The pull asked for Towbook company {towbook_company_id} and the session confirmed "
+            f"it, but {sum(foreign.values())} of {len(records)} returned row(s) carry a different "
+            f"companyId: {detail}. Nothing is ingested -- filing these would mix two companies' "
+            f"jobs together. This means the endpoint's scoping has changed and "
+            f"agents/acquisition_api.py needs a look before the next run."
+        )
+    return summary
+
+
 def login_check_api(account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
     """Prove the credentials work over the JSON path. No browser, no scraping.
 
@@ -653,7 +905,26 @@ def login_check_api(account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
             result["cookies_seen"] = _cookie_names(client)
 
             if outcome.ok:
-                # A cookie is not data. Prove the endpoint answers.
+                # A cookie is not data, and data from the wrong company is
+                # worse than none. Prove the session can reach THIS company
+                # before proving the endpoint answers.
+                company = _companies.resolve_company(account_id)
+                result["details"]["company"] = {
+                    "id": company.id,
+                    "name": company.name,
+                    "towbook_company_id": company.towbook_company_id,
+                }
+                try:
+                    result["details"]["company_selection"] = select_company(
+                        client, company.towbook_company_id
+                    )
+                except CompanyMismatch as exc:
+                    result["ok"] = False
+                    result["stage"] = result["outcome"] = OUTCOME_UNKNOWN_POST_LOGIN
+                    result["message"] = str(exc)
+                    result["details"]["company_selection"] = {"ok": False, "error": str(exc)[:500]}
+                    return finish()
+
                 today = datetime.now().date()
                 try:
                     records, total, _pages = _fetch_page(client, today, today, page=1, page_size=1)
@@ -661,6 +932,9 @@ def login_check_api(account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
                         "ok": True,
                         "records_returned": len(records),
                         "x_records_count": total,
+                        "companies_seen": sorted(
+                            {str(r.get("companyId")) for r in records if r.get("companyId")}
+                        ),
                     }
                 except Exception as exc:  # noqa: BLE001 - the probe is diagnostic
                     result["ok"] = False
@@ -943,10 +1217,25 @@ def acquire_api(
     end_date: datetime | date | str,
     account_id: str = DEFAULT_ACCOUNT_ID,
     *,
+    company_id: str | None = None,
     run_id: str | None = None,
     page_size: int | None = None,
 ) -> Path:
-    """Authenticate, page the callrequests endpoint, archive the raw JSON, return its path.
+    """Authenticate, switch to the company, page the endpoint, archive, return the path.
+
+    ``company_id`` names a company in ``config/companies.yaml`` and is the
+    current spelling; ``account_id`` is the older name for the same thing and
+    is still accepted positionally, exactly as ``ingestion.ingest`` does it.
+    Both matter here: ``scheduler._call`` drops keyword arguments a callee does
+    not declare, so before this parameter existed the scheduler's
+    ``company_id=`` was silently discarded and every run -- whichever company
+    it claimed to be for -- pulled whatever company the login happened to land
+    on.
+
+    THE SESSION IS SWITCHED TO THE COMPANY BEFORE ANYTHING IS FETCHED, and the
+    switch is confirmed twice: once from the portal's own active-company
+    attribute, and once against the ``companyId`` on the returned rows. A
+    failure of either is fatal and is not retried -- see :class:`CompanyMismatch`.
 
     ``start_date`` / ``end_date`` accept a datetime, a date or an ISO string.
     ``end_date`` is treated as the **exclusive** end of a half-open window --
@@ -970,6 +1259,16 @@ def acquire_api(
     if end < start:
         raise ValueError(f"end_date ({end.isoformat()}) is before start_date ({start.isoformat()})")
 
+    # `company_id` wins when given; `account_id` is the legacy positional name.
+    tenant = company_id if company_id is not None else account_id
+    company = _companies.resolve_company(tenant)
+    # The merged scope has no login and no Towbook company to switch to -- it
+    # is the sum of the others, computed at read time. Pulling "into" it would
+    # archive a payload attributed to no company at all.
+    _companies.ensure_writable(company.id)
+    tenant = company.id
+    towbook_company_id = company.towbook_company_id
+
     start_day, end_day = _query_days(start, end)
     size = _page_size() if page_size is None else max(1, min(int(page_size), MAX_PAGE_SIZE))
     run_identifier = run_id or _utc_stamp()
@@ -978,8 +1277,10 @@ def acquire_api(
     failures: list[str] = []
 
     logger.info(
-        "acquire_api: account=%s window=%s..%s -> query %s..%s pageSize=%d run_id=%s attempts=%d",
-        account_id,
+        "acquire_api: company=%s (towbook %s) window=%s..%s -> query %s..%s pageSize=%d "
+        "run_id=%s attempts=%d",
+        tenant,
+        towbook_company_id or "(not set -- session default)",
         start.isoformat(),
         end.isoformat(),
         start_day.isoformat(),
@@ -989,12 +1290,29 @@ def acquire_api(
         attempts,
     )
 
+    if towbook_company_id is None and _companies.is_multi_company():
+        # With one company, "wherever the login lands" is right by definition.
+        # With several it is a coin toss, and the loser is a tenant whose report
+        # quietly fills with another tenant's jobs.
+        logger.warning(
+            "company %r has no towbook_company_id in config/companies.yaml, but this install "
+            "reports on several companies. The session cannot be switched, so this run will "
+            "pull whichever company the login lands on. Set towbook_company_id to remove the "
+            "ambiguity.",
+            tenant,
+        )
+
     for attempt in range(1, attempts + 1):
         started_at = datetime.now(timezone.utc)
         try:
             with new_client() as client:
-                login_api(client, account_id)
+                login_api(client, tenant)
+                # The switch happens BEFORE the first fetch, and a failure to
+                # confirm it aborts the run: rows pulled from the wrong company
+                # are worse than no rows at all.
+                selection = select_company(client, towbook_company_id)
                 harvest = _fetch_all(client, start_day, end_day, size)
+                company_check = _verify_records_company(harvest["records"], towbook_company_id)
                 cookies = _cookie_names(client)
 
             document: dict[str, Any] = {
@@ -1002,7 +1320,14 @@ def acquire_api(
                 "source": "api",
                 "endpoint": _abs_url(_api_first("callrequests_url")),
                 "run_id": run_identifier,
-                "account_id": account_id,
+                "company_id": tenant,
+                # Retained under its old name too: every archived payload
+                # written before this key was renamed carries `account_id`, and
+                # a reader of raw/ should not have to know when that happened.
+                "account_id": tenant,
+                "towbook_company_id": towbook_company_id,
+                "company_selection": selection,
+                "company_verification": company_check,
                 "attempt": attempt,
                 "acquired_at_utc": started_at.isoformat(timespec="seconds"),
                 "finished_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1045,7 +1370,8 @@ def acquire_api(
                         "stage": "acquisition",
                         "severity": "high",
                         "source": "api",
-                        "account_id": account_id,
+                        "company_id": tenant,
+                        "account_id": tenant,
                         "run_id": run_identifier,
                         "window_start": start.isoformat(),
                         "window_end": end.isoformat(),
@@ -1061,10 +1387,13 @@ def acquire_api(
                 )
 
             logger.info(
-                "acquire_api OK: %d record(s) (%d distinct) over %d page(s) -> %s",
+                "acquire_api OK: %d record(s) (%d distinct) over %d page(s) for company %s "
+                "(towbook %s) -> %s",
                 len(harvest["records"]),
                 harvest["distinct_ids"],
                 len(harvest["pages"]),
+                tenant,
+                selection.get("after") or "(unknown)",
                 archived,
             )
             return archived
@@ -1077,6 +1406,16 @@ def acquire_api(
             # These fail identically forever; retrying only delays the alert.
             if isinstance(exc, (CredentialsMissing, ApiUnavailable, ValueError)):
                 logger.error("this failure is not transient; not retrying")
+                break
+            # A company mismatch is a configuration or portal-behaviour fault,
+            # never a blip. Retrying it would just ask the wrong question three
+            # more times, and the one outcome that must never happen is a
+            # retry that "succeeds" by pulling another tenant's rows.
+            if isinstance(exc, CompanyMismatch):
+                logger.error(
+                    "the session is not on the company this run is about; not retrying, and "
+                    "nothing will be ingested"
+                )
                 break
             if isinstance(exc, LoginFailed) and exc.outcome in {
                 OUTCOME_BAD_CREDENTIALS,
@@ -1093,7 +1432,8 @@ def acquire_api(
                     time.sleep(delay)
 
     summary = (
-        f"Towbook API acquisition failed for account '{account_id}', window "
+        f"Towbook API acquisition failed for company '{tenant}' (towbook "
+        f"{towbook_company_id or 'not set'}), window "
         f"{start.isoformat()} .. {end.isoformat()} (run {run_identifier}) after "
         f"{len(failures)} attempt(s).\n  " + "\n  ".join(failures)
     )
@@ -1103,7 +1443,9 @@ def acquire_api(
             "stage": "acquisition",
             "severity": "high",
             "source": "api",
-            "account_id": account_id,
+            "company_id": tenant,
+            "account_id": tenant,
+            "towbook_company_id": towbook_company_id,
             "run_id": run_identifier,
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),
@@ -1136,24 +1478,58 @@ def _cli(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - operat
         prog="python -m towbook_agent.agents.acquisition_api",
         description="Towbook JSON API acquisition (the primary source).",
     )
-    parser.add_argument("command", choices=("login-check", "acquire"))
+    parser.add_argument("command", choices=("login-check", "acquire", "companies"))
     parser.add_argument("--start", help="window start, YYYY-MM-DD or ISO datetime")
     parser.add_argument("--end", help="window end (EXCLUSIVE), YYYY-MM-DD or ISO datetime")
-    parser.add_argument("--account", default=DEFAULT_ACCOUNT_ID)
+    parser.add_argument(
+        "--company",
+        "--account",
+        dest="company",
+        default=DEFAULT_ACCOUNT_ID,
+        help="company id from config/companies.yaml (--account is the old spelling)",
+    )
     parser.add_argument("--page-size", type=int, default=None)
     args = parser.parse_args(argv)
 
     load_env()
     setup_logging(force=True)
 
+    if args.command == "companies":
+        # Which companies does this login actually reach? Answers the question
+        # "is the roster right" without pulling a single row.
+        with new_client() as client:
+            login_api(client, args.company)
+            active = current_company_id(client)
+            html = client.get(_abs_url(_api_first("home_url"))).text or ""
+            offered = sorted(set(re.findall(r"/change\?c=(\d+)", html)))
+        print(
+            json.dumps(
+                {
+                    "session_company": active,
+                    "switchable_to": offered,
+                    "roster": [
+                        {
+                            "id": c.id,
+                            "name": c.name,
+                            "towbook_company_id": c.towbook_company_id,
+                            "enabled": c.enabled,
+                        }
+                        for c in _companies.all_companies()
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return 0
+
     if args.command == "login-check":
-        result = login_check_api(args.account)
+        result = login_check_api(args.company)
         print(json.dumps(result, indent=2, default=str))
         return 0 if result["ok"] else 1
 
     if not args.start or not args.end:
         parser.error("acquire needs --start and --end")
-    path = acquire_api(args.start, args.end, args.account, page_size=args.page_size)
+    path = acquire_api(args.start, args.end, company_id=args.company, page_size=args.page_size)
     print(path)
     return 0
 

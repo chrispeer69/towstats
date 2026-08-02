@@ -73,6 +73,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 import yaml
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ..core import companies as _companies
 from ..core.config_loader import get_rules, get_schema, rules_version
 from ..core.db import get_session, init_db
 from ..core.events import PIPELINE_FAILURE, emit_event
@@ -1703,6 +1704,11 @@ def ingest(
 
     company_id = company_id if company_id is not None else account_id
     account_id = company_id
+    # Every row read out of this file is about to be stamped with `company_id`.
+    # The merged scope is a way of reading several companies at once and owns
+    # no rows, so it is refused here rather than discovered later as a tranche
+    # of requests belonging to no company.
+    _companies.ensure_writable(company_id)
 
     path = Path(xlsx_path)
     started_at = utcnow()

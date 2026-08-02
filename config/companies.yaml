@@ -7,6 +7,28 @@
 # metric and every query is filtered by `id`.
 #
 # ---------------------------------------------------------------------------
+# THE SWITCHER ALSO OFFERS "ALL COMPANIES (MERGED)".
+#
+# Two enabled entries and the dropdown grows a third choice, under "Together":
+# every company's work read as one book. It is for the owner whose companies
+# are one business -- here, Roadside takes the club work and Auto Lyft takes
+# HONK's, out of one building -- so that "how much did WE turn away last week"
+# has a page instead of being added up by hand.
+#
+# It is a way of READING, not a company. It has no entry in this file, no
+# login, no Towbook company id, and the scheduler never runs a pipeline for it:
+# it is recomputed from the members' own rows on every page load and stores
+# nothing. The id `__all__` is reserved for it; an entry claiming that id is
+# rejected with an error in the log.
+#
+# Where the members disagree about something the numbers depend on -- a staffed
+# window, a timezone, a client's job value -- the merged view uses
+# `default_company`'s setting and prints a sentence on the page saying so. It
+# never silently blends two staffed windows into a coverage figure nobody could
+# defend. Entries that agree print nothing, so the normal case is quiet.
+# ---------------------------------------------------------------------------
+#
+# ---------------------------------------------------------------------------
 # CREDENTIALS NEVER GO IN THIS FILE.
 #
 # This file is committed to git. It carries only the NAME of the environment
@@ -126,6 +148,60 @@ companies:
       nsd: 85
       allied dispatch solutions: 65
       urgent.ly: 65          # ASSUMPTION: not supplied by owner, flagged in reports
+
+  # ------------------------------------------------------------------------
+  # The second entity on the SAME Towbook login. Verified live 2026-08-01:
+  # Towbook companyId 254467, 201 offers over 30 days, 100% of them HONK.
+  #
+  # ONE LOGIN, TWO COMPANIES. `credentials_env` is deliberately blank: this is
+  # not a separate Towbook account, it is the same login (the one in
+  # TOWBOOK_USER / TOWBOOK_PASS) switched to its other company with the book
+  # icon in the top right of the portal. Acquisition performs that switch with
+  # `GET /change?c=254467` and refuses to pull anything until the portal
+  # confirms the session actually moved -- see agents/acquisition_api.py.
+  #
+  # `towbook_company_id` IS LOAD-BEARING HERE. On a single-company install it
+  # is informational. On this one it is what the session is switched to, and a
+  # wrong value would file one company's jobs under the other's name.
+  # ------------------------------------------------------------------------
+  - id: auto-lyft
+    name: Auto Lyft USA, Inc
+    towbook_company_id: 254467
+    credentials_env: ""
+    timezone: America/Detroit
+    enabled: true
+
+    letterhead:
+      name: ""
+      logo: ""
+      address: "731 Mulberry St"
+      address2: ""
+      city: "Columbus"
+      state: "OH"
+      zip: "43219"
+      phone: "614-633-7935"
+      email: ""
+      website: ""
+
+    # Same owner, same dispatchers, same building as Roadside, so the staffed
+    # window is the same. Stated explicitly rather than inherited because
+    # `coverage` REPLACES rather than merges, and the coverage contrast is the
+    # headline of every report -- it should never be a silent inheritance.
+    coverage:
+      windows:
+        - name: covered
+          days: [mon, tue, wed, thu, fri]
+          start: "06:00"
+          end: "18:00"
+          note: >-
+            Same staffed window as Roadside -- one owner, one dispatch desk,
+            two legal entities.
+      default_label: uncovered
+
+    # HONK is the only client this entity is offered work by. $85 supplied by
+    # the owner 2026-08-01, the same tier as NSD. GROSS revenue, not margin.
+    job_value_by_client:
+      honk: 85
 
   # ------------------------------------------------------------------------
   # TEMPLATE for the next tenant. Copy it, give it a real id, set

@@ -110,6 +110,9 @@ class Portal:
         status_code: int = 200,
         omit_total_header: bool = False,
         rejected_html: str | None = None,
+        company: str | None = None,
+        switchable: tuple[str, ...] = (),
+        switch_silently_fails: bool = False,
     ) -> None:
         self.pages = pages if pages is not None else [[]]
         self.credentials_ok = credentials_ok
@@ -119,8 +122,32 @@ class Portal:
         # has only the empty page to stop on, which is a different code path.
         self.omit_total_header = omit_total_header
         self.rejected_html = rejected_html
+        # -- the company switcher (the book icon, top right) ------------------
+        # `company` None means "this portal does not render the active-company
+        # attribute at all", which is the shape every test written before the
+        # switcher existed expects. Set it and the portal starts behaving like
+        # the real multi-company account.
+        self.company = company
+        self.switchable = set(switchable)
+        # The nastiest real failure mode: /change answers 200 and changes
+        # nothing. Silence must not be read as success.
+        self.switch_silently_fails = switch_silently_fails
+        self.switches: list[str] = []
         self.queries: list[dict[str, str]] = []
         self.posted: dict[str, Any] | None = None
+
+    def _page_html(self) -> str:
+        """A portal page, carrying the active company the way the real one does."""
+        if self.company is None:
+            return "<html><body>Dispatching</body></html>"
+        links = "".join(
+            f'<li><a href="/change?c={other}&amp;returnUrl=%2F">Other</a></li>'
+            for other in sorted(self.switchable - {self.company})
+        )
+        return (
+            f'<html><body data-current-company-id="{self.company}">'
+            f"<ul>{links}</ul>Dispatching</body></html>"
+        )
 
     def __call__(self, request: "httpx.Request") -> "httpx.Response":
         path = request.url.path
@@ -144,8 +171,15 @@ class Portal:
                 },
             )
 
-        if path == "/":
-            return httpx.Response(200, html="<html><body>Dispatching</body></html>")
+        if path == "/change":
+            wanted = dict(request.url.params).get("c", "")
+            self.switches.append(wanted)
+            if not self.switch_silently_fails and wanted in self.switchable:
+                self.company = wanted
+            return httpx.Response(302, headers={"Location": "https://app.towbook.com/"})
+
+        if path in ("/", "/Index"):
+            return httpx.Response(200, html=self._page_html())
 
         if path == "/api/digitaldispatch/callrequests":
             params = dict(request.url.params)
@@ -999,3 +1033,191 @@ def test_the_password_is_posted_but_never_written_to_the_archive(
     contents = archived.read_text(encoding="utf-8")
     assert PASSWORD not in contents
     assert USERNAME not in contents
+
+
+# ==========================================================================
+# ONE LOGIN, SEVERAL COMPANIES
+#
+# Towbook scopes /api/digitaldispatch/callrequests to whatever company the
+# SESSION is on -- the book icon, top right of the portal. There is no
+# companyId parameter. A login lands on the user's home company and stays
+# there, so an account carrying two towing entities silently reports on one.
+#
+# That is not hypothetical. On this install every pull ever made ran as
+# Roadside Towing and Recovery Inc (61343) while all the HONK work was being
+# assigned through Auto Lyft USA, Inc (254467), so HONK was absent from every
+# report -- not mis-parsed, never asked for.
+#
+# The failure these tests exist to make impossible is the OTHER one, though.
+# A run that claims to be about company B, fails to switch, pulls company A's
+# rows and files them under B produces a report that is entirely plausible and
+# entirely wrong, forever, with no error anywhere. So: the switch is confirmed
+# from the portal's own attribute, the rows are confirmed against it, and
+# either disagreement aborts the run before a single row is archived.
+# ==========================================================================
+
+
+ROADSIDE, AUTOLYFT = "61343", "254467"
+
+
+@pytest.fixture
+def two_companies(write_config):
+    """A roster shaped like the real account: two entities, one login."""
+    write_config(
+        "companies",
+        {
+            "version": 1,
+            "default_company": "default",
+            "companies": [
+                {
+                    "id": "default",
+                    "name": "Roadside Towing and Recovery Inc",
+                    "towbook_company_id": int(ROADSIDE),
+                    "credentials_env": "",
+                    "enabled": True,
+                },
+                {
+                    "id": "auto-lyft",
+                    "name": "Auto Lyft USA, Inc",
+                    "towbook_company_id": int(AUTOLYFT),
+                    "credentials_env": "",
+                    "enabled": True,
+                },
+            ],
+        },
+    )
+    from towbook_agent.core import companies as companies_module
+
+    companies_module.reload_companies()
+    yield
+    companies_module.reload_companies()
+
+
+def test_the_session_is_switched_to_the_company_before_anything_is_fetched(
+    api, portal, two_companies
+) -> None:
+    """The whole bug in one assertion.
+
+    The login lands on Roadside. A run for auto-lyft must move the session to
+    254467 BEFORE the first callrequests query, or it pulls Roadside's offers
+    and files them under Auto Lyft.
+    """
+    scripted = portal(
+        pages=[[record(1, companyId=int(AUTOLYFT), providerName="Honk")]],
+        company=ROADSIDE,
+        switchable=(ROADSIDE, AUTOLYFT),
+    )
+
+    archived = api.acquire_api("2026-07-26", "2026-07-27", company_id="auto-lyft")
+
+    assert scripted.switches == [AUTOLYFT], "the session was switched exactly once, to Auto Lyft"
+    assert scripted.company == AUTOLYFT
+    assert scripted.queries, "and only then was any data asked for"
+
+    document = json.loads(archived.read_text(encoding="utf-8"))
+    assert document["company_id"] == "auto-lyft"
+    assert document["towbook_company_id"] == AUTOLYFT
+    assert document["company_selection"]["before"] == ROADSIDE
+    assert document["company_selection"]["after"] == AUTOLYFT
+    assert document["company_selection"]["confirmed"] is True
+
+
+def test_the_scheduler_spelling_of_the_company_argument_is_honoured(
+    api, portal, two_companies
+) -> None:
+    """Regression: ``scheduler._call`` drops keyword arguments the callee does
+    not declare. ``acquire_api`` took ``account_id``, the scheduler passed
+    ``company_id=``, and so the company was silently discarded on every single
+    run. Both spellings must reach the switch."""
+    scripted = portal(company=ROADSIDE, switchable=(ROADSIDE, AUTOLYFT))
+    api.acquire_api("2026-07-26", "2026-07-27", company_id="auto-lyft")
+    assert scripted.switches == [AUTOLYFT]
+
+    positional = portal(company=ROADSIDE, switchable=(ROADSIDE, AUTOLYFT))
+    api.acquire_api("2026-07-26", "2026-07-27", "auto-lyft")
+    assert positional.switches == [AUTOLYFT], "the legacy positional name still works"
+
+
+def test_a_switch_that_silently_does_not_take_aborts_the_run(
+    api, portal, two_companies, captured_events
+) -> None:
+    """/change answering 200 and changing nothing is the dangerous case: the
+    run would continue and file Roadside's rows under Auto Lyft. It must not
+    archive anything at all."""
+    scripted = portal(
+        pages=[[record(1)]],
+        company=ROADSIDE,
+        switchable=(ROADSIDE, AUTOLYFT),
+        switch_silently_fails=True,
+    )
+
+    # RAW_DIR is the whole session's sandbox, not this test's, so "nothing was
+    # archived" has to mean "nothing NEW" -- every archive an earlier test
+    # legitimately wrote is still sitting there.
+    from towbook_agent.core.paths import RAW_DIR
+
+    before = set(RAW_DIR.glob("**/*.json"))
+
+    with pytest.raises(api.AcquisitionError) as caught:
+        api.acquire_api("2026-07-26", "2026-07-27", company_id="auto-lyft")
+
+    assert AUTOLYFT in str(caught.value)
+    assert scripted.queries == [], "not one row was fetched after the failed switch"
+    assert set(RAW_DIR.glob("**/*.json")) == before, "and nothing was archived"
+
+
+def test_a_failed_switch_is_not_retried(api, portal, two_companies) -> None:
+    """A company mismatch is configuration or portal behaviour, never a blip.
+    Retrying asks the wrong question three more times -- and the one outcome
+    that must never happen is a retry that 'succeeds' on another tenant."""
+    scripted = portal(
+        company=ROADSIDE, switchable=(ROADSIDE, AUTOLYFT), switch_silently_fails=True
+    )
+    with pytest.raises(api.AcquisitionError):
+        api.acquire_api("2026-07-26", "2026-07-27", company_id="auto-lyft")
+
+    assert len(scripted.switches) == 1, "one attempt, not four"
+
+
+def test_rows_carrying_another_companys_id_abort_the_run(
+    api, portal, two_companies
+) -> None:
+    """Belt and braces. The switch is confirmed from the portal's <body>
+    attribute; the payload is then confirmed against the rows themselves.
+    config/schema.yaml has declared `account_id: [companyId]` as the source of
+    record for exactly this check since before there was a second company."""
+    portal(
+        # The session says Auto Lyft. The rows say Roadside. Somebody is wrong
+        # and there is no safe way to guess which.
+        pages=[[record(1, companyId=int(ROADSIDE))]],
+        company=ROADSIDE,
+        switchable=(ROADSIDE, AUTOLYFT),
+    )
+
+    with pytest.raises(api.AcquisitionError) as caught:
+        api.acquire_api("2026-07-26", "2026-07-27", company_id="auto-lyft")
+
+    message = str(caught.value)
+    assert ROADSIDE in message and AUTOLYFT in message
+
+
+def test_a_single_company_install_is_left_exactly_where_the_login_landed(
+    api, portal
+) -> None:
+    """No roster, no towbook_company_id, nothing to switch to. The switcher
+    must stay entirely out of the way -- this is the install the system was
+    built on and it must not acquire a new failure mode."""
+    scripted = portal(pages=[[record(1)]])
+    api.acquire_api("2026-07-26", "2026-07-27")
+    assert scripted.switches == [], "nothing was switched"
+    assert scripted.queries, "and the pull happened anyway"
+
+
+def test_a_session_already_on_the_right_company_is_not_switched(
+    api, portal, two_companies
+) -> None:
+    """The home company costs no extra round trip."""
+    scripted = portal(pages=[[record(1)]], company=ROADSIDE, switchable=(ROADSIDE, AUTOLYFT))
+    api.acquire_api("2026-07-26", "2026-07-27", company_id="default")
+    assert scripted.switches == [], "already there"
+    assert scripted.company == ROADSIDE

@@ -46,6 +46,12 @@
           config/companies.yaml: `companies` is empty on a single-company
           install, and a dropdown with one option is furniture on every page.
 
+          The last entry is the MERGED scope -- every company's work read as one
+          book, for the owner whose two legal entities are one business. It is
+          grouped apart from the companies because it is a different kind of
+          answer, not a third company: it stores nothing and no pipeline ever
+          runs for it.
+
           The selection persists in a cookie, so it survives the next click on
           any tab. `next` sends the operator back to the page they were on
           rather than to the front page. -#}
@@ -54,8 +60,15 @@
             onchange="window.location = '/company/' + this.company.value + '?next=' + encodeURIComponent(window.location.pathname + window.location.search); return false;">
         <label for="company-select" class="visually-hidden">Company</label>
         <select id="company-select" name="company">
-          {% for item in companies %}
-          <option value="{{ item.id }}"{% if company_id == item.id %} selected{% endif %}>{{ item.label }}</option>
+          <optgroup label="One company">
+            {% for item in companies if not item.is_merged %}
+            <option value="{{ item.id }}"{% if company_id == item.id %} selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </optgroup>
+          {% for item in companies if item.is_merged %}
+          <optgroup label="Together">
+            <option value="{{ item.id }}"{% if company_id == item.id %} selected{% endif %}>{{ item.label }}</option>
+          </optgroup>
           {% endfor %}
         </select>
         <noscript><button type="submit" class="icon-btn">Switch</button></noscript>
@@ -130,6 +143,31 @@
   <div class="notice notice-{{ 'ok' if notice_level == 'ok' else ('error' if notice_level == 'error' else ('warn' if notice_level == 'warn' else 'info')) }}">
     <span class="ico">{% if notice_level == 'ok' %}&#10003;{% elif notice_level == 'error' %}&#9888;{% elif notice_level == 'warn' %}&#9888;{% else %}&#8505;{% endif %}</span>
     <span>{{ notice }}</span>
+  </div>
+  {% endif %}
+
+  {#-
+    WHICH COMPANIES THESE NUMBERS ARE ABOUT.
+
+    On the merged scope every figure below is two companies added together, and
+    that has to be stated where the figures are -- not left to a dropdown in the
+    corner that the reader of a printout cannot see at all. So this renders on
+    screen AND on the printed page, and it names the members.
+
+    `company.conflicts` is normally empty: it fills only when the members
+    disagree about something the numbers depend on -- a staffed window, a
+    timezone, a client's job value -- in which case the sentence says whose
+    setting was used. A merged coverage figure computed over two different
+    shifts is not a number anyone can defend without that line.
+  -#}
+  {% if company and company.is_merged %}
+  <div class="notice notice-info merged-scope">
+    <span class="ico">&#8721;</span>
+    <span>
+      <strong>Every figure below covers {{ company.members|length }} companies together.</strong>
+      {{ company.letterhead_name }}.
+      {% for sentence in company.conflicts %}<br><span class="muted">{{ sentence }}</span>{% endfor %}
+    </span>
   </div>
   {% endif %}
 

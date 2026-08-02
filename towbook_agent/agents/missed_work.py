@@ -2411,6 +2411,12 @@ def compute_missed_work(
     ``account_id`` is the old name for ``company_id`` and still works.
     """
     with _company(company_id, account_id) as company:
+        if persist:
+            # The dashboard computes the merged scope on every page load with
+            # persist=False, which is exactly right: it reads both companies'
+            # rows and stores nothing. Writing the result would file a figure
+            # covering two companies under a company id belonging to neither.
+            _companies.ensure_writable(company)
         return _compute_missed_work(
             session,
             window_start,

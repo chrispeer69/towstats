@@ -15,6 +15,23 @@ Not a SaaS. There is no billing, no signup, no user management, no per-user
 permission model. It is multi-company *reporting*: one operator, running one
 install, producing separate numbers for several towing companies.
 
+AND THE SUM OF THEM
+-------------------
+Separate numbers, and -- when the operator asks for it by name -- their total.
+:data:`MERGED_COMPANY_ID` is a READ SCOPE covering every enabled company at
+once, offered in the dashboard switcher as soon as there are two. It exists
+because several legal entities are usually one business: on this install
+Roadside Towing holds the club accounts and Auto Lyft USA holds HONK's, with
+one owner, one dispatch desk and one building between them.
+
+It is not a company. It has no roster entry, no credentials and no Towbook
+company to switch a session to; ``enabled_companies()`` excludes it, so the
+scheduler never runs a pipeline for it. It stores nothing -- every writer calls
+:func:`ensure_writable`, which refuses it -- and is recomputed from the members'
+own rows on every read. Where those members disagree about a setting the
+numbers depend on, :attr:`Company.conflicts` carries the sentence that says
+whose setting was used, and the board prints it above the figures.
+
 CREDENTIALS ARE NEVER IN THIS FILE
 ----------------------------------
 ``companies.yaml`` is committed. It therefore holds only the *name of the
@@ -82,8 +99,10 @@ from .config_loader import CONFIG, ConfigError
 
 __all__ = [
     "DEFAULT_COMPANY_ID",
+    "MERGED_COMPANY_ID",
     "Company",
     "CompanyError",
+    "NotWritable",
     "all_companies",
     "enabled_companies",
     "get_company",
@@ -92,6 +111,10 @@ __all__ = [
     "default_company_id",
     "is_multi_company",
     "company_choices",
+    "merged_company",
+    "is_merged_id",
+    "company_ids_for",
+    "ensure_writable",
     "rules_for",
     "timezone_for",
     "active_company_id",
@@ -106,6 +129,24 @@ logger = logging.getLogger(__name__)
 #: ``core.models.DEFAULT_ACCOUNT_ID`` -- there is a test that asserts it.
 DEFAULT_COMPANY_ID: str = "default"
 
+#: The id of the MERGED scope -- every enabled company's work read as one book.
+#:
+#: One owner, one dispatch desk, two legal entities: Roadside Towing takes the
+#: club work and Auto Lyft USA takes HONK's, and the question "how much work did
+#: we turn away last week" is about both of them. So the switcher offers the
+#: companies AND their sum.
+#:
+#: IT IS A READ SCOPE AND NOTHING ELSE. No row is ever stamped with it -- see
+#: :func:`ensure_writable`, which every writer calls -- because a row filed
+#: under ``__all__`` belongs to no company and would be counted twice by any
+#: query that later sums the members. The merged view is computed from the
+#: members' own rows, every time, and owns not one byte of stored state.
+#:
+#: Reserved: a roster entry claiming this id is rejected at parse time. The
+#: underscores survive :func:`_slug` intact, so it stays recognisable in a URL
+#: (``/company/__all__``) and cannot be produced by slugging a company name.
+MERGED_COMPANY_ID: str = "__all__"
+
 #: Prefix for the per-company credential variables. ``credentials_env: ACME``
 #: means TOWBOOK_ACME_USER / TOWBOOK_ACME_PASS.
 _ENV_PREFIX = "TOWBOOK"
@@ -116,6 +157,18 @@ _ENV_SAFE = re.compile(r"[^A-Z0-9_]+")
 
 class CompanyError(RuntimeError):
     """companies.yaml is present but cannot be read as a company roster."""
+
+
+class NotWritable(CompanyError):
+    """Something tried to write rows for the merged scope.
+
+    The merged scope is a way of READING several companies at once. It owns no
+    rows, and a row stamped ``__all__`` would belong to no company while being
+    counted a second time by anything that sums the members. Every writer --
+    acquisition, ingestion, the metrics upserts -- calls
+    :func:`ensure_writable` first, so this is raised before anything reaches
+    the datastore rather than discovered afterwards in the numbers.
+    """
 
 
 # ==========================================================================
@@ -156,6 +209,33 @@ class Company:
     #: client has to carry the name of the company whose numbers are on it, and
     #: on a multi-tenant install that is not whoever runs the server.
     letterhead: dict[str, Any] = field(default_factory=dict)
+    #: The real company ids this record stands for. EMPTY on a real company --
+    #: only the merged scope has members. See :data:`MERGED_COMPANY_ID`.
+    members: tuple[str, ...] = ()
+    #: Plain sentences naming what the members disagree about (staffed window,
+    #: timezone, a client's job value). Empty when they agree, which is the
+    #: normal case for one owner's two entities. Rendered on the merged view,
+    #: because a merged figure computed over two different staffed windows is
+    #: not wrong so much as unanswerable, and the reader has to be told which
+    #: company's setting was used.
+    conflicts: tuple[str, ...] = ()
+
+    # -- what kind of scope is this ----------------------------------------
+
+    @property
+    def is_merged(self) -> bool:
+        """True for the merged scope, false for a real towing company."""
+        return bool(self.members)
+
+    @property
+    def member_ids(self) -> tuple[str, ...]:
+        """The company ids to filter rows on. A real company filters on itself.
+
+        THE ONE FUNCTION EVERY TENANT FILTER GOES THROUGH. A real company
+        returns its own id and nothing else, so the merged scope cannot widen
+        a query that was never meant to be widened.
+        """
+        return self.members or (self.id,)
 
     # -- credentials -------------------------------------------------------
 
@@ -230,6 +310,9 @@ class Company:
             "env_user": self.env_user,
             "env_pass": self.env_pass,
             "configured": self.configured,
+            "is_merged": self.is_merged,
+            "members": list(self.members),
+            "conflicts": list(self.conflicts),
             # Printed header. Resolved here rather than in the template so the
             # fallbacks (name -> label, blank fields dropped) are decided once.
             "letterhead_name": self.letterhead_name,
@@ -292,6 +375,18 @@ def _parse_company(entry: Mapping[str, Any], position: int) -> Company | None:
         logger.error(
             "config/companies.yaml: entry #%d has no usable 'id'; skipping it",
             position + 1,
+        )
+        return None
+
+    if company_id == MERGED_COMPANY_ID:
+        # Reserved for the merged scope. Honoured, a real company here would
+        # take over the id the switcher uses to mean "all of them" -- and would
+        # be a company whose rows the merged read then counts twice.
+        logger.error(
+            "config/companies.yaml: entry #%d uses the reserved id %r, which names the "
+            "merged (all companies) view; skipping it. Give this company its own id.",
+            position + 1,
+            MERGED_COMPANY_ID,
         )
         return None
 
@@ -390,6 +485,9 @@ _lock = threading.RLock()
 _cached_digest: str | None = None
 _cached_roster: tuple[list[Company], str] = ([], DEFAULT_COMPANY_ID)
 _cached_rules: dict[str, tuple[str, dict[str, Any]]] = {}
+#: ``(stamp, merged)`` -- the assembled merged scope. Keyed on both digests
+#: because it is built out of companies.yaml AND rules.yaml.
+_cached_merged: tuple[str, Company] | None = None
 
 
 def _digest() -> str:
@@ -412,10 +510,13 @@ def _roster() -> tuple[list[Company], str]:
 
 def reload_companies() -> None:
     """Drop the cached roster. The next access re-reads companies.yaml."""
-    global _cached_digest
+    global _cached_digest, _cached_merged
     with _lock:
         _cached_digest = None
         _cached_rules.clear()
+        # The merged scope is assembled from the roster, so a stale one would
+        # keep answering for companies that are no longer in it.
+        _cached_merged = None
     CONFIG.reload("companies")
 
 
@@ -441,10 +542,18 @@ def enabled_companies() -> list[Company]:
 
 
 def get_company(company_id: str | None) -> Company | None:
-    """The company with this id, or None. Never raises."""
+    """The company with this id, or None. Never raises.
+
+    Answers for the merged scope too, but only on a multi-company install:
+    with one company there is nothing to merge, and ``/company/__all__`` on a
+    single-tenant board should fall back to that tenant rather than invent a
+    second way of naming it.
+    """
     wanted = _slug(company_id)
     if not wanted:
         return None
+    if wanted == MERGED_COMPANY_ID:
+        return merged_company() if is_multi_company() else None
     for company in all_companies():
         if company.id == wanted:
             return company
@@ -497,15 +606,234 @@ def is_multi_company() -> bool:
 
 
 def company_choices() -> list[Company]:
-    """Companies to offer in the switcher -- empty when there is only one."""
+    """What the switcher offers -- empty when there is only one company.
+
+    The real companies in roster order, then the merged scope last. Last
+    because the tabs open on a single company: merged is the extra question
+    ("and both together?"), not the default answer.
+    """
     companies = enabled_companies()
-    return companies if len(companies) > 1 else []
+    if len(companies) <= 1:
+        return []
+    return [*companies, merged_company()]
 
 
 def timezone_for(company_id: str | None = None) -> str | None:
     """This company's IANA zone, or None to mean "use the TZ variable"."""
     company = get_company(company_id or active_company_id())
     return company.timezone if company is not None else None
+
+
+# ==========================================================================
+# The merged scope -- every company's work read as one book
+#
+# Why it exists: the two entities on this install are one business. Roadside
+# Towing and Recovery holds the club accounts, Auto Lyft USA holds HONK's, and
+# they share an owner, a dispatch desk and a building. "How much work did we
+# turn away overnight" is a question about the pair, and answering it by
+# reading two dashboards and adding up in your head is how a number gets
+# fumbled.
+#
+# What it is NOT is a third company. It stores nothing, is never a write
+# target, and never appears in `enabled_companies()` -- so the scheduler does
+# not try to log into it, and no pipeline run is ever attributed to it. It is
+# assembled from the members on every read.
+#
+# WHERE THE MEMBERS DISAGREE, IT SAYS SO. A staffed window is the headline of
+# every report; two members with different windows have no single coverage
+# figure between them. Rather than silently picking one, the merged scope uses
+# the default company's setting and records a sentence in `conflicts` that the
+# board prints above the numbers. On this install the members agree about
+# everything except their letterheads, so nothing is printed.
+# ==========================================================================
+
+
+def is_merged_id(company_id: str | None) -> bool:
+    """Is this the merged scope rather than a real towing company?"""
+    return _slug(company_id) == MERGED_COMPANY_ID
+
+
+def _merged_letterhead(members: list[Company]) -> dict[str, Any]:
+    """Printed header for a document covering several companies.
+
+    Names every entity the numbers belong to -- a printout that goes to a
+    client or an insurer must not claim to be about one company when it is
+    about two. The address block is carried over only when every member prints
+    the same one; two different addresses under one heading is worse than none.
+    """
+    first = members[0].letterhead_lines()
+    shared = first if all(m.letterhead_lines() == first for m in members) else []
+    head: dict[str, Any] = {"name": " + ".join(m.letterhead_name for m in members)}
+    if shared:
+        # Rebuild from the member whose lines they are, so the field-by-field
+        # structure (and its blank-dropping) is preserved rather than re-parsed.
+        head.update({k: v for k, v in members[0].letterhead.items() if k != "name"})
+    return head
+
+
+def _agree(values: list[Any]) -> bool:
+    """Do all the members say the same thing? Compared by value, not identity."""
+    return all(value == values[0] for value in values[1:])
+
+
+#: Coverage keys that describe the window to a READER rather than to the model.
+#: Compared, they make two identical shifts look like a disagreement -- which is
+#: exactly what happened here: both companies are staffed 06:00-18:00 Mon-Fri and
+#: say so, in different words ("Owner's stated staffed window" against "Same
+#: staffed window as Roadside"). A conflict banner nobody needs is a conflict
+#: banner nobody reads.
+_COVERAGE_PROSE = ("note", "description", "label")
+
+
+def _coverage_shape(coverage: Any) -> Any:
+    """A coverage block reduced to what actually decides covered/uncovered."""
+    if not isinstance(coverage, Mapping):
+        return coverage
+    windows = coverage.get("windows")
+    if isinstance(windows, (list, tuple)):
+        windows = [
+            {k: v for k, v in window.items() if k not in _COVERAGE_PROSE}
+            if isinstance(window, Mapping)
+            else window
+            for window in windows
+        ]
+    return {
+        **{k: v for k, v in coverage.items() if k not in (*_COVERAGE_PROSE, "windows")},
+        "windows": windows,
+    }
+
+
+def _merged_rules_blocks(
+    members: list[Company], default_id: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    """``(coverage, job_value_by_client, conflicts)`` for the merged scope.
+
+    Both are compared as EFFECTIVE values -- what each member actually reports
+    on after rules.yaml and its own overrides -- not as the shorthand blocks in
+    companies.yaml. A member that declares nothing and one that declares
+    exactly the global default do not disagree, and must not be reported as
+    disagreeing.
+    """
+    conflicts: list[str] = []
+    effective = [(m, (rules_for(m.id).get("missed_work") or {})) for m in members]
+    winner = next((m for m, _ in effective if m.id == default_id), members[0])
+
+    coverages = [block.get("coverage") for _, block in effective]
+    if _agree([_coverage_shape(value) for value in coverages]):
+        coverage = coverages[0]
+    else:
+        coverage = (rules_for(winner.id).get("missed_work") or {}).get("coverage")
+        conflicts.append(
+            f"These companies declare different staffed windows, so there is no single "
+            f"covered/uncovered split for them. The coverage figures below use "
+            f"{winner.label}'s window."
+        )
+
+    # Job values: the union, because the members' clients barely overlap -- the
+    # whole reason for the second entity is that HONK dispatches to it and to
+    # nothing else. A client priced differently by two members has no one merged
+    # value, so the default company's is used and the disagreement is named.
+    values: dict[str, Any] = {}
+    disputed: list[str] = []
+    for member, block in effective:
+        for client, value in (block.get("job_value_by_client") or {}).items():
+            if client in values and values[client] != value:
+                disputed.append(str(client))
+                if member.id != winner.id:
+                    continue
+            values[client] = value
+    if disputed:
+        conflicts.append(
+            f"{winner.label}'s job values were used for "
+            f"{', '.join(sorted(set(disputed)))}, which the companies price differently."
+        )
+    return coverage, (values or None), conflicts
+
+
+def _build_merged() -> Company:
+    """Assemble the merged scope from the enabled roster."""
+    members = enabled_companies()
+    default_id = default_company_id()
+    conflicts: list[str] = []
+
+    zones = [m.timezone for m in members]
+    if _agree(zones):
+        timezone = zones[0]
+    else:
+        winner = next((m for m in members if m.id == default_id), members[0])
+        timezone = winner.timezone
+        conflicts.append(
+            f"These companies keep different local times, so a day means a different "
+            f"thing to each of them. Days below are {winner.label}'s ({winner.timezone})."
+        )
+
+    coverage, job_values, rule_conflicts = _merged_rules_blocks(members, default_id)
+    conflicts.extend(rule_conflicts)
+
+    return Company(
+        id=MERGED_COMPANY_ID,
+        name="All companies (merged)",
+        towbook_company_id=None,
+        credentials_env=None,
+        timezone=timezone,
+        enabled=True,
+        coverage=coverage,
+        job_value_by_client=job_values,
+        rules_overrides={},
+        configured=True,
+        letterhead=_merged_letterhead(members),
+        members=tuple(m.id for m in members),
+        conflicts=tuple(conflicts),
+    )
+
+
+def merged_company() -> Company:
+    """The merged scope, rebuilt whenever companies.yaml or rules.yaml changes."""
+    global _cached_merged
+    try:
+        rules_digest = CONFIG.digest("rules")
+    except ConfigError:
+        rules_digest = ""
+    stamp = f"{rules_digest}:{_digest()}"
+    with _lock:
+        if _cached_merged is not None and _cached_merged[0] == stamp:
+            return _cached_merged[1]
+    # Built outside the lock: it calls rules_for, which takes the same lock.
+    built = _build_merged()
+    with _lock:
+        _cached_merged = (stamp, built)
+    return built
+
+
+def company_ids_for(company_id: str | None = None) -> tuple[str, ...]:
+    """The company ids a query must filter on. NEVER empty, never "everything".
+
+    A real company resolves to a one-element tuple holding its own id, so
+    switching a filter from ``== resolve_company_id(x)`` to
+    ``.in_(company_ids_for(x))`` cannot widen a query by accident: the merged
+    scope is the only value that returns more than one id, and it is only ever
+    reachable when the operator selected it.
+    """
+    return resolve_company(company_id).member_ids
+
+
+def ensure_writable(company_id: str | None = None) -> str:
+    """Return the id to stamp on rows, or refuse.
+
+    Called by every writer. The merged scope is a read scope: a stored row, a
+    metrics_daily entry or a run attributed to ``__all__`` would belong to no
+    company at all, and would then be double-counted by every merged read that
+    sums the members.
+    """
+    company = resolve_company(company_id)
+    if company.is_merged:
+        raise NotWritable(
+            f"{company.label!r} ({MERGED_COMPANY_ID}) is a way of reading several companies "
+            f"at once, not a company. Nothing can be pulled, ingested or computed INTO it -- "
+            f"run the pipeline for each of {', '.join(company.members)} and the merged view "
+            f"adds them up on every read."
+        )
+    return company.id
 
 
 # ==========================================================================

@@ -242,8 +242,19 @@ def test_with_no_roster_there_is_exactly_one_company_and_no_switcher() -> None:
 
 
 def test_a_roster_of_two_turns_the_switcher_on(roster) -> None:
+    """The companies, then the merged scope. In that order, and last.
+
+    Merged is offered because one owner's several legal entities are usually
+    one business, and "how much work did WE turn away" is a question about the
+    pair. It comes last because the tabs open on a single company: merged is
+    the follow-up question, not the default answer.
+    """
     assert companies_module.is_multi_company() is True
-    assert [company.id for company in companies_module.company_choices()] == [OHIO, TEXAS]
+    assert [company.id for company in companies_module.company_choices()] == [
+        OHIO,
+        TEXAS,
+        companies_module.MERGED_COMPANY_ID,
+    ]
     assert companies_module.default_company_id() == OHIO
 
 
@@ -1121,7 +1132,11 @@ def test_every_select_against_a_tenant_table_names_company_id(two_companies, cap
     """
     from towbook_agent.web import queries as q
 
-    for company_id in (OHIO, TEXAS):
+    # The merged scope is driven through the same gauntlet. It is the one
+    # caller allowed to name more than one company, so it is also the one that
+    # could turn a filtered query into an unfiltered one by accident -- an
+    # `IN` over the members is still a predicate, a dropped `where` is not.
+    for company_id in (OHIO, TEXAS, companies_module.MERGED_COMPANY_ID):
         q.has_any_data(company_id)
         q.missed_work_snapshot(days=400, company_id=company_id)
         q.blind_spots_snapshot(days=400, company_id=company_id)
@@ -1244,6 +1259,304 @@ def test_one_companys_healthy_run_does_not_clear_anothers_overdue_alarm(roster) 
         item.get("report_type") == "daily"
         for item in (q.health_view(company_id=TEXAS).get("overdue") or [])
     ), "the Texas Health page cleared its alarm using Ohio's run"
+
+
+# ==========================================================================
+# The merged scope -- every company read as one book
+#
+# One owner, one dispatch desk, two legal entities: on the install this was
+# built for, Roadside Towing holds the club accounts and Auto Lyft USA holds
+# HONK's. "How much work did we turn away overnight" is a question about the
+# pair, and answering it by opening two dashboards and adding up by hand is how
+# a number gets fumbled.
+#
+# Every test above proves rows do not leak BETWEEN companies. These prove the
+# one place they are added together is honest about it:
+#
+#   * it reads every member and nothing else,
+#   * it is never, on any path, a thing that gets WRITTEN to,
+#   * and when the members disagree about a setting the numbers depend on, it
+#     says whose setting it used instead of quietly picking one.
+#
+# The Ohio/Texas fixture is adversarial for the last point on purpose: their
+# staffed windows and their client price lists are deliberately different.
+# ==========================================================================
+
+MERGED = companies_module.MERGED_COMPANY_ID
+
+
+def test_the_merged_scope_reads_every_member_and_nothing_else(two_companies) -> None:
+    """The sum, and demonstrably the sum -- by identity, not only by count."""
+    from towbook_agent.web import queries as q
+
+    start = datetime(DAY.year, DAY.month, DAY.day)
+    rows = q.fetch_requests(start, start + timedelta(days=1), company_id=MERGED)
+
+    assert len(rows) == OHIO_TOTAL + TEXAS_TOTAL
+    assert {row["client_key"] for row in rows} == OHIO_CLIENTS | TEXAS_CLIENTS
+    # And each company alone still sees only its own, which is the property the
+    # merged read must not have cost.
+    assert len(q.fetch_requests(start, start + timedelta(days=1), company_id=OHIO)) == OHIO_TOTAL
+
+
+def test_the_merged_scope_is_not_offered_where_there_is_nothing_to_merge() -> None:
+    """One company, no merged option -- and /company/__all__ is not a way in.
+
+    A single-tenant install must not grow a second name for its only company.
+    """
+    companies_module.reload_companies()
+    assert companies_module.company_choices() == []
+    assert companies_module.get_company(MERGED) is None
+    # Asked for anyway, it resolves to the real company rather than 500ing.
+    assert companies_module.resolve_company_id(MERGED) == DEFAULT_COMPANY_ID
+    assert companies_module.company_ids_for(MERGED) == (DEFAULT_COMPANY_ID,)
+
+
+def test_the_scheduler_never_runs_the_merged_scope(roster) -> None:
+    """It has no login and no Towbook company. A pipeline for it is meaningless.
+
+    ``enabled_companies`` is what the scheduler iterates, so the merged scope
+    staying out of it is the whole guarantee.
+    """
+    assert [c.id for c in companies_module.enabled_companies()] == [OHIO, TEXAS]
+    assert MERGED not in {c.id for c in companies_module.enabled_companies()}
+
+
+def test_the_merged_scope_refuses_to_be_written_to(roster) -> None:
+    """Every writer asks first. A row stamped __all__ belongs to no company.
+
+    Worse than orphaned: it would be counted a SECOND time by every merged read,
+    which sums the members -- so the merged total would drift further from the
+    truth on every run.
+    """
+    with pytest.raises(companies_module.NotWritable):
+        companies_module.ensure_writable(MERGED)
+    # A real company is of course fine.
+    assert companies_module.ensure_writable(TEXAS) == TEXAS
+
+
+def test_no_writer_will_take_the_merged_scope(roster, missed_work, metrics_agent) -> None:
+    """The refusal at each door, not only at the helper they all call."""
+    api = __import__(
+        "conftest", fromlist=["load_agent"]
+    ).load_agent("acquisition_api")
+
+    with pytest.raises(companies_module.NotWritable):
+        api.acquire_api("2026-07-20", "2026-07-21", company_id=MERGED)
+
+    with pytest.raises(companies_module.NotWritable):
+        metrics_agent.compute_daily(DAY, company_id=MERGED)
+
+    with pytest.raises(companies_module.NotWritable):
+        missed_work.compute_missed_work(
+            None,
+            datetime(DAY.year, DAY.month, DAY.day),
+            datetime(DAY.year, DAY.month, DAY.day) + timedelta(days=1),
+            None,
+            company_id=MERGED,
+            persist=True,
+        )
+
+
+def test_the_merged_scope_still_COMPUTES_it_just_does_not_store(
+    two_companies, missed_work
+) -> None:
+    """persist=False is the merged scope's whole mode of existence.
+
+    The dashboard recomputes it on every page load and stores nothing, which is
+    what lets it be a sum without being a tenant.
+    """
+    document = missed_work.compute_missed_work(
+        None,
+        datetime(DAY.year, DAY.month, DAY.day),
+        datetime(DAY.year, DAY.month, DAY.day) + timedelta(days=1),
+        None,
+        company_id=MERGED,
+        persist=False,
+    )
+    assert document["totals"]["offers"] == OHIO_TOTAL + TEXAS_TOTAL
+
+    with get_session(commit=False) as session:
+        stored = session.execute(
+            select(MetricsMissedWork).where(MetricsMissedWork.company_id == MERGED)
+        ).scalars().all()
+    assert stored == [], "the merged scope wrote a metrics row"
+
+
+def test_driving_the_whole_board_on_merged_stores_nothing_under_it(two_companies) -> None:
+    """The end-to-end version: every tab, then look for a single stored trace."""
+    from towbook_agent.web import app as app_module
+
+    client = _client(app_module)
+    client.get(f"/company/{MERGED}?next=/hourly", follow_redirects=False)
+    for path in ("/hourly", "/daily", "/weekly", "/monthly", "/clients", "/trends", "/health"):
+        assert client.get(path).status_code == 200, path
+
+    with get_session(commit=False) as session:
+        for model in (Request, MetricsDaily, MetricsMissedWork, ClientDaily, Run):
+            leaked = session.execute(
+                select(model).where(model.company_id == MERGED)
+            ).scalars().all()
+            assert leaked == [], f"{model.__name__} has a row filed under {MERGED}"
+
+
+def test_the_merged_view_shows_both_companies_work(two_companies) -> None:
+    """What the owner actually asked for: one page with the pair on it."""
+    from towbook_agent.web import app as app_module
+
+    client = _client(app_module)
+    body = client.get(f"/clients?company={MERGED}").text.casefold()
+    for client_name in ("agero", "allstate", "nationwide", "road america"):
+        assert client_name in body, f"the merged client list is missing {client_name}"
+
+
+def test_the_merged_page_says_it_is_a_merge(two_companies) -> None:
+    """A printed page has no dropdown on it.
+
+    Somebody reading the PDF has no way to know these figures cover two
+    companies unless the page says so, so the notice renders in the document
+    and names the members.
+    """
+    from towbook_agent.web import app as app_module
+
+    client = _client(app_module)
+    body = client.get(f"/hourly?company={MERGED}").text
+    assert "covers 2 companies together" in body
+    assert "Ohio Towing and Recovery" in body and "Texas Recovery LLC" in body
+
+
+def test_the_merged_scope_names_whose_staffed_window_it_used(roster) -> None:
+    """The members disagree here, and a merged coverage split has to admit it.
+
+    Ohio works 06:00-18:00 Mon-Fri; Texas works 12:00-23:00 every day. There is
+    no single covered/uncovered answer for the pair, so the default company's
+    window is used and the sentence saying so is carried to the page. Silently
+    picking one would put a number on a report that nobody could defend.
+    """
+    merged = companies_module.merged_company()
+    assert merged.conflicts, "two different staffed windows were merged without a word"
+    assert any("staffed window" in sentence for sentence in merged.conflicts)
+    assert any("Ohio Towing and Recovery" in sentence for sentence in merged.conflicts)
+
+    # And the window actually in force is the default company's, not a blend.
+    coverage = companies_module.rules_for(MERGED)["missed_work"]["coverage"]
+    assert coverage["windows"][0]["start"] == "06:00"
+    assert coverage["windows"][0]["days"] == ["mon", "tue", "wed", "thu", "fri"]
+
+
+def test_members_that_agree_produce_no_conflict_noise(write_config) -> None:
+    """The normal case -- one owner, one desk -- must print nothing at all.
+
+    A banner that appears when there is no disagreement is furniture, and the
+    prose differs between these two entries on purpose: the same shift
+    described in different words is not a disagreement about the shift.
+    """
+    window = {
+        "windows": [
+            {
+                "name": "covered",
+                "days": ["mon", "tue", "wed", "thu", "fri"],
+                "start": "06:00",
+                "end": "18:00",
+            }
+        ],
+        "default_label": "uncovered",
+    }
+    first = {**window}
+    second = {
+        "windows": [{**window["windows"][0], "note": "Same desk as the other entity."}],
+        "default_label": "uncovered",
+    }
+    write_config(
+        "companies",
+        {
+            "version": 1,
+            "default_company": "one",
+            "companies": [
+                {"id": "one", "name": "One LLC", "timezone": "UTC", "coverage": first,
+                 "job_value_by_client": {"agero": 65}},
+                {"id": "two", "name": "Two LLC", "timezone": "UTC", "coverage": second,
+                 "job_value_by_client": {"honk": 85}},
+            ],
+        },
+    )
+    companies_module.reload_companies()
+    try:
+        assert companies_module.merged_company().conflicts == ()
+    finally:
+        companies_module.reload_companies()
+
+
+def test_the_merged_job_values_are_the_union_of_the_members(roster) -> None:
+    """Disjoint client lists are the usual case and must simply add up.
+
+    The second entity exists precisely because one client dispatches to it and
+    to nothing else, so the merged price list is both companies' clients.
+    """
+    values = companies_module.rules_for(MERGED)["missed_work"]["job_value_by_client"]
+    assert values["agero"] == 65          # Ohio's
+    assert values["nationwide"] == 200    # Texas's
+
+
+def test_a_roster_entry_cannot_claim_the_merged_id(write_config, caplog) -> None:
+    """Honoured, it would hijack the id the switcher uses to mean "all of them"
+    -- and be a company whose rows the merged read then counts twice."""
+    write_config(
+        "companies",
+        {
+            "version": 1,
+            "companies": [
+                {"id": "real-towing", "name": "Real Towing", "enabled": True},
+                {"id": MERGED, "name": "Sneaky Towing", "enabled": True},
+            ],
+        },
+    )
+    companies_module.reload_companies()
+    try:
+        assert [c.id for c in companies_module.all_companies()] == ["real-towing"]
+    finally:
+        companies_module.reload_companies()
+
+
+def test_the_merged_staleness_banner_reports_the_STALEST_member(roster) -> None:
+    """A merged view is as fresh as its worst member, not its best.
+
+    Taking the most recent run across the members would let one company's
+    healthy 06:00 pull clear the banner while the other's has been failing for
+    days -- and the merged totals quietly went missing that company's jobs.
+    """
+    from towbook_agent.web import queries as q
+
+    now = datetime.utcnow()
+    with get_session() as session:
+        session.add(
+            Run(
+                run_id="ohio-fresh",
+                company_id=OHIO,
+                report_type="daily",
+                status="succeeded",
+                started_at=now - timedelta(hours=1),
+                finished_at=now - timedelta(hours=1),
+            )
+        )
+        session.add(
+            Run(
+                run_id="texas-broken",
+                company_id=TEXAS,
+                report_type="daily",
+                status="failed",
+                started_at=now - timedelta(days=3),
+                error_message="login failed",
+            )
+        )
+
+    summary = q.last_run_summary(MERGED)
+    assert summary is not None
+    assert summary["status"] == "failed", "the merged banner reported the healthy member"
+    assert summary["company_label"] == "Texas Recovery LLC"
+
+    # And the failure is not treated as recovered just because Ohio ran since.
+    assert q.last_recovery(MERGED) is None
 
 
 # ==========================================================================

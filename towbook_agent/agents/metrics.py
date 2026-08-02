@@ -661,12 +661,19 @@ def _load_rows(
     through, so an unfiltered branch here would put one tenant's offers into
     another tenant's report with nothing on screen to show it happened.
 
+    THE ONE EXCEPTION IS ASKED FOR BY NAME. ``company_ids_for`` returns a
+    single-id tuple for every real company, and several ids only for the
+    merged scope -- which exists precisely because this install's two legal
+    entities are one business and the owner needs their sum. It is still not
+    "every company": it is the enabled members of a scope the operator
+    selected, and it is never a write target (``companies.ensure_writable``).
+
     Ordered deterministically so that every list in the JSON output is stable
     across recomputation -- which is what makes the stored blob comparable.
     """
     stmt = (
         select(Request)
-        .where(Request.company_id == _companies.resolve_company_id(company_id))
+        .where(Request.company_id.in_(_companies.company_ids_for(company_id)))
         .where(Request.offered_at.is_not(None))
         .where(Request.offered_at >= start_utc)
         .where(Request.offered_at < end_utc)
@@ -1592,6 +1599,9 @@ def compute_hourly(
     ``account_id`` is the old name for ``company_id`` and still works.
     """
     with _company_scope(company_id, account_id) as company:
+        if persist:
+            # The merged scope reads several companies; it is never written to.
+            _companies.ensure_writable(company)
         return _compute_hourly(
             window_start,
             session=session,
@@ -1822,6 +1832,9 @@ def compute_daily(
     ``account_id`` is the old name for ``company_id`` and still works.
     """
     with _company_scope(company_id, account_id) as company:
+        if persist:
+            # The merged scope reads several companies; it is never written to.
+            _companies.ensure_writable(company)
         return _compute_daily(
             day,
             session=session,
@@ -2320,6 +2333,9 @@ def compute_weekly(
     ``account_id`` is the old name for ``company_id`` and still works.
     """
     with _company_scope(company_id, account_id) as company:
+        if persist:
+            # The merged scope reads several companies; it is never written to.
+            _companies.ensure_writable(company)
         return _compute_weekly(
             week_start,
             session=session,
@@ -2700,6 +2716,9 @@ def compute_monthly(
     ``account_id`` is the old name for ``company_id`` and still works.
     """
     with _company_scope(company_id, account_id) as company:
+        if persist:
+            # The merged scope reads several companies; it is never written to.
+            _companies.ensure_writable(company)
         return _compute_monthly(
             month_start,
             session=session,

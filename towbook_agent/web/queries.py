@@ -428,6 +428,10 @@ def fetch_requests(
     this module reads its rows through here, so this is the one place the
     filter could go missing -- and it cannot.
 
+    ``company_ids_for`` returns one id for a real company and the members for
+    the merged scope, which the operator has to select by name. So the filter
+    widens only when somebody asked it to, and never by omission.
+
     DUPLICATE OFFERS ARE COLLAPSED, exactly as they are for the agents: one
     job a club asked for three times is one row, carrying ``duplicate_count``
     and the references of the offers it stands for. Every dashboard view reads
@@ -441,7 +445,7 @@ def fetch_requests(
     """
     statement = (
         select(*_REQUEST_COLUMNS)
-        .where(Request.company_id == _companies.resolve_company_id(company_id))
+        .where(Request.company_id.in_(_companies.company_ids_for(company_id)))
         .where(Request.offered_at.is_not(None))
         .where(Request.offered_at >= start_utc)
         .where(Request.offered_at < end_utc)
@@ -463,7 +467,9 @@ def has_any_data(company_id: str | None = None) -> bool:
     """True once THIS COMPANY has a single request row. Drives the empty state.
 
     Per company, so a newly added tenant sees "run the pipeline" rather than a
-    page of zeros that looks like a bad day.
+    page of zeros that looks like a bad day. On the merged scope, one member
+    with rows is enough -- the view has something true to show even while its
+    other member is still waiting for its first pull.
     """
     try:
         with core_db.get_session(commit=False) as session:
@@ -471,9 +477,7 @@ def has_any_data(company_id: str | None = None) -> bool:
                 session.execute(
                     select(func.count())
                     .select_from(Request)
-                    .where(
-                        Request.company_id == _companies.resolve_company_id(company_id)
-                    )
+                    .where(Request.company_id.in_(_companies.company_ids_for(company_id)))
                 ).scalar_one()
             )
     except Exception:
@@ -2296,7 +2300,20 @@ def period_snapshot(kind: str = "week", company_id: str | None = None) -> dict[s
         # The reports carry the priced version; the board does not.
         "basis_note": basis_note(False),
         "rules_version": document.get("rules_version"),
-        "has_data": bool(totals.get("offers")) or bool(prior_totals.get("offers")),
+        # THE PREVIOUS FULL PERIOD COUNTS TOO.
+        #
+        # `prior_totals` is the previous period trimmed to the same elapsed
+        # length as this one -- on the 1st of a month that is a single day. So
+        # on every 1st, and every Monday, both of the first two were zero while
+        # the whole previous month sat there holding 821 offers, and the tab
+        # printed "Nothing offered this month or last". That sentence was
+        # false, and it hid the one comparison the tab still had to make: the
+        # previous_full column, which is populated exactly then.
+        "has_data": (
+            bool(totals.get("offers"))
+            or bool(prior_totals.get("offers"))
+            or bool(prior_full_totals.get("offers"))
+        ),
     }
 
 
@@ -2540,7 +2557,17 @@ def stored_daily_metric(day: _date, company_id: str | None = None) -> dict[str, 
     silently resolved in favour of one of them. Unfiltered it would show
     whichever company's row happened to be first, which is a divergence
     invented by the query.
+
+    NONE ON THE MERGED SCOPE, on purpose. This column exists to compare what
+    was stored against what was just recomputed; the merged scope stores
+    nothing, so there is no stored figure to compare against. Summing the
+    members' stored rows would manufacture one -- and it would disagree with
+    the recomputation whenever a member's row was written under an older
+    rules_version, which reads as a fault in the numbers rather than in the
+    comparison. The tab simply omits the column.
     """
+    if _companies.resolve_company(company_id).is_merged:
+        return None
     try:
         with core_db.get_session(commit=False) as session:
             row = session.execute(
@@ -3109,18 +3136,53 @@ def _dump_yaml(value: Any) -> str:
 # ==========================================================================
 
 
+def _worst_run(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The run a merged banner must speak for: the least reassuring member.
+
+    A merged view is exactly as fresh as its STALEST member, not its newest.
+    Taking the most recent run across the members would let Roadside's healthy
+    06:00 pull clear the banner for an Auto Lyft pull that has been failing
+    since Tuesday -- while the merged totals quietly went missing 201 jobs.
+
+    So: a failure outranks a success, and among equals the oldest wins.
+    """
+    if not summaries:
+        return None
+
+    def rank(summary: dict[str, Any]) -> tuple[int, float]:
+        failed = str(summary.get("status") or "").strip().lower() == "failed"
+        age = summary.get("age_hours")
+        return (1 if failed else 0, float(age) if isinstance(age, (int, float)) else 0.0)
+
+    return max(summaries, key=rank)
+
+
 def last_run_summary(company_id: str | None = None) -> dict[str, Any] | None:
     """This company's most recent run, for the staleness banner.
 
     Per company, because "the pipeline ran" is not a fact about the install --
     it is a fact about one tenant. Another company's healthy 06:00 run must not
     clear the banner for a company whose pull has been failing for two days.
+    That is also why the merged scope reports its WORST member rather than its
+    newest run -- see :func:`_worst_run`.
     """
+    scope = _companies.resolve_company(company_id)
+    if scope.is_merged:
+        summaries = []
+        for member in scope.members:
+            summary = last_run_summary(member)
+            if summary is not None:
+                company = _companies.get_company(member)
+                summaries.append(
+                    dict(summary, company_id=member, company_label=company.label if company else member)
+                )
+        return _worst_run(summaries)
+
     try:
         with core_db.get_session(commit=False) as session:
             run = session.execute(
                 select(Run)
-                .where(Run.company_id == _companies.resolve_company_id(company_id))
+                .where(Run.company_id == scope.id)
                 .order_by(Run.started_at.desc())
                 .limit(1)
             ).scalar_one_or_none()
@@ -3151,13 +3213,22 @@ def last_recovery(company_id: str | None = None) -> datetime | None:
     for the same reason the watchdog counts it: the numbers were produced.
     Returns ``None`` when nothing has ever succeeded, which reads as "no
     recovery", so a failure on a pipeline that has never worked stays up.
+
+    On the merged scope this is the EARLIEST of the members' recoveries, and
+    None if any member has never produced: a merged report is not recovered
+    while one of the books it adds up is still missing.
     """
+    scope = _companies.resolve_company(company_id)
+    if scope.is_merged:
+        recoveries = [last_recovery(member) for member in scope.members]
+        return None if not recoveries or any(r is None for r in recoveries) else min(recoveries)
+
     try:
         with core_db.get_session(commit=False) as session:
             run = session.execute(
                 select(Run)
                 .where(
-                    Run.company_id == _companies.resolve_company_id(company_id),
+                    Run.company_id == scope.id,
                     Run.status.in_(("succeeded", "partial")),
                 )
                 .order_by(Run.started_at.desc())
@@ -3326,11 +3397,27 @@ def _overdue_reports(company_id: str | None = None) -> list[dict[str, Any]]:
     roster-wide it answers with whichever company ran most recently, so a tenant
     that has been silent for a week reads its neighbour's healthy run and shows
     itself green.
+
+    The merged scope asks EACH MEMBER SEPARATELY and returns everything that is
+    late, tagged with whose it is. Asking once for the pair would reintroduce
+    exactly the bug the paragraph above describes.
     """
+    scope = _companies.resolve_company(company_id)
+    if scope.is_merged:
+        findings: list[dict[str, Any]] = []
+        for member in scope.members:
+            company = _companies.get_company(member)
+            label = company.label if company else member
+            findings.extend(
+                dict(finding, company_id=member, company_label=label)
+                for finding in _overdue_reports(member)
+            )
+        return findings
+
     try:
         from ..core.scheduler import overdue_reports
 
-        return overdue_reports(company_id=_companies.resolve_company_id(company_id))
+        return overdue_reports(company_id=scope.id)
     except Exception:
         logger.debug("could not evaluate overdue reports", exc_info=True)
         return []
@@ -3343,10 +3430,7 @@ def recent_alerts(limit: int = 20, company_id: str | None = None) -> list[dict[s
             alerts = (
                 session.execute(
                     select(AlertFired)
-                    .where(
-                        AlertFired.company_id
-                        == _companies.resolve_company_id(company_id)
-                    )
+                    .where(AlertFired.company_id.in_(_companies.company_ids_for(company_id)))
                     .order_by(AlertFired.fired_at.desc())
                     .limit(limit)
                 )
@@ -3422,12 +3506,14 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
     except Exception as exc:
         result["config_error"] = redact(f"{type(exc).__name__}: {exc}")
 
+    scope_ids = _companies.company_ids_for(company_id)
+
     try:
         with core_db.get_session(commit=False) as session:
             runs = (
                 session.execute(
                     select(Run)
-                    .where(Run.company_id == company_id)
+                    .where(Run.company_id.in_(scope_ids))
                     .order_by(Run.started_at.desc())
                     .limit(run_limit)
                 )
@@ -3436,11 +3522,17 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
             )
 
             # Previous run of the same report type, for the row-count diff.
-            previous: dict[str, int | None] = {}
+            #
+            # Keyed on the COMPANY as well as the report type. On the merged
+            # scope the members' runs interleave, and a diff against whichever
+            # company happened to run last would report Auto Lyft's 201 rows as
+            # a 2,783-row collapse in the daily pull.
+            previous: dict[tuple[str, str], int | None] = {}
             entries: list[dict[str, Any]] = []
             for run in reversed(runs):  # oldest first so "previous" is meaningful
                 report_type = run.report_type or "unknown"
-                prior = previous.get(report_type)
+                series = (run.company_id or "", report_type)
+                prior = previous.get(series)
                 delta = None
                 if prior is not None and run.row_count is not None:
                     delta = run.row_count - prior
@@ -3468,7 +3560,7 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
                     }
                 )
                 if run.row_count is not None:
-                    previous[report_type] = run.row_count
+                    previous[series] = run.row_count
             entries.reverse()  # newest first for display
             result["runs"] = entries
             result["failures"] = [e for e in entries if e["status"] in ("failed", "partial")]
@@ -3500,7 +3592,7 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
                 statement = (
                     select(func.count())
                     .select_from(model)
-                    .where(model.company_id == company_id)
+                    .where(model.company_id.in_(scope_ids))
                 )
                 for clause in clauses:
                     statement = statement.where(clause)
@@ -3527,7 +3619,7 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
 
             earliest, latest = session.execute(
                 select(func.min(Request.offered_at), func.max(Request.offered_at)).where(
-                    Request.company_id == company_id
+                    Request.company_id.in_(scope_ids)
                 )
             ).one()
             result["earliest_request"] = to_local(earliest)
@@ -3542,22 +3634,33 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
         rows = fetch_requests(start, end, company_id=company_id)
         by_day = _bucket_by(rows, lambda r: r["offered_local"].date())
         with core_db.get_session(commit=False) as session:
-            stored = {
-                row.date: row
-                for row in session.execute(
-                    select(MetricsDaily)
-                    .where(MetricsDaily.company_id == company_id)
-                    .where(MetricsDaily.date >= today - timedelta(days=13))
-                ).scalars()
-            }
+            stored_rows: dict[_date, list[Any]] = {}
+            for row in session.execute(
+                select(MetricsDaily)
+                .where(MetricsDaily.company_id.in_(scope_ids))
+                .where(MetricsDaily.date >= today - timedelta(days=13))
+            ).scalars():
+                stored_rows.setdefault(row.date, []).append(row)
         coverage = []
         for offset in range(14):
             day = today - timedelta(days=13 - offset)
             bucket = by_day.get(day)
-            stored_row = stored.get(day)
+            # One row per member. A day is only comparable when EVERY member
+            # computed it: summing the one member that ran against a live
+            # figure covering both would report a fault in the numbers where
+            # there is only a member that has not run yet.
+            day_rows = stored_rows.get(day) or []
+            complete = len(day_rows) == len(scope_ids)
             stored_offered = None
-            if stored_row is not None and isinstance(stored_row.metrics, dict):
-                stored_offered = stored_row.metrics.get("offered")
+            if complete:
+                amounts = [
+                    r.metrics.get("offered")
+                    for r in day_rows
+                    if isinstance(r.metrics, dict) and r.metrics.get("offered") is not None
+                ]
+                if len(amounts) == len(day_rows):
+                    stored_offered = sum(int(a) for a in amounts)
+            computed = [r.computed_at for r in day_rows if r.computed_at]
             live_offered = bucket.offered if bucket else 0
             coverage.append(
                 {
@@ -3566,13 +3669,15 @@ def health_view(run_limit: int = 60, company_id: str | None = None) -> dict[str,
                     "live_accepted": bucket.accepted if bucket else 0,
                     "live_rate": bucket.rate if bucket else None,
                     "stored_offered": stored_offered,
-                    "has_stored": stored_row is not None,
+                    "has_stored": complete,
                     "matches": (
                         stored_offered is None or int(stored_offered) == live_offered
-                        if stored_row is not None
+                        if complete
                         else None
                     ),
-                    "computed_at": to_local(stored_row.computed_at) if stored_row else None,
+                    # The OLDEST of the members' computations: the day is only
+                    # as freshly computed as its least freshly computed part.
+                    "computed_at": to_local(min(computed)) if computed else None,
                 }
             )
         result["coverage"] = coverage

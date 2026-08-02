@@ -348,6 +348,34 @@ next click on any tab, `?company=<id>` overrides it for one request, and every
 tab, partial and `/api/...` endpoint respects it. `--company` does the same on
 the CLI (`--account` is the old spelling and still works).
 
+**One company, or all of them together.** With two or more enabled companies the
+switcher grows a second group, *Together → All companies (merged)*: every
+company's work read as one book. It is there because several legal entities are
+usually one business — Roadside Towing holds the club accounts, Auto Lyft USA
+holds HONK's, one owner and one dispatch desk between them — so *"how much work
+did **we** turn away last week"* gets a page instead of being added up by hand.
+Select it on any tab, or link straight to `?company=__all__`.
+
+It is a way of reading, **not a third company**:
+
+- it has no roster entry, no login and no Towbook company id;
+- the scheduler never runs a pipeline for it — `enabled_companies()` excludes
+  it, so the pull, the ingest and the metrics still happen once per real
+  company;
+- **it stores nothing.** Every writer calls `companies.ensure_writable()`, which
+  refuses the merged id, so no request row, metrics row or run is ever filed
+  under it. The view is recomputed from the members' own rows on every read.
+- **it is as fresh as its stalest member.** The staleness banner reports the
+  worst member's run, not the newest, so one company's healthy 06:00 pull cannot
+  clear the alarm for another whose pull has been failing for days.
+
+Where the members disagree about something the numbers depend on — a staffed
+window, a timezone, a client's job value — the merged page uses
+`default_company`'s setting and **prints a sentence saying so**, on screen and on
+the printout. A merged coverage split computed over two different shifts is not
+a number anybody could defend, and the reader has to be told which one was used.
+Companies that agree print nothing, so the ordinary case stays quiet.
+
 ---
 
 ## Deploying to Railway
