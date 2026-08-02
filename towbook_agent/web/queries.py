@@ -34,7 +34,7 @@ from functools import wraps
 from datetime import date as _date
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -4031,6 +4031,435 @@ def maps_snapshot(
         },
         "ranking_note": RANKING_NOTE,
         "has_data": offered_total > 0,
+    }
+
+
+# ==========================================================================
+# Lost revenue -- the running total, and the hours it runs out of
+#
+# Everything else on this board counts JOBS. This view multiplies those jobs by
+# the per-client average values in `missed_work.job_value_by_client` and shows
+# the result as a running figure: day to date, week to date, month to date, a
+# daily series behind them, and the hours of the day ranked by what they cost.
+#
+# WHAT THIS NUMBER IS, STATED ONCE AND REPEATED ON THE PAGE.
+#
+# Towbook's `offerAmount` is empty on 100% of records, so not one dollar here
+# comes from the feed. Every figure is an ESTIMATE: recoverable missed jobs
+# multiplied by GROSS average job values a human supplied from invoice data.
+# It is not margin, and it is not money that was ever invoiced.
+#
+# IT UNDERSTATES, DELIBERATELY AND VISIBLY.
+#
+# A job contributes only when its client has a configured value AND its service
+# class is one the price book applies to (`job_value_applies_to`, default the
+# should-accept classes). Declined light service is valued separately at the
+# flat `light_service_value`, because a tow average applied to a tire change
+# would inflate the one number a reader is most likely to quote out loud.
+# Everything else contributes NOTHING and is counted in `unpriced_jobs`, which
+# the page prints beside the total. A partial price list produces a visibly
+# partial number rather than an invented one.
+#
+# The valuation itself is `agents.missed_work`'s, reached through the same
+# price book the emailed reports use. The board and the report must never
+# disagree about what a missed job was worth.
+# ==========================================================================
+
+#: Default window for the revenue view. Thirty days is the shortest span in
+#: which a per-hour dollar ranking has enough jobs per hour to mean anything --
+#: the same reason the missed-work views default to it.
+REVENUE_WINDOW_DAYS: int = 30
+
+#: Buckets counted as lost revenue when rules.yaml says nothing. Mirrors
+#: `missed_work.recoverable_buckets`: work we could plausibly have had.
+#: `client_withdrew` is deliberately absent and is only folded in when
+#: `count_client_withdrew_as_recoverable` is set, exactly as the agents do it.
+_DEFAULT_RECOVERABLE_BUCKETS: tuple[str, ...] = ("declined", "no_response", "accept_failed")
+
+
+def _revenue_price_book(rules: dict[str, Any]) -> tuple[dict[str, float], frozenset[str] | None]:
+    """``(client_key -> gross average job value, classes it may be applied to)``.
+
+    Read through ``agents.missed_work`` rather than parsed here, so a typo'd
+    price is dropped with the same warning and the same consequence in both
+    places. An empty book means nobody has filled in ``job_value_by_client``
+    yet, and every caller renders that as "pricing not configured" rather than
+    as a total of zero dollars.
+    """
+    module = _missed_work_module()
+    if module is None:
+        return {}, None
+    try:
+        return module._price_book(rules), module._priced_classes(rules)
+    except Exception:  # pragma: no cover - defensive, matches bucket_of
+        logger.warning("could not read the price book; revenue view will show no dollars")
+        return {}, None
+
+
+def _recoverable_buckets(rules: dict[str, Any]) -> frozenset[str]:
+    """Which buckets count as lost revenue, from rules.yaml."""
+    block = (rules.get("missed_work") or {}) if isinstance(rules, dict) else {}
+    configured = block.get("recoverable_buckets") or _DEFAULT_RECOVERABLE_BUCKETS
+    if isinstance(configured, str):
+        configured = [configured]
+    buckets = {str(name).strip() for name in configured if str(name).strip()}
+    if block.get("count_client_withdrew_as_recoverable"):
+        buckets.add("client_withdrew")
+    return frozenset(buckets)
+
+
+def _week_start(day: _date) -> _date:
+    """The Monday of ``day``'s week. Matches ``week_start_for``'s convention."""
+    return week_start_for(day)
+
+
+def _value_row(
+    row: dict[str, Any],
+    book: Mapping[str, float],
+    priced_classes: frozenset[str] | None,
+    light_value: float,
+) -> tuple[float, str]:
+    """``(dollars, which price answered)`` for one recoverable job.
+
+    ``kind`` is ``"tow"``, ``"light_service"`` or ``"unpriced"``. The two priced
+    kinds are kept apart all the way to the template because they come from
+    different places -- a per-client average the owner read off invoices, and a
+    single flat rate for light service -- and a reader is entitled to know how
+    much of a total came from which.
+    """
+    service_class = row.get("service_class")
+    if priced_classes is None or service_class in priced_classes:
+        value = book.get(_fold_key(row.get("client_key")))
+        if value is not None:
+            return float(value), "tow"
+    if service_class == "light_service" and light_value > 0:
+        return float(light_value), "light_service"
+    return 0.0, "unpriced"
+
+
+def _fold_key(value: Any) -> str:
+    """Casefold for price-book matching only. Never stored, never displayed."""
+    return str(value or "").strip().casefold()
+
+
+def _money_bucket() -> dict[str, Any]:
+    """A zeroed accumulator. One shape for every grouping below."""
+    return {"value": 0.0, "jobs": 0, "tow_value": 0.0, "tow_jobs": 0,
+            "light_value": 0.0, "light_jobs": 0, "unpriced_jobs": 0}
+
+
+#: Which pair of accumulator fields each price kind feeds. Explicit rather than
+#: built by f-string from the kind, so renaming a kind cannot silently start
+#: writing to a key nothing reads.
+_MONEY_FIELDS: dict[str, str] = {"tow": "tow", "light_service": "light"}
+
+
+def _money_add(bucket: dict[str, Any], amount: float, kind: str) -> None:
+    """Fold one valued job into an accumulator."""
+    bucket["jobs"] += 1
+    prefix = _MONEY_FIELDS.get(kind)
+    if prefix is None:
+        bucket["unpriced_jobs"] += 1
+        return
+    bucket["value"] += amount
+    bucket[f"{prefix}_value"] += amount
+    bucket[f"{prefix}_jobs"] += 1
+
+
+def _money_round(bucket: dict[str, Any]) -> dict[str, Any]:
+    """Round the dollar fields once, at the end, for display."""
+    out = dict(bucket)
+    for key in ("value", "tow_value", "light_value"):
+        out[key] = round(float(out.get(key) or 0.0), 2)
+    return out
+
+
+@for_company
+def revenue_snapshot(
+    days: int = REVENUE_WINDOW_DAYS, company_id: str | None = None
+) -> dict[str, Any]:
+    """Lost revenue: running day/week/month totals, and the hours that cost most.
+
+    One pass over the window's recoverable jobs, folded into every grouping the
+    page needs. The running tiles are DAY, WEEK and MONTH TO DATE -- not the
+    last 24 hours or a rolling seven days -- because the question behind this
+    view is "what has this month cost us so far", which a rolling window cannot
+    answer. Each carries the same period one cycle back, taken to the SAME
+    POINT in that cycle, so a Tuesday morning is compared against a Tuesday
+    morning rather than against a finished week.
+    """
+    rules = rules_snapshot()
+    book, priced_classes = _revenue_price_book(rules)
+    light_value = light_service_value()
+    recoverable = _recoverable_buckets(rules)
+
+    today = today_local()
+    last_day = today
+    first_day = last_day - timedelta(days=max(1, int(days)) - 1)
+
+    # The series has to reach back far enough to hold the comparison periods:
+    # the previous month to date is the earliest thing the tiles ask for.
+    month_start = today.replace(day=1)
+    prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
+    fetch_from = min(first_day, prev_month_start)
+
+    start_utc, end_utc = local_span_bounds(fetch_from, last_day)
+    rows = fetch_requests(start_utc, end_utc, company_id=company_id)
+
+    by_day: dict[_date, dict[str, Any]] = {}
+    by_hour: list[dict[str, Any]] = [_money_bucket() for _ in range(24)]
+    #: How much of each hour's loss fell OUTSIDE the staffed window, taken from
+    #: each row's own coverage label. It cannot be derived from the hour alone:
+    #: a staffed window of "Mon-Fri 06:00-18:00" makes 09:00 covered on a
+    #: Tuesday and uncovered on a Sunday, so asking "is 9am covered?" of a
+    #: synthetic date answers for that date's weekday and nothing else.
+    hour_uncovered: list[dict[str, float]] = [{"value": 0.0, "jobs": 0} for _ in range(24)]
+    by_client: dict[str, dict[str, Any]] = {}
+    by_cause: dict[str, dict[str, Any]] = {}
+    unpriced_clients: dict[str, int] = {}
+    window_total = _money_bucket()
+
+    for row in rows:
+        bucket_name = bucket_of(row, rules)
+        if bucket_name not in recoverable:
+            continue
+        offered = row.get("offered_local")
+        if offered is None:
+            continue
+        day = offered.date()
+        amount, kind = _value_row(row, book, priced_classes, light_value)
+
+        bucket = by_day.setdefault(day, _money_bucket())
+        _money_add(bucket, amount, kind)
+
+        # Only the requested window feeds the hour ranking, the client table and
+        # the headline total. The earlier rows exist solely so the month-to-date
+        # comparison has something to compare against.
+        if first_day <= day <= last_day:
+            _money_add(by_hour[offered.hour], amount, kind)
+            _money_add(window_total, amount, kind)
+            if coverage_of(row, rules) != "covered":
+                hour_uncovered[offered.hour]["value"] += amount
+                hour_uncovered[offered.hour]["jobs"] += 1
+            name = str(row.get("client_name") or row.get("client_key") or "").strip() or "(unnamed)"
+            _money_add(by_client.setdefault(name, _money_bucket()), amount, kind)
+            _money_add(by_cause.setdefault(bucket_name or "unknown", _money_bucket()), amount, kind)
+            if kind == "unpriced":
+                unpriced_clients[name] = unpriced_clients.get(name, 0) + 1
+
+    def _sum_days(first: _date, last: _date) -> dict[str, Any]:
+        """Total the daily accumulators over an inclusive date span."""
+        out = _money_bucket()
+        day = first
+        while day <= last:
+            entry = by_day.get(day)
+            if entry:
+                for key in out:
+                    out[key] += entry[key]
+            day += timedelta(days=1)
+        return out
+
+    # ---- the running tiles -------------------------------------------------
+    # Each is "so far", with the same span one cycle back for contrast. The
+    # comparison is truncated to the same offset into the period: comparing a
+    # part-week against a whole one is the single easiest way to make a good
+    # week look like a collapse.
+    week_start = _week_start(today)
+    offset_in_week = (today - week_start).days
+    prev_week_start = week_start - timedelta(days=7)
+
+    offset_in_month = (today - month_start).days
+    prev_month_end = month_start - timedelta(days=1)
+    # Clamp: the 31st has no counterpart in a 30-day month, so the comparison
+    # stops at that month's last day rather than silently wrapping forward.
+    prev_month_to = min(prev_month_start + timedelta(days=offset_in_month), prev_month_end)
+
+    running = {
+        "today": {
+            "label": "Today so far",
+            "period": today.isoformat(),
+            "current": _money_round(_sum_days(today, today)),
+            "previous": _money_round(_sum_days(today - timedelta(days=1), today - timedelta(days=1))),
+            "previous_label": "Yesterday, all day",
+        },
+        "week": {
+            "label": "Week to date",
+            "period": f"{week_start.isoformat()} to {today.isoformat()}",
+            "current": _money_round(_sum_days(week_start, today)),
+            "previous": _money_round(_sum_days(prev_week_start, prev_week_start + timedelta(days=offset_in_week))),
+            "previous_label": "Same days last week",
+        },
+        "month": {
+            "label": "Month to date",
+            "period": f"{month_start.isoformat()} to {today.isoformat()}",
+            "current": _money_round(_sum_days(month_start, today)),
+            "previous": _money_round(_sum_days(prev_month_start, prev_month_to)),
+            "previous_label": "Same days last month",
+        },
+    }
+    for tile in running.values():
+        current = float(tile["current"]["value"])
+        previous = float(tile["previous"]["value"])
+        tile["delta"] = round(current - previous, 2)
+        # No percentage against a zero baseline: "up infinity percent" is not a
+        # fact about the business, it is a fact about division.
+        tile["delta_pct"] = round((current - previous) / previous, 4) if previous else None
+        tile["direction"] = "up" if current > previous else "down" if current < previous else "flat"
+
+    # ---- the series --------------------------------------------------------
+    daily = []
+    day = first_day
+    while day <= last_day:
+        entry = _money_round(by_day.get(day) or _money_bucket())
+        entry.update({
+            "day": day,
+            "label": day.strftime("%a %d %b"),
+            "iso": day.isoformat(),
+            "is_today": day == today,
+        })
+        daily.append(entry)
+        day += timedelta(days=1)
+
+    weekly: dict[_date, dict[str, Any]] = {}
+    monthly: dict[_date, dict[str, Any]] = {}
+    for entry in daily:
+        wk = _week_start(entry["day"])
+        target = weekly.setdefault(wk, _money_bucket())
+        mo = entry["day"].replace(day=1)
+        target_m = monthly.setdefault(mo, _money_bucket())
+        for key in target:
+            target[key] += (by_day.get(entry["day"]) or _money_bucket())[key]
+            target_m[key] += (by_day.get(entry["day"]) or _money_bucket())[key]
+
+    # A week or month at either edge of the window is only PARTLY inside it, so
+    # its total is not that period's total. Saying "July 2026 -- $41,000" when
+    # the window began on the 4th is the kind of quietly wrong number this
+    # system exists to prevent, so every clipped row is flagged and the template
+    # prints the days it actually covers.
+    def _period_rows(groups: dict[_date, dict[str, Any]], span: Any, key: str, fmt) -> list[dict[str, Any]]:
+        rows_out = []
+        for start in sorted(groups):
+            stop = span(start)
+            covered_from = max(start, first_day)
+            covered_to = min(stop, last_day)
+            entry = _money_round(groups[start])
+            entry.update({
+                key: start,
+                "iso": start.isoformat(),
+                "label": fmt(start),
+                "period_start": start,
+                "period_end": stop,
+                "covered_from": covered_from,
+                "covered_to": covered_to,
+                "days_covered": (covered_to - covered_from).days + 1,
+                "days_in_period": (stop - start).days + 1,
+                "partial": covered_from > start or covered_to < min(stop, today),
+                "is_current": covered_to >= today >= start,
+            })
+            rows_out.append(entry)
+        return rows_out
+
+    weekly_rows = _period_rows(
+        weekly,
+        lambda start: start + timedelta(days=6),
+        "week_start",
+        lambda start: f"Week of {start.strftime('%d %b')}",
+    )
+    monthly_rows = _period_rows(
+        monthly,
+        lambda start: (start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1),
+        "month_start",
+        lambda start: start.strftime("%B %Y"),
+    )
+
+    # ---- the hours ---------------------------------------------------------
+    # Ranked by DOLLARS, which is the whole point of this view and the one thing
+    # /blind-spots cannot tell you: the 3am hour that loses four tows costs more
+    # than the noon hour that loses six tire changes.
+    peak = max((b["value"] for b in by_hour), default=0.0) or 0.0
+    hours = []
+    for hour, bucket in enumerate(by_hour):
+        entry = _money_round(bucket)
+        outside = hour_uncovered[hour]
+        # What SHARE of this hour's loss happened while nobody was rostered.
+        # A share rather than a flag, because most hours are covered on some
+        # weekdays and not others, and rounding that to a yes/no would mislabel
+        # every hour at the edge of the staffed window.
+        uncovered_share = (outside["value"] / entry["value"]) if entry["value"] else None
+        entry.update({
+            "hour": hour,
+            "label": _hour_range_label(hour),
+            "share": round(entry["value"] / window_total["value"], 4) if window_total["value"] else None,
+            # 0..1 for the bar width. Relative to the worst hour, not to the
+            # total, so the shape of the day is readable at any volume.
+            "intensity": round(entry["value"] / peak, 4) if peak else 0.0,
+            "uncovered_value": round(outside["value"], 2),
+            "uncovered_jobs": outside["jobs"],
+            "uncovered_share": round(uncovered_share, 4) if uncovered_share is not None else None,
+            # The tag on the page. "mostly" is the honest word for an hour that
+            # is staffed on weekdays and not at weekends.
+            "mostly_uncovered": bool(uncovered_share is not None and uncovered_share >= 0.5),
+        })
+        hours.append(entry)
+
+    worst_hours = sorted(hours, key=lambda h: (-h["value"], h["hour"]))[:10]
+
+    clients = sorted(
+        ({"client": name, **_money_round(bucket)} for name, bucket in by_client.items()),
+        key=lambda c: (-c["value"], c["client"]),
+    )
+    causes = sorted(
+        ({"cause": name, **_money_round(bucket)} for name, bucket in by_cause.items()),
+        key=lambda c: (-c["value"], c["cause"]),
+    )
+
+    totals = _money_round(window_total)
+    priced_jobs = totals["tow_jobs"] + totals["light_jobs"]
+    days_elapsed = max(1, (last_day - first_day).days + 1)
+
+    return {
+        "window": {
+            "days": int(days),
+            "first_day": first_day,
+            "last_day": last_day,
+            "label": f"{first_day.strftime('%d %b')} to {last_day.strftime('%d %b %Y')}",
+        },
+        "running": running,
+        "daily": daily,
+        "weekly": weekly_rows,
+        "monthly": monthly_rows,
+        "hours": hours,
+        "worst_hours": worst_hours,
+        "clients": clients,
+        "causes": causes,
+        "totals": totals,
+        "per_day_average": round(totals["value"] / days_elapsed, 2),
+        # Projected from the daily average, NOT from a trend line. A straight
+        # average is a claim anybody can check by hand; a fitted trend on 30
+        # points of towing volume is a claim about seasonality this system has
+        # no evidence for.
+        "annualised": round((totals["value"] / days_elapsed) * 365, 2),
+        "pricing": {
+            "configured": bool(book),
+            "clients_priced": sorted(book),
+            "light_service_value": light_value,
+            "priced_jobs": priced_jobs,
+            "unpriced_jobs": totals["unpriced_jobs"],
+            "priced_share": round(priced_jobs / totals["jobs"], 4) if totals["jobs"] else None,
+            "unpriced_clients": sorted(
+                ({"client": name, "jobs": count} for name, count in unpriced_clients.items()),
+                key=lambda c: (-c["jobs"], c["client"]),
+            ),
+        },
+        "basis_note": (
+            "Estimated GROSS revenue, not margin and not invoiced money. Towbook "
+            "publishes no offer amount, so every figure here is recoverable missed "
+            "jobs multiplied by the per-client average job values in "
+            "missed_work.job_value_by_client, plus declined light service at a flat "
+            f"${light_value:,.0f}. Jobs whose client has no configured value "
+            "contribute nothing, so this total understates."
+        ),
+        "has_data": totals["jobs"] > 0,
     }
 
 

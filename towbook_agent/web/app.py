@@ -113,6 +113,7 @@ TABS = (
 #: of them on the URL it has always had -- no redirects, nothing renamed.
 DETAIL_NAV = (
     ("missed", "Missed work", "/"),
+    ("revenue", "Lost revenue", "/revenue"),
     ("maps", "Maps", "/maps"),
     ("blind_spots", "Blind spots", "/blind-spots"),
     ("closeoff", "Close-off", "/close-off"),
@@ -183,6 +184,22 @@ def f_money(value: Any) -> str:
         return DASH
     try:
         return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return DASH
+
+
+def f_money0(value: Any) -> str:
+    """Whole dollars, no cents.
+
+    Every dollar figure in this system is an estimate built from per-client
+    AVERAGES, so cents are not merely noise -- printing ``$56,595.00`` implies
+    a precision the input never had. The headline figures use this; the price
+    book itself still prints exact amounts, because those are typed by a human.
+    """
+    if value in (None, ""):
+        return DASH
+    try:
+        return f"${float(value):,.0f}"
     except (TypeError, ValueError):
         return DASH
 
@@ -349,6 +366,7 @@ def create_app() -> FastAPI:
             "points": f_points,
             "num": f_num,
             "money": f_money,
+            "money0": f_money0,
             "dt": f_dt,
             "clock": f_time,
             "day": f_day,
@@ -762,6 +780,26 @@ def view_blind_spots(request: HTTPRequest) -> HTMLResponse:
         request,
         "blind_spots.html",
         _shell(request, "blind_spots", spots=data, company=company, day_options=DAY_OPTIONS),
+    )
+
+
+@app.get("/revenue", response_class=HTMLResponse)
+def view_revenue(request: HTTPRequest) -> HTMLResponse:
+    """Lost revenue as a running total, and the hours that cost the most.
+
+    Every other view counts jobs. This one multiplies them by the owner's own
+    per-client average job values, so the question "what is this costing us"
+    has a page instead of an arithmetic exercise. The number is an estimate and
+    the page says so in three places -- Towbook publishes no offer amount, so
+    there is no version of this figure that came out of the feed.
+    """
+    company = _company(request)
+    days = _days(request, q.REVENUE_WINDOW_DAYS)
+    data = q.revenue_snapshot(days=days, company_id=company)
+    return _render(
+        request,
+        "revenue.html",
+        _shell(request, "revenue", revenue=data, company=company, day_options=DAY_OPTIONS),
     )
 
 

@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Lost revenue{% endblock %}
+
+{#- ==========================================================================
+    THE MONEY VIEW.
+
+    Every other page in this app counts JOBS, and does so because Towbook's
+    offerAmount is empty on 100% of records -- there is no dollar figure in the
+    feed to report. This page is the one place those job counts are multiplied
+    by the owner's own per-client average job values, because "we missed 975
+    jobs" and "that was fifty-six thousand dollars" are the same fact and only
+    one of them gets acted on.
+
+    THE ESTIMATE IS STATED THREE TIMES, ON PURPOSE.
+
+    Once in the banner above the numbers, once under the headline total, and
+    once beneath every ranked table. This page is the most quotable thing in
+    the system: its figures will end up in a conversation with a client, a
+    bank or a buyer, and none of them may travel without the sentence that says
+    they are gross estimates from an owner-supplied price list. The redundancy
+    is the point -- a reader who prints one section still gets the caveat.
+
+    IT UNDERSTATES, AND SAYS WHERE.
+
+    A job with no configured client value contributes nothing at all rather
+    than a guessed default, so `unpriced_jobs` is printed beside the total and
+    the clients responsible are named. A number that is quietly too low is
+    recoverable; a number that is invented is not.
+    ========================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Lost revenue</h1>
+    <div class="sub">
+      {{ revenue.window.first_day|day("%b %d, %Y") }} &ndash; {{ revenue.window.last_day|day("%b %d, %Y") }}
+      ({{ revenue.window.days }} days). Recoverable missed work, valued at this
+      company&rsquo;s own average job values, local time.
+    </div>
+  </div>
+  <div class="controls">
+    {{ m.window_picker('/revenue', revenue.window.days, day_options, account) }}
+  </div>
+</div>
+
+{#- The caveat comes BEFORE the first number, not after the last one. -#}
+<div class="notice notice-info">
+  <span class="ico">&#8505;</span>
+  <span>{{ revenue.basis_note }}</span>
+</div>
+
+{% if not revenue.pricing.configured %}
+  {{ m.empty_state('No prices configured',
+                   'Set missed_work.job_value_by_client in config/companies.yaml for this company and
+                    every figure on this page fills in. Until then there is nothing to multiply job
+                    counts by, and this system will not invent a per-job default.') }}
+{% elif not revenue.has_data %}
+  {{ m.empty_state('Nothing missed in this window',
+                   'No recoverable missed work between ' ~ revenue.window.first_day ~ ' and ' ~ revenue.window.last_day ~ '.') }}
+{% else %}
+
+{#- ==========================================================================
+    THE RUNNING TILES -- the thing that was asked for: a number you can look at
+    today and again tomorrow. Each is TO DATE, with the same span one cycle
+    back for contrast, truncated to the same offset into that cycle so a
+    Tuesday is compared against a Tuesday.
+    ========================================================================== -#}
+<div class="stats stats-headline">
+  {% for key in ['today', 'week', 'month'] %}
+  {% set tile = revenue.running[key] %}
+  <div class="stat {% if key == 'month' %}stat-lead{% endif %}">
+    <div class="label">{{ tile.label }}</div>
+    <div class="value hero">{{ tile.current.value|money0 }}</div>
+    <div class="sub">
+      {{ tile.current.jobs }} job{{ '' if tile.current.jobs == 1 else 's' }}
+      &middot; {{ tile.period }}
+    </div>
+    <div class="sub">
+      {#- A rise in lost revenue is BAD, so the delta is inverted: it must not
+          render green because the number went up. -#}
+      {{ m.delta(tile.delta_pct, invert=true) }}
+      <span class="muted">vs {{ tile.previous.value|money0 }} &mdash; {{ tile.previous_label|lower }}</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+  <section class="card">
+    <h2>Over the whole {{ revenue.window.days }}-day window</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="label">Total estimated loss</div>
+        <div class="value">{{ revenue.totals.value|money0 }}</div>
+        <div class="sub">{{ revenue.totals.jobs }} recoverable jobs</div>
+      </div>
+      <div class="stat">
+        <div class="label">Average per day</div>
+        <div class="value">{{ revenue.per_day_average|money0 }}</div>
+        <div class="sub">across {{ revenue.window.days }} days</div>
+      </div>
+      <div class="stat">
+        <div class="label">At that rate, a year</div>
+        <div class="value">{{ revenue.annualised|money0 }}</div>
+        {#- Straight-line from the daily average and labelled as such. A fitted
+            trend on thirty points would imply seasonality nothing here has
+            evidence for. -#}
+        <div class="sub">daily average &times; 365, not a forecast</div>
+      </div>
+    </div>
+    <p class="rank-note">
+      <span class="ico">&#8505;</span>
+      Made up of {{ revenue.totals.tow_value|money0 }} across
+      {{ revenue.totals.tow_jobs }} tow-class jobs priced from the client averages,
+      and {{ revenue.totals.light_value|money0 }} across {{ revenue.totals.light_jobs }}
+      declined light-service jobs at a flat {{ revenue.pricing.light_service_value|money0 }}.
+      {% if revenue.totals.unpriced_jobs %}
+      <strong>{{ revenue.totals.unpriced_jobs }} missed job{{ '' if revenue.totals.unpriced_jobs == 1 else 's' }}
+      contributed nothing</strong> because no value is configured for
+      {{ revenue.pricing.unpriced_clients | map(attribute='client') | join(', ') }} &mdash;
+      so the totals above are an understatement.
+      {% endif %}
+    </p>
+  </section>
+
+  {#- ========================================================================
+      THE HOURS THAT COST THE MOST.
+
+      This is what /blind-spots cannot tell you. That page ranks hours by how
+      often offers go unanswered; this one ranks them by what going unanswered
+      COST. They disagree whenever a quiet hour is full of tows and a busy one
+      is full of tire changes, and the dollar ranking is the one a staffing
+      decision should be made on.
+
+      Bars are sized against the WORST hour, not against the total, so the
+      shape of the day is readable whatever the volume. Covered hours are
+      marked, because an expensive hour inside the staffed window is a
+      different problem from an expensive hour nobody was rostered for.
+      ======================================================================== -#}
+  <section class="card">
+    <h2>The hours that cost the most</h2>
+    <p class="sub">
+      Every hour of the day, ranked by the money that went out of the door in it.
+      A marked hour is one where most of the loss happened with nobody rostered
+      &mdash; which is a different problem from an expensive hour you were staffed for.
+    </p>
+    <ol class="hourbars">
+      {% for hour in revenue.hours %}
+      {#- The staffed window covers weekdays only, so an hour is rarely wholly
+          covered or wholly uncovered. The tag reports the share actually
+          measured on this window's own jobs rather than asking whether some
+          representative date happened to be a weekday. -#}
+      <li class="hourbar{% if hour.mostly_uncovered %} hourbar-uncovered{% endif %}">
+        <span class="hourbar-label">{{ hour.label }}</span>
+        <span class="hourbar-track">
+          <span class="hourbar-fill" style="width: {{ (hour.intensity * 100)|round(1) }}%"></span>
+        </span>
+        <span class="hourbar-value">{{ hour.value|money0 }}</span>
+        <span class="hourbar-jobs muted">{{ hour.jobs }}j</span>
+        <span class="hourbar-flag">
+          {%- if hour.mostly_uncovered %}
+          <span class="tag tag-warn"
+                title="{{ hour.uncovered_value|money0 }} of this hour's loss ({{ hour.uncovered_share|pct }}) happened outside the staffed window">
+            {{ hour.uncovered_share|pct }} unstaffed
+          </span>
+          {%- endif -%}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="rank-note">
+      <span class="ico">&#8505;</span>
+      The worst hour, {{ revenue.worst_hours[0].label }}, accounts for
+      {{ revenue.worst_hours[0].value|money0 }} &mdash;
+      {{ revenue.worst_hours[0].share|pct }} of everything lost in this window.
+    </p>
+  </section>
+
+  {#- ========================================================================
+      THE SERIES. Daily is the running record; weekly and monthly are its
+      roll-ups. A period only partly inside the window is flagged, because
+      "July 2026 -- $56,105" would otherwise be read as the whole of July when
+      the window began on the 4th.
+      ======================================================================== -#}
+  <section class="card">
+    <h2>Day by day</h2>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Day</th>
+          <th scope="col" class="num">Lost</th>
+          <th scope="col" class="num">Jobs</th>
+          <th scope="col">Shape</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set peak = revenue.daily | map(attribute='value') | max %}
+        {% for day in revenue.daily | reverse %}
+        <tr{% if day.is_today %} class="is-current"{% endif %}>
+          <th scope="row">
+            {{ day.label }}
+            {% if day.is_today %}<span class="tag">today, so far</span>{% endif %}
+          </th>
+          <td class="num">{{ day.value|money0 }}</td>
+          <td class="num">{{ day.jobs }}</td>
+          <td>
+            <span class="hourbar-track">
+              <span class="hourbar-fill" style="width: {{ ((day.value / peak * 100) if peak else 0)|round(1) }}%"></span>
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>By week</h2>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Week</th>
+          <th scope="col" class="num">Lost</th>
+          <th scope="col" class="num">Jobs</th>
+          <th scope="col">Covers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for week in revenue.weekly | reverse %}
+        <tr{% if week.is_current %} class="is-current"{% endif %}>
+          <th scope="row">
+            {{ week.label }}
+            {% if week.is_current %}<span class="tag">in progress</span>{% endif %}
+          </th>
+          <td class="num">{{ week.value|money0 }}</td>
+          <td class="num">{{ week.jobs }}</td>
+          <td class="muted small">
+            {% if week.partial %}
+            <span class="tag tag-warn">part week</span>
+            {{ week.days_covered }} of {{ week.days_in_period }} days
+            {% else %}
+            {{ week.days_covered }} days
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>By month</h2>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Month</th>
+          <th scope="col" class="num">Lost</th>
+          <th scope="col" class="num">Jobs</th>
+          <th scope="col">Covers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for month in revenue.monthly | reverse %}
+        <tr{% if month.is_current %} class="is-current"{% endif %}>
+          <th scope="row">
+            {{ month.label }}
+            {% if month.is_current %}<span class="tag">in progress</span>{% endif %}
+          </th>
+          <td class="num">{{ month.value|money0 }}</td>
+          <td class="num">{{ month.jobs }}</td>
+          <td class="muted small">
+            {% if month.partial %}
+            <span class="tag tag-warn">part month</span>
+            {{ month.covered_from|day("%b %d") }}&ndash;{{ month.covered_to|day("%b %d") }},
+            {{ month.days_covered }} of {{ month.days_in_period }} days
+            {% else %}
+            {{ month.days_covered }} days
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="rank-note">
+      <span class="ico">&#8505;</span>
+      A part-period row is not that period&rsquo;s total. Widen the window above to
+      fill it in.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Who it was lost to</h2>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Client</th>
+          <th scope="col" class="num">Lost</th>
+          <th scope="col" class="num">Jobs</th>
+          <th scope="col" class="num">Unpriced</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for client in revenue.clients %}
+        <tr>
+          <th scope="row">{{ client.client }}</th>
+          <td class="num">{{ client.value|money0 }}</td>
+          <td class="num">{{ client.jobs }}</td>
+          <td class="num">
+            {% if client.unpriced_jobs %}<span class="tag tag-warn">{{ client.unpriced_jobs }}</span>
+            {% else %}<span class="muted">{{ DASH }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="rank-note">
+      <span class="ico">&#8505;</span>
+      {{ revenue.basis_note }}
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>How it was lost</h2>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Cause</th>
+          <th scope="col" class="num">Lost</th>
+          <th scope="col" class="num">Jobs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cause in revenue.causes %}
+        <tr>
+          <th scope="row">{{ cause.cause|nice }}</th>
+          <td class="num">{{ cause.value|money0 }}</td>
+          <td class="num">{{ cause.jobs }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="rank-note">
+      <span class="ico">&#8505;</span>
+      Priced from {{ revenue.pricing.clients_priced|length }} client averages plus the flat
+      light-service rate. {{ revenue.pricing.priced_share|pct }} of missed jobs in this
+      window carried a price.
+    </p>
+  </section>
+
+{% endif %}
+{% endblock %}
