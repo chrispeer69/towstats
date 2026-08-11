@@ -143,6 +143,101 @@ dashboard renders it as an em-dash throughout.
 
 ---
 
+## The morning report (printable, 6 AM)
+
+**One file per day, foldered by month, on the Desktop.** Every morning at 6:00
+local the machine pulls the day that just closed out of Towbook and writes a
+Word document you double-click and print:
+
+```
+Desktop\Tow Reports\
+    2026-08 August\
+        2026-08-09 Sunday.docx
+        2026-08-10 Monday.docx
+    2026-09 September\
+        ...
+```
+
+The file is named for the day it **describes**, not the day it ran — the 6 AM
+run on the 10th reports the 9th and is filed as the 9th. Filing by run date
+would put every report one folder off at a month boundary.
+
+**Three pages is a hard budget, not a target.** A report nobody finishes is a
+report that was never written. The current layout runs to two. Anything added
+has to earn its space against that ceiling.
+
+What it answers, in order: the four headline numbers (offers, wins, losses, win
+rate) each against the prior day and the last four *same weekdays*; one plain
+sentence naming the costliest stretch of the day; where the losses went; the
+24-hour flow; strongest and weakest hours; the same-weekday trend; and a
+per-client table.
+
+### Running it by hand
+
+```cmd
+scripts\morning_report.cmd                          :: yesterday
+scripts\morning_report.cmd --date 2026-08-09 --open :: one past day, then open it
+scripts\morning_report.cmd --date 2026-08-09 --no-pull  :: skip the Towbook pull
+```
+
+`--no-pull` reports on the database exactly as it stands. Useful offline, and
+for re-rendering a day after a template change without touching the portal.
+
+### The scheduled task
+
+Registered with Windows Task Scheduler as **"Towbook Morning Report"**, daily
+at 06:00, with *start when available* set so a machine that was asleep at six
+runs the job on wake instead of skipping the day.
+
+```powershell
+Get-ScheduledTaskInfo -TaskName "Towbook Morning Report"   # last result, next run
+Start-ScheduledTask   -TaskName "Towbook Morning Report"   # run it now
+```
+
+It runs under your interactive logon, so the machine must be logged on at 06:00.
+Registering it to run logged-off needs an elevated prompt and a stored password;
+`-LogonType S4U` fails with *Access denied* from a normal shell.
+
+Every run appends to `state/logs/morning_report.log`.
+
+### Four things this report will not do
+
+**It will not read the stored hour.** `offered_at` is naive UTC in the database.
+Every hour on the page is converted to local first, and "yesterday" is a local
+midnight-to-midnight window converted back to UTC for the query. Reading the
+column directly puts the day's peak at 13:00 when it is really 09:00 — a
+four-hour error that would staff the wrong shift.
+
+**It will not treat a cancellation as anything other than a loss.** A cancelled
+job is a job we did not run. This is a deliberate departure from
+`MISSED_WORK_MODEL.md`, which keeps client withdrawals out of the recoverable
+inventory — the evidence is that the exclusion hid real failures:
+
+| | excluding cancellations | counting them |
+|---|---|---|
+| Overall win rate | 50.1% | **38.0%** |
+| Allstate | 74% | **35%** |
+
+Allstate cancels 515 of its 965 offers. The old rule printed it at 100% with
+zero losses on individual days. And the cancellations are not all the client
+changing its mind: all 39 *Service Failure Confirmed* had a driver assigned —
+we took the job and did not deliver — and 52 *Rejected By Motor Club* carry our
+own reason, mostly *No Drivers Available*.
+
+So the report counts them and then says **why**, via `CANCEL_KINDS`, splitting
+the causes inside our control from the ones that are not, and flagging how many
+were already crewed when they died. An unrecognised Towbook label lands in a
+visible "unclassified" bucket rather than disappearing from the total.
+
+**It will not print a dollar figure.** `offerAmount` is empty on 100% of this
+account's records. Every number is a job count.
+
+**It will not go missing when the pull fails.** The report is written even if
+Towbook could not be reached, carrying a red banner that says so. A missing file
+at 6 AM is indistinguishable from a quiet night; a banner is not.
+
+---
+
 ## Dashboard
 
 **The board is the delivery mechanism.** Nothing is texted and nothing is
