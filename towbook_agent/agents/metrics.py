@@ -2894,7 +2894,7 @@ def _compute_monthly(
             _upsert(
                 sess,
                 MetricsMonthly,
-                {"month_start": start_day},
+                {"company_id": company_id, "month_start": start_day},
                 {
                     "metrics": _persistable(document),
                     "rules_version": version,
