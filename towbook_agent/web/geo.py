@@ -46,7 +46,16 @@ __all__ = [
 #: The committed lookup. Lives beside this module so it ships with the package
 #: on disk (Railway runs from source, so there is nothing to package-data), and
 #: is never served over HTTP -- the web layer reads it, the browser never does.
-GEO_FILE: Path = Path(__file__).resolve().parent / "geo" / "oh_zip_centroids.json"
+#:
+#: NATIONAL, not Ohio. This was ``oh_zip_centroids.json`` (1,197 Ohio ZIPs)
+#: while every tenant was in central Ohio. A ZIP with no centroid is reported
+#: as ``unmapped`` rather than dropped, so an out-of-state tenant did not break
+#: the maps -- it just got an empty one, which is the same thing to the person
+#: looking at it. Widening the file to all 33,144 US ZIPs is purely additive:
+#: every Ohio ZIP that resolved before resolves to the same place now, to
+#: within the 4dp rounding (worst case 5.5 m, against a centroid grain measured
+#: in kilometres).
+GEO_FILE: Path = Path(__file__).resolve().parent / "geo" / "us_zip_centroids.json"
 
 #: A US ZIP is five digits; ZIP+4 arrives as "43201-1234". The API field is
 #: usually already the bare five, but the address-text fallback below has to
