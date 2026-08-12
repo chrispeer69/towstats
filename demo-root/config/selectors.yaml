@@ -1,0 +1,706 @@
+# ==========================================================================
+# selectors.yaml -- every DOM selector used to drive Towbook.
+#
+# Hard constraint #7: ZERO hardcoded selectors in Python. If a selector is not
+# in this file, the acquisition agent cannot use it.
+#
+# CONTRACT
+# --------
+# Every selector value is a LIST of candidate selectors, tried IN ORDER until
+# one resolves to a visible element. This is what lets `discover-selectors`
+# append newly-observed candidates without a code change or a redeploy: the
+# agent appends to the list, the next run tries the new candidate after the
+# existing ones.
+#
+# Selector syntax is Playwright's. Any of these forms is valid in a candidate:
+#   #Username                          CSS
+#   css=button[name="bSignIn"]         explicit CSS engine
+#   text=Export                        text engine (substring, case-insensitive)
+#   text="Export"                      text engine (exact)
+#   role=button[name="Log in"]         ARIA role + accessible name
+#   xpath=//a[contains(., 'Export')]   XPath
+#
+# CONFIDENCE MARKERS
+# ------------------
+#   VERIFIED   -- confirmed against the live site. Do not change casually.
+#   ASSUMPTION -- best guess. Behind auth, never observed. Expect these to be
+#                 wrong; run `python -m towbook_agent discover-selectors` and
+#                 reconcile this file against state/discovery/.
+#
+# Towbook is an ASP.NET Core application. The grid framework behind the Request
+# Log has not been observed, so the assumption candidates deliberately cover
+# Kendo UI, Telerik, DevExpress and plain Bootstrap patterns, and every group
+# ends with text/role-based fallbacks that work regardless of framework.
+# ==========================================================================
+
+version: 1
+
+# --------------------------------------------------------------------------
+# login -- VERIFIED against https://app.towbook.com/Security/Login
+# --------------------------------------------------------------------------
+login:
+  # VERIFIED: unauthenticated requests to app.towbook.com redirect here with
+  # ?ReturnUrl=<path>. Base URL comes from TOWBOOK_BASE_URL.
+  url:
+    - /Security/Login
+
+  # VERIFIED: <input id="Username" name="Username">
+  username_input:
+    - "#Username"
+    - 'input[name="Username"]'
+    - 'input[autocomplete="username"]'
+
+  # VERIFIED: <input id="Password" name="Password">
+  password_input:
+    - "#Password"
+    - 'input[name="Password"]'
+    - 'input[type="password"]'
+
+  # VERIFIED: <button type="submit" name="bSignIn">Log in</button>
+  submit_button:
+    - 'button[name="bSignIn"]'
+    - 'button[type="submit"]'
+    - 'role=button[name="Log in"]'
+    - 'input[type="submit"]'
+
+  # VERIFIED: antiforgery token is posted with the form. Playwright submits the
+  # real form so the token rides along automatically; this entry exists so the
+  # login check can assert the token was present before submitting.
+  antiforgery_input:
+    - 'input[name="RequestVerificationToken"]'
+    - 'input[name="__RequestVerificationToken"]'
+
+  # ASSUMPTION: unconfirmed. What proves we are past the login wall. The URL
+  # no longer being /Security/Login is the primary signal (checked in code via
+  # session.logged_in_probe); these are DOM corroboration.
+  success_indicator:
+    - 'text=Dispatching'
+    - "#navbar"
+    - "nav.navbar"
+    - 'a[href*="/Logout"]'
+    - 'a[href*="/Security/Logout"]'
+    - 'text=Sign Out'
+    - 'text=Log Out'
+
+  # VERIFIED 2026-07-28 by submitting a deliberately wrong password. The login
+  # page is a modern Tailwind rewrite, NOT classic ASP.NET MVC validation
+  # markup, so .validation-summary-errors and .field-validation-error never
+  # appear. The real banner is:
+  #   <form method="post" ...>
+  #     <div class="text-sm font-semibold text-center bg-red-3 px-6 py-3
+  #                 rounded-lg text-red-10">
+  #       <div>The username/password you specified is invalid.
+  #            Passwords are case-sensitive.<br></div>
+  #     </div>
+  # It has no id, so the class pair bg-red-3 / text-red-10 plus the literal
+  # text are the anchors. The old ASP.NET candidates stay last as fallbacks.
+  failure_indicator:
+    - "form .bg-red-3"
+    - "form .text-red-10"
+    - ".bg-red-3"
+    - 'text=The username/password you specified is invalid'
+    - 'text=Passwords are case-sensitive'
+    - ".validation-summary-errors"
+    - ".field-validation-error"
+    - '.alert-danger'
+    - 'text=Your account has been locked'
+
+  # ASSUMPTION: unconfirmed, and no MFA was observed on the login page. If
+  # Towbook ever turns on two-factor, the acquisition agent must detect it and
+  # fail loudly with a clear message rather than hang on a blank page --
+  # silence is never treated as success.
+  mfa_indicator:
+    - 'input[name="Code"]'
+    - 'input[name="VerificationCode"]'
+    - 'input[autocomplete="one-time-code"]'
+    - 'text=Two-Factor'
+    - 'text=Two Factor'
+    - 'text=verification code'
+    - 'text=Enter the code'
+
+  # ASSUMPTION: unconfirmed. Some tenants land on a "choose a company" page.
+  account_chooser_indicator:
+    - 'text=Select an account'
+    - 'text=Choose a company'
+    - 'select[name="AccountId"]'
+
+  # VERIFIED ABSENT 2026-07-28: the login page does NOT render per-field
+  # ASP.NET validation spans -- it shows the single banner in
+  # failure_indicator above. These keys are kept because they cost one cheap
+  # probe, they are the documented ASP.NET pattern, and Towbook could add
+  # per-field validation at any time. login_check() checks the span's TEXT
+  # (not merely its existence), so a present-but-empty span never registers as
+  # a failure.
+  username_validation_message:
+    - 'span[data-valmsg-for="Username"]'
+    - '[data-valmsg-for="Username"]'
+    - '#Username-error'
+    - 'span.field-validation-error'
+
+  password_validation_message:
+    - 'span[data-valmsg-for="Password"]'
+    - '[data-valmsg-for="Password"]'
+    - '#Password-error'
+    - 'span.field-validation-error'
+
+  # VERIFIED ABSENT today: the login page has no CAPTCHA and no bot challenge.
+  # These exist so that the day one appears, the agent NAMES it
+  # (captcha_or_bot_wall) instead of reporting a mystery timeout.
+  captcha_indicator:
+    - 'iframe[src*="recaptcha"]'
+    - '.g-recaptcha'
+    - 'iframe[src*="hcaptcha"]'
+    - '.h-captcha'
+    - 'iframe[src*="challenges.cloudflare.com"]'
+    - 'iframe[title*="challenge" i]'
+    - "#cf-challenge-running"
+    - "#challenge-form"
+    - "[data-sitekey]"
+
+  # --- classification vocabularies -----------------------------------------
+  # Not DOM selectors: lowercased substring matches against the post-submit URL
+  # and body text. They live here so that changing how a failure is recognised
+  # stays a config edit (hard constraint #2), never a code change.
+
+  # ASSUMPTION: no MFA has ever been observed on this tenant.
+  mfa_url_keywords:
+    - twofactor
+    - two-factor
+    - /mfa
+    - verifycode
+    - verify-code
+    - /otp
+    - authenticator
+    - challenge
+
+  mfa_body_keywords:
+    - verification code
+    - two-factor
+    - two factor
+    - authenticator app
+    - one-time code
+    - one time passcode
+    - enter the code
+    - security code
+    - we sent a code
+
+  captcha_body_keywords:
+    - are you a robot
+    - unusual traffic
+    - verify you are human
+    - checking your browser
+    - enable javascript and cookies
+    - access denied
+    - request blocked
+    - cloudflare ray id
+
+  # VERIFIED 2026-07-28 -- the first two entries are the portal's exact wording,
+  # captured by submitting a wrong password on purpose:
+  #   "The username/password you specified is invalid.
+  #    Passwords are case-sensitive."
+  # The rest are ASSUMPTION fallbacks for lockout / disabled-account wording,
+  # which has not been provoked.
+  bad_credential_body_keywords:
+    - username/password you specified is invalid
+    - passwords are case-sensitive
+    - invalid username or password
+    - username or password provided is incorrect
+    - incorrect username or password
+    - invalid login attempt
+    - login failed
+    - account has been locked
+    - account is locked
+    - account has been disabled
+
+# --------------------------------------------------------------------------
+# api -- the JSON acquisition path (agents/acquisition_api.py), which is the
+# PRIMARY source. Nothing below is a DOM selector; these are the URLs, form
+# field names, header names and body markers the httpx path needs. They live
+# here for the same reason the selectors do: Towbook renaming any of them must
+# be a YAML edit, never a code change (hard constraint #2).
+#
+# Every key is a candidate LIST. The first entry is used for outbound requests;
+# the whole list is matched against for inbound classification. If this whole
+# section is deleted the module falls back to the same live-verified defaults
+# it ships with, so a minimal config still runs.
+#
+# WHY THIS PATH OUTRANKS THE UI EXPORT: the CSV has no stable row id -- "Call #"
+# is blank on exactly the unaccepted rows the acceptance rate depends on, so the
+# UI path has to synthesise a fingerprint. This endpoint returns callRequestId,
+# verified unique across 3,079 rows.
+# --------------------------------------------------------------------------
+api:
+  # VERIFIED 2026-07-28: same form endpoint the browser posts.
+  login_url:
+    - /Security/Login
+
+  # VERIFIED 2026-07-28. Query string:
+  #   ?extended=true&page=<1-based>&pageSize=<max 1000>
+  #   &startDate=YYYY-MM-DD&endDate=YYYY-MM-DD   (endDate inclusive)
+  callrequests_url:
+    - /api/digitaldispatch/callrequests
+
+  # VERIFIED: the endpoint wants a Referer that looks like the grid page.
+  request_log_referer:
+    - /requestLog/
+
+  # VERIFIED: hidden field on the login form. The double-underscore variant is
+  # the classic ASP.NET name, kept as a fallback.
+  antiforgery_field:
+    - RequestVerificationToken
+    - __RequestVerificationToken
+
+  # VERIFIED: <button type="submit" name="bSignIn">Log in</button>. The value
+  # is posted because the handler branches on which button was pressed.
+  submit_field:
+    - bSignIn
+  submit_value:
+    - "Log in"
+
+  username_field:
+    - Username
+  password_field:
+    - Password
+
+  # VERIFIED 2026-07-28: the authentication cookie is ".xtl" (~520 chars,
+  # HttpOnly). Towbook does NOT use ".AspNetCore.Cookies" -- testing for that
+  # name fails a perfectly good login. Login success = this cookie exists AND
+  # the final URL is not the login page.
+  session_cookie:
+    - ".xtl"
+
+  # VERIFIED: total row count for the whole filtered set, not just the page.
+  records_count_header:
+    - X-Records-Count
+    - x-records-count
+
+  # VERIFIED: any unauthenticated request redirects to
+  # /Security/Login?ReturnUrl=<path>. Lowercased substring match on the final
+  # URL. This is also how an expired session is detected mid-pull.
+  logged_out_url_marker:
+    - /security/login
+    - returnurl=
+
+  # VERIFIED 2026-07-28 by posting a deliberately wrong password. Lowercased
+  # substring match against the response body when the POST came back on the
+  # login page.
+  login_failure_markers:
+    - field-validation-error
+    - username/password you specified is invalid
+    - passwords are case-sensitive
+    - invalid username or password
+    - invalid login attempt
+
+  # ASSUMPTION: lockout wording has not been provoked.
+  login_locked_markers:
+    - account has been locked
+    - account is locked
+    - account has been disabled
+
+  # VERIFIED ABSENT: no MFA on this account. Present so that the day it appears
+  # the agent NAMES it (mfa_required) instead of reporting a mystery failure.
+  mfa_markers:
+    - verification code
+    - two-factor
+    - two factor
+    - authenticator app
+    - one-time code
+    - enter the code
+
+  # VERIFIED ABSENT: no CAPTCHA and no bot wall today.
+  bot_wall_markers:
+    - are you a robot
+    - unusual traffic
+    - verify you are human
+    - checking your browser
+    - cloudflare ray id
+    - request blocked
+
+# --------------------------------------------------------------------------
+# navigation -- VERIFIED path, ASSUMPTION selectors
+# VERIFIED: top toolbar "Dispatching" -> submenu "Request Log", which has two
+# tabs, "Digital Requests" and "Other Requests". We use Digital Requests.
+# The DOM implementing that path has never been observed.
+# --------------------------------------------------------------------------
+navigation:
+  # ASSUMPTION: unconfirmed DOM for the top-level toolbar item.
+  dispatching_menu:
+    - 'role=link[name="Dispatching"]'
+    - 'role=button[name="Dispatching"]'
+    - 'a:has-text("Dispatching")'
+    - '.navbar a:has-text("Dispatching")'
+    - '#menu-dispatching'
+    - 'li.dropdown:has-text("Dispatching") > a'
+    - 'text=Dispatching'
+
+  # ASSUMPTION: unconfirmed. Direct href candidates first -- a link we can click
+  # without opening a hover menu is far more reliable than a submenu dance.
+  request_log_link:
+    - 'a[href*="RequestLog"]'
+    - 'a[href*="Request/Log"]'
+    - 'a[href*="requestlog"]'
+    - 'role=link[name="Request Log"]'
+    - 'a:has-text("Request Log")'
+    - 'text=Request Log'
+
+  # VERIFIED 2026-07-28: /RequestLog serves the page directly. The two paths
+  # below it were guesses that 404'd; they are kept last, and only because a
+  # future Towbook release could move the page under /Dispatching.
+  request_log_url:
+    - /RequestLog
+    - /Dispatching/RequestLog
+    - /Dispatch/RequestLog
+
+  # VERIFIED 2026-07-28: the tab is labelled "Digital Dispatches", NOT
+  # "Digital Requests". Markup is
+  #   <div id="grid_digitalGrid_tabs" class="w2ui-grid-tabs">
+  #     <a href="#" title="Digital Dispatches" class="selected">Digital Dispatches</a>
+  #     <a href="#" title="Other Requests">Other Requests</a>
+  #     <a href="#" title="Digital Connections">Digital Connections</a>
+  #   </div>
+  # The active tab carries class="selected", which is what the agent checks
+  # before deciding whether it needs to click at all.
+  digital_requests_tab:
+    - '#grid_digitalGrid_tabs a[title="Digital Dispatches"]'
+    - '.w2ui-grid-tabs a[title="Digital Dispatches"]'
+    - '.w2ui-grid-tabs a:has-text("Digital Dispatches")'
+    - 'a[title="Digital Requests"]'
+    - '.nav-tabs a:has-text("Digital Requests")'
+    - 'text=Digital Requests'
+
+  # VERIFIED 2026-07-28. Present only so the agent can assert it did NOT land
+  # on the wrong tab.
+  other_requests_tab:
+    - '#grid_digitalGrid_tabs a[title="Other Requests"]'
+    - '.w2ui-grid-tabs a[title="Other Requests"]'
+    - 'text=Other Requests'
+
+# --------------------------------------------------------------------------
+# request_log -- VERIFIED 2026-07-28 against the live Request Log.
+#
+# The grid framework is **w2ui**, not Kendo / Telerik / DevExpress. The whole
+# toolbar is a w2ui toolbar whose items each get an id of the form
+#   tb_digitalGrid_toolbar_item_<name>
+# and whose clickable element is the inner <table class="w2ui-button">, which
+# carries the onclick. The grid itself is #digitalGrid.
+#
+# The Kendo/Telerik/DevExpress candidates are kept BELOW the verified ones as
+# fallbacks in case Towbook re-platforms the grid.
+# --------------------------------------------------------------------------
+request_log:
+  # VERIFIED 2026-07-28: a real <select> ->
+  #   <select id="pageSizeSel" onchange="changePageSize(this)">
+  # Option values: 25, 50, 75, 100, 1000, 1500, 2000, 2500, 5000, 10000.
+  # Both 50 (hourly) and 1000 (daily/weekly) from schedule.yaml are offered.
+  page_size_control:
+    - "#pageSizeSel"
+    - 'select[name*="pageSize" i]'
+    - 'select[name*="PageSize" i]'
+    - 'select.k-dropdown'
+    - '.k-pager-sizes select'
+    - '.dataTables_length select'
+    - 'select[aria-label*="page size" i]'
+    - 'role=combobox[name="Page Size"]'
+
+  # ASSUMPTION: unconfirmed. Template applied after selecting the control; the
+  # literal {size} is substituted with the requested page size (50, 1000, ...).
+  # A plain <select> is driven with select_option({size}) instead, which is why
+  # the code must try the native path first.
+  page_size_option_template:
+    - 'option[value="{size}"]'
+    - 'li[role="option"]:has-text("{size}")'
+    - '.k-list li:has-text("{size}")'
+    - 'role=option[name="{size}"]'
+    - 'text="{size}"'
+
+  # VERIFIED 2026-07-28:
+  #   <input type="text" id="startDate" name="startDate" size="10"
+  #          class="w2ui-input hasDatepicker" placeholder="mm/dd/yyyy">
+  # "hasDatepicker" is the jQuery UI datepicker marker class.
+  date_start_input:
+    - "#startDate"
+    - 'input[name="startDate"]'
+    - 'input[name*="StartDate" i]'
+    - 'input[name*="DateFrom" i]'
+    - 'input[placeholder*="Start" i]'
+    - 'input[type="date"] >> nth=0'
+    - 'role=textbox[name="Start Date"]'
+
+  # VERIFIED 2026-07-28: same shape as startDate.
+  date_end_input:
+    - "#endDate"
+    - 'input[name="endDate"]'
+    - 'input[name*="EndDate" i]'
+    - 'input[name*="DateTo" i]'
+    - 'input[placeholder*="End" i]'
+    - 'input[type="date"] >> nth=1'
+    - 'role=textbox[name="End Date"]'
+
+  # VERIFIED 2026-07-28: the toolbar's "Filter" button applies the date range.
+  #   <td id="tb_digitalGrid_toolbar_item_filterButton">
+  #     <table class="w2ui-button"
+  #            onclick="w2ui['digitalGrid_toolbar'].click('filterButton', event)">
+  #       ... <a>Filter</a>
+  # The onclick sits on the inner table, so that is what must be clicked --
+  # clicking the <td> is not guaranteed to fire the handler.
+  run_report_button:
+    - "#tb_digitalGrid_toolbar_item_filterButton table.w2ui-button"
+    - "#tb_digitalGrid_toolbar_item_filterButton"
+    - 'table.w2ui-button:has-text("Filter")'
+    - 'button:has-text("Run Report")'
+    - 'button:has-text("Search")'
+    - 'button:has-text("Apply")'
+    - "#btnRun"
+
+  # VERIFIED 2026-07-28: export is a SINGLE toolbar button, not a menu. Its
+  # tooltip is literally title="Export to Excel", so no second click is needed
+  # and no Excel sub-option exists.
+  #   <td id="tb_digitalGrid_toolbar_item_w2ui-export">
+  #     <table class="w2ui-button" title="Export to Excel"
+  #            onclick="w2ui['digitalGrid_toolbar'].click('w2ui-export', event)">
+  #       ... <a>Export</a>
+  export_menu:
+    - "#tb_digitalGrid_toolbar_item_w2ui-export table.w2ui-button"
+    - "#tb_digitalGrid_toolbar_item_w2ui-export"
+    - 'table.w2ui-button[title="Export to Excel"]'
+    - 'table.w2ui-button:has-text("Export")'
+    - 'button:has-text("Export")'
+    - "#btnExport"
+
+  # VERIFIED 2026-07-28: there is NO separate Excel option -- export_menu above
+  # IS the Excel export. The agent treats "export_menu resolved but
+  # export_excel_option did not" as a single-button export and clicks the menu
+  # itself, which is exactly this portal's behaviour. The candidates below stay
+  # so that a future dropdown-style export still works without a code change.
+  export_excel_option:
+    - 'button:has-text("Export to Excel")'
+    - 'a:has-text("Export to Excel")'
+    - '.k-grid-excel'
+    - 'role=menuitem[name="Excel"]'
+    - 'a[href*="ExportToExcel" i]'
+
+  # VERIFIED 2026-07-28: <div id="digitalGrid" class="w2ui-reset w2ui-grid">
+  # containing #grid_digitalGrid_records.
+  results_table:
+    - "#grid_digitalGrid_records"
+    - "#digitalGrid"
+    - ".w2ui-grid-records"
+    - '.k-grid-content table'
+    - 'table[role="grid"]'
+    - "table"
+
+  # VERIFIED 2026-07-28: w2ui renders header cells as <td class="w2ui-head">
+  # inside #grid_digitalGrid_columns -- they are NOT <th>, so a "thead th"
+  # selector finds nothing here.
+  # Observed header text, left to right:
+  #   Request Date | Provider | Contractor ID | Service Needed | Call # |
+  #   PO # | Expiration Date | Status | Response Reason | Responded by |
+  #   ETA | Vehicle
+  results_table_header:
+    - "#grid_digitalGrid_columns td.w2ui-head .w2ui-col-header"
+    - "#grid_digitalGrid_columns td.w2ui-head"
+    - ".w2ui-grid-columns td.w2ui-head"
+    - '.k-grid-header th'
+    - 'thead th'
+
+  # VERIFIED 2026-07-28: each record row is
+  #   <tr id="grid_digitalGrid_rec_<requestId>" class="w2ui-odd|w2ui-even">
+  # The numeric suffix is the Towbook request id.
+  results_table_row:
+    - 'tr[id^="grid_digitalGrid_rec_"]'
+    - "#grid_digitalGrid_records tbody tr"
+    - '.k-grid-content tbody tr'
+    - 'tbody tr'
+
+  # ASSUMPTION: an empty result set has never been observed -- the live grid
+  # held 156,443 records. #pagingContainer .paging-left renders
+  # "<n> Records [Page 1 of <m>]", so "0 Records" is the most likely marker.
+  no_results_indicator:
+    - 'text=0 Records'
+    - '.w2ui-grid-empty-msg'
+    - '.k-grid-norecords'
+    - 'text=No records'
+    - 'text=No results found'
+
+  # VERIFIED 2026-07-28: #ajax-loader exists on the page. .w2ui-lock is w2ui's
+  # own busy overlay.
+  loading_indicator:
+    - "#ajax-loader"
+    - ".w2ui-lock"
+    - ".k-loading-mask"
+    - ".loading-overlay"
+    - '[aria-busy="true"]'
+
+  # VERIFIED 2026-07-28: "<n> Records [Page <p> of <q>]". Read after Filter so
+  # the run sidecar records how many rows the portal itself claims -- a cheap,
+  # independent check on the exported workbook.
+  record_count_label:
+    - "#pagingContainer .paging-left"
+    - ".paging-left"
+
+  # VERIFIED 2026-07-28: both date inputs advertise placeholder="mm/dd/yyyy",
+  # and the jQuery UI datepicker attached to them uses the matching format, so
+  # %m/%d/%Y is the format to type.
+  date_input_formats:
+    - "%m/%d/%Y"
+    - "%Y-%m-%d"
+
+  # VERIFIED ABSENT 2026-07-28: the toolbar exposes Start Date and End Date
+  # only -- there is no time-of-day filter. The agent therefore exports whole
+  # DAYS and the metrics layer trims to the exact hour, which stays correct
+  # because ingestion upserts on request_id (re-seen rows are not duplicated).
+  # These keys are kept so a future time filter needs no code change.
+  time_start_input:
+    - 'input[name*="StartTime" i]'
+    - 'input[name*="TimeFrom" i]'
+    - "#StartTime"
+
+  time_end_input:
+    - 'input[name*="EndTime" i]'
+    - 'input[name*="TimeTo" i]'
+    - "#EndTime"
+
+  time_input_formats:
+    - "%I:%M %p"
+    - "%H:%M"
+
+# --------------------------------------------------------------------------
+# discovery -- used ONLY by `python -m towbook_agent discover-selectors`.
+# Nothing here drives a production run; it is the inventory the operator reads
+# to reconcile the ASSUMPTION blocks above against the real post-login DOM.
+# --------------------------------------------------------------------------
+discovery:
+  # Every element kind worth cataloguing. Joined with ", " into one
+  # querySelectorAll call per frame.
+  interactive_selectors:
+    - button
+    - a
+    - select
+    - input
+    - textarea
+    - '[role="tab"]'
+    - '[role="button"]'
+    - '[role="link"]'
+    - '[role="menuitem"]'
+    - '[role="combobox"]'
+    - '[role="listbox"]'
+    - '[role="option"]'
+    - "[onclick]"
+    - ".k-dropdown"
+    - ".dropdown-toggle"
+    - ".nav-tabs li"
+    - label
+
+  # Scoring vocabulary for the suggested selectors.yaml patch: a candidate
+  # element scores on how many of these words appear in its id, name, class,
+  # aria-label, placeholder, title, href or visible text.
+  suggestion_keywords:
+    page_size_control:
+      - page size
+      - pagesize
+      - per page
+      - items per page
+      - rows per page
+      - show entries
+    date_start_input:
+      - start date
+      - startdate
+      - date from
+      - datefrom
+      - fromdate
+      - begin
+      - start
+      - from
+    date_end_input:
+      - end date
+      - enddate
+      - date to
+      - dateto
+      - todate
+      - through
+      - end
+      - to
+    run_report_button:
+      - run report
+      - run
+      - search
+      - apply
+      - refresh
+      - filter
+      - go
+      - submit
+      - update
+    export_menu:
+      - export
+      - download
+      - actions
+      - tools
+    export_excel_option:
+      - export to excel
+      - excel
+      - xlsx
+      - spreadsheet
+      - csv
+
+  # Which HTML tags are plausible for each target, so a <div> that merely
+  # contains the word "Export" does not outrank the actual button.
+  suggestion_tags:
+    page_size_control:
+      - select
+      - input
+      - div
+      - span
+    date_start_input:
+      - input
+    date_end_input:
+      - input
+    run_report_button:
+      - button
+      - input
+      - a
+    export_menu:
+      - button
+      - a
+      - div
+    export_excel_option:
+      - button
+      - a
+      - li
+      - span
+
+# --------------------------------------------------------------------------
+# session
+# --------------------------------------------------------------------------
+session:
+  # Playwright storage_state destination, relative to the repo root. One file
+  # per account so multi-account runs never share a cookie jar.
+  # NOTE: contains live session cookies. Git-ignored. Never commit.
+  storage_state_file:
+    - state/session/{account_id}.storage.json
+
+  # VERIFIED behaviour: an unauthenticated request to any app.towbook.com path
+  # redirects to /Security/Login?ReturnUrl=<path>. So "did the saved session
+  # survive?" is answered by navigating to a cheap authed path and checking
+  # whether the final URL contains the login path.
+  logged_in_probe:
+    - /Dispatching/RequestLog
+    - /
+
+  # If the final URL contains any of these, we are NOT logged in.
+  logged_out_url_marker:
+    - /Security/Login
+    - ReturnUrl=
+
+  # VERIFIED 2026-07-28 by a real login_check(). The session cookie is
+  # **".xtl"**, NOT ".AspNetCore.Cookies" as originally assumed. The full set
+  # observed after a successful login was:
+  #     .AspNetCore.Antiforgery.<random>   antiforgery (confirmed)
+  #     .xtl                               the authentication cookie
+  #     X-Session-Timeout                  idle-timeout bookkeeping
+  #     _ga, _ga_*, ai_session, ai_user    analytics, irrelevant
+  # These are reported, never asserted: login_check() returns the cookie names
+  # it actually received so a rename shows up as a diagnostic, not a crash.
+  expected_cookie_names:
+    - ".xtl"
+    - ".AspNetCore.Antiforgery"
+    - "X-Session-Timeout"

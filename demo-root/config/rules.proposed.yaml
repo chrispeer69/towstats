@@ -1,0 +1,1713 @@
+# ==========================================================================
+# rules.proposed.yaml -- the Analyst's suggestion box. NEVER auto-applied.
+#
+# The Analyst is the single LLM component in this system (hard constraint #3).
+# When it notices something the rules do not cover -- a service type that keeps
+# landing in `unclassified`, a client whose acceptance rate justifies its own
+# alert threshold, a denial reason worth bucketing -- it writes a proposal
+# here instead of editing rules.yaml.
+#
+# Nothing in this file has any effect on classification, metrics, alerting or
+# notification. It is read only by the dashboard's "Proposed rules" view. A
+# proposal becomes real when a HUMAN copies it into config/rules.yaml.
+#
+# That separation is deliberate. An LLM that can silently rewrite the rules
+# that decide which jobs are worth taking is an LLM that can quietly change
+# the business. Review, then paste.
+#
+# ENTRY FORMAT
+# ------------
+# Each proposal is one item under `proposals`, using the shape it would have
+# in rules.yaml plus provenance:
+#
+#   proposals:
+#     - id: prop-2026-07-28-heavy-duty       # stable, unique
+#       proposed_at: 2026-07-28T06:00:00Z    # UTC
+#       source_report: daily                 # hourly | daily | weekly
+#       target: service_classes              # which rules.yaml section
+#       rationale: >
+#         41 requests in the last 14 days contained "heavy duty" and all of
+#         them fell through to unclassified. They look like tows.
+#       evidence:
+#         sample_service_type_raw:
+#           - "Heavy Duty Tow"
+#           - "HEAVY DUTY RECOVERY"
+#         affected_requests: 41
+#         window: 2026-07-14..2026-07-27
+#       # Paste this fragment into rules.yaml to accept the proposal.
+#       patch:
+#         service_classes:
+#           heavy_duty:
+#             match_any: [heavy duty, heavy-duty, semi, tractor trailer]
+#       status: pending                      # pending | accepted | rejected
+#       reviewed_by: null
+#       reviewed_at: null
+#
+# The same shape works for an alert proposal (target: alerts) or a denial
+# reason proposal (target: denial_reason_normalization).
+# ==========================================================================
+version: 1
+proposals:
+- id: unclassified-storage-diagnostic
+  proposed_at: '2026-07-28T18:16:46+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: '''Storage Release'' and ''Mobile Diagnostic'' are accepted every time
+    they''re offered (4 of 4) but fall through to unclassified because no service_class
+    definition matches them. They should get a named class so future reporting doesn''t
+    lump them in with true gaps.'
+  service_type_raw_samples: &id001
+  - Storage Release
+  - Mobile Diagnostic
+  first_seen: '2026-07-28T18:16:46+00:00'
+  last_seen: '2026-07-28T18:16:46+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id001
+    affected_requests: 4
+  patch:
+    service_classes:
+      admin_service:
+        match:
+        - storage release
+        - mobile diagnostic
+  patch_yaml: "service_classes:\n  admin_service:\n    match:\n      - storage release\n\
+    \      - mobile diagnostic\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-678c0b87973e
+- id: normalize-equipment-denial-reasons
+  proposed_at: '2026-07-28T18:16:46+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Denial reasons 'No truck available', 'No driver on shift', and 'Wrong
+    equipment for the vehicle' are functionally equipment/capacity problems but aren't
+    mapped to the 'equipment' cause -- they're landing in 'unattributed' instead,
+    which hides 6 jobs from the equipment-gap total.
+  service_type_raw_samples: &id002
+  - No truck available
+  - No driver on shift
+  - Wrong equipment for the vehicle
+  first_seen: '2026-07-28T18:16:46+00:00'
+  last_seen: '2026-07-28T18:16:46+00:00'
+  occurrence_count: 6
+  evidence:
+    sample_service_type_raw: *id002
+    affected_requests: 6
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+        match:
+        - equipment not available
+        - no truck available
+        - no driver on shift
+        - wrong equipment for the vehicle
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    match:\n\
+    \      - equipment not available\n      - no truck available\n      - no driver\
+    \ on shift\n      - wrong equipment for the vehicle\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-678c0b87973e
+- id: normalize-denial-reasons
+  proposed_at: '2026-07-28T18:17:55+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Many clients send free-text denial reasons ('Wrong equipment for the
+    vehicle', 'Rate too low for the distance', 'Too far outside coverage area', 'No
+    truck available', 'No driver on shift') that never get mapped to the canonical
+    causes (equipment_unavailable, out_of_area, no_drivers), so they land in generic
+    buckets and can't be attributed cleanly.
+  service_type_raw_samples: &id003
+  - No truck available
+  - Too far outside coverage area
+  - Wrong equipment for the vehicle
+  - Rate too low for the distance
+  - No driver on shift
+  first_seen: '2026-07-28T18:17:55+00:00'
+  last_seen: '2026-07-28T18:49:44+00:00'
+  occurrence_count: 46
+  evidence:
+    sample_service_type_raw: *id003
+    affected_requests: 46
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - wrong equipment for the vehicle
+      rate_too_low:
+      - rate too low for the distance
+      out_of_area:
+      - too far outside coverage area
+      no_truck:
+      - no truck available
+      no_drivers:
+      - no driver on shift
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    - \"No\
+    \ truck available\"\n    - \"Wrong equipment for the vehicle\"\n  out_of_area:\n\
+    \    - \"Too far outside coverage area\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-mobile-diagnostic-storage-release
+  proposed_at: '2026-07-28T18:17:55+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: 5 offers ('Mobile Diagnostic' x3, 'Storage Release' x2) are falling into
+    unclassified because no service_class pattern matches them. They should get a
+    named class so they stop hiding in the catch-all bucket and the owner can decide
+    accept/decline explicitly.
+  service_type_raw_samples: &id004
+  - Mobile Diagnostic
+  - Storage Release
+  first_seen: '2026-07-28T18:17:55+00:00'
+  last_seen: '2026-07-28T18:24:05+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id004
+    affected_requests: 5
+  patch:
+    service_classes:
+      ancillary_service:
+        match:
+        - mobile diagnostic
+        - storage release
+  patch_yaml: "service_classes:\n  other_declined:\n    matches:\n      - \"mobile\
+    \ diagnostic\"\n      - \"storage release\"\nacceptance_policy:\n  should_decline:\n\
+    \    - other_declined\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-wrong-equipment-reason
+  proposed_at: '2026-07-28T18:19:15+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Allied Dispatch and Quest Roadside both log the raw reason 'Wrong equipment
+    for the vehicle', which is functionally the same as Agero (Swoop)'s already-normalized
+    'equipment_unavailable' reason, but it isn't being folded into that bucket.
+  service_type_raw_samples: &id005
+  - Wrong equipment for the vehicle
+  first_seen: '2026-07-28T18:19:15+00:00'
+  last_seen: '2026-07-28T18:19:15+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id005
+    affected_requests: 4
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - Equipment Not Available
+      - Wrong equipment for the vehicle
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    - \"Equipment\
+    \ Not Available\"\n    - \"Wrong equipment for the vehicle\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-start-raw-service-type
+  proposed_at: '2026-07-28T18:19:15+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: The raw service type 'Start' is falling into unclassified even though
+    it behaves like a jump-start request; light_service already matches 'jump start'
+    and 'light start' but not the bare word 'start'.
+  service_type_raw_samples: &id006
+  - Start
+  first_seen: '2026-07-28T18:19:15+00:00'
+  last_seen: '2026-07-28T18:19:15+00:00'
+  occurrence_count: 1
+  evidence:
+    sample_service_type_raw: *id006
+    affected_requests: 1
+  patch:
+    service_classes:
+      light_service:
+        match:
+        - start
+  patch_yaml: "service_classes:\n  light_service:\n    match:\n      - start\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-unmapped-service-types
+  proposed_at: '2026-07-28T18:20:18+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: Three service type strings are landing in unclassified this window. All
+    five jobs were accepted at 100%, so this isn't costing acceptance today, but they
+    sit outside every defined service class and won't get tracked correctly as volume
+    grows.
+  service_type_raw_samples: &id007
+  - Mobile Diagnostic
+  - Storage Release
+  - Parts Delivery + 1hr Labor
+  first_seen: '2026-07-28T18:20:18+00:00'
+  last_seen: '2026-07-28T18:20:18+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id007
+    affected_requests: 5
+  patch:
+    service_classes:
+      diagnostic:
+        match:
+        - mobile diagnostic
+        - diagnostic
+      storage:
+        match:
+        - storage release
+        - storage
+      parts_delivery:
+        match:
+        - parts delivery
+  patch_yaml: "service_classes:\n  diagnostic:\n    match: [mobile diagnostic, diagnostic]\n\
+    \  storage:\n    match: [storage release, storage]\n  parts_delivery:\n    match:\
+    \ [parts delivery]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-decline-reason-strings
+  proposed_at: '2026-07-28T18:20:18+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Five declines this window carry the generic cause 'unattributed' because
+    their raw denial text isn't mapped to a cause bucket, which hides real, actionable
+    patterns (staffing vs equipment vs rate).
+  service_type_raw_samples: &id008
+  - No driver on shift
+  - No truck available
+  - Wrong equipment for the vehicle
+  - Rate too low for the distance
+  first_seen: '2026-07-28T18:20:18+00:00'
+  last_seen: '2026-07-28T18:20:18+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id008
+    affected_requests: 5
+  patch:
+    denial_reason_normalization:
+      staffing:
+        match:
+        - no driver on shift
+        - no driver available
+      equipment:
+        match:
+        - no truck available
+        - wrong equipment for the vehicle
+      rate:
+        match:
+        - rate too low for the distance
+        - rate too low
+  patch_yaml: "denial_reason_normalization:\n  staffing:\n    match: [\"no driver\
+    \ on shift\", \"no driver available\"]\n  equipment:\n    match: [\"no truck available\"\
+    , \"wrong equipment for the vehicle\"]\n  rate:\n    match: [\"rate too low for\
+    \ the distance\", \"rate too low\"]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: add-diagnostic-storage-classes
+  proposed_at: '2026-07-28T18:21:35+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: Mobile Diagnostic and Storage Release requests are falling into unclassified
+    with no matching keyword, so they get no policy treatment at all and no cause
+    attribution.
+  service_type_raw_samples: &id009
+  - Mobile Diagnostic
+  - Storage Release
+  first_seen: '2026-07-28T18:21:35+00:00'
+  last_seen: '2026-07-28T18:21:35+00:00'
+  occurrence_count: 6
+  evidence:
+    sample_service_type_raw: *id009
+    affected_requests: 6
+  patch:
+    service_classes:
+      diagnostic:
+        match:
+        - mobile diagnostic
+        - diagnostic
+      storage_release:
+        match:
+        - storage release
+  patch_yaml: "service_classes:\n  diagnostic:\n    match: [mobile diagnostic, diagnostic]\n\
+    \  storage_release:\n    match: [storage release]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-freetext-denial-reasons
+  proposed_at: '2026-07-28T18:21:35+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Denial reasons like 'No truck available', 'Wrong equipment for the vehicle',
+    'Rate too low for the distance', and 'Too far outside coverage area' are coming
+    through as raw free text instead of normalized codes, so they aren't rolling up
+    into the equipment/coverage causes and are inflating the unattributed bucket.
+  service_type_raw_samples: &id010
+  - No truck available
+  - Wrong equipment for the vehicle
+  - Rate too low for the distance
+  - Too far outside coverage area
+  first_seen: '2026-07-28T18:21:35+00:00'
+  last_seen: '2026-07-28T18:21:35+00:00'
+  occurrence_count: 10
+  evidence:
+    sample_service_type_raw: *id010
+    affected_requests: 10
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - No truck available
+      - Wrong equipment for the vehicle
+      out_of_area:
+      - Too far outside coverage area
+      rate_dispute:
+      - Rate too low for the distance
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable: [\"No truck\
+    \ available\", \"Wrong equipment for the vehicle\"]\n  out_of_area: [\"Too far\
+    \ outside coverage area\"]\n  rate_dispute: [\"Rate too low for the distance\"\
+    ]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-denial-reason-strings
+  proposed_at: '2026-07-28T18:22:54+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: 8 declines carry free-text reasons that never map to an existing cause
+    code, landing in the 'unattributed' bucket where the owner can't act on them.
+    Mapping these strings to the existing equipment_unavailable, no_drivers and coverage
+    codes would resolve them into causes we already report on.
+  service_type_raw_samples: &id011
+  - No driver on shift
+  - No truck available
+  - Too far outside coverage area
+  - Wrong equipment for the vehicle
+  first_seen: '2026-07-28T18:22:54+00:00'
+  last_seen: '2026-07-28T18:22:54+00:00'
+  occurrence_count: 8
+  evidence:
+    sample_service_type_raw: *id011
+    affected_requests: 8
+  patch:
+    denial_reason_normalization:
+      no_drivers:
+      - No driver on shift
+      equipment_unavailable:
+      - No truck available
+      - Wrong equipment for the vehicle
+      coverage:
+      - Too far outside coverage area
+  patch_yaml: "denial_reason_normalization:\n  no_drivers:\n    - \"No driver on shift\"\
+    \n  equipment_unavailable:\n    - \"No truck available\"\n    - \"Wrong equipment\
+    \ for the vehicle\"\n  coverage:\n    - \"Too far outside coverage area\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-mobile-diagnostic
+  proposed_at: '2026-07-28T18:22:54+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: '''Mobile Diagnostic'' currently falls through to unclassified even though
+    it is offered and accepted at 100% today. Giving it a real class keeps it out
+    of the unclassified bucket and lets future acceptance-policy decisions be made
+    about it explicitly instead of by accident.'
+  service_type_raw_samples: &id012
+  - Mobile Diagnostic
+  first_seen: '2026-07-28T18:22:54+00:00'
+  last_seen: '2026-07-28T18:22:54+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id012
+    affected_requests: 2
+  patch:
+    service_classes:
+      diagnostic:
+        match:
+        - mobile diagnostic
+        - diagnostic
+  patch_yaml: "service_classes:\n  diagnostic:\n    match:\n      - \"mobile diagnostic\"\
+    \n      - \"diagnostic\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-unattributed-light-service-denials
+  proposed_at: '2026-07-28T18:24:05+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: 13 light_service declines across Allied Dispatch, Geico Roadside, Quest
+    Roadside, Urgently and Honk Technologies carry raw reason strings ('No truck available',
+    'Rate too low for the distance', 'Wrong equipment for the vehicle', 'Too far outside
+    coverage area') that never map to a canonical cause, landing in 'unattributed'.
+    Mapping these lets the report attribute them correctly next period instead of
+    dumping them in review.
+  service_type_raw_samples: &id013
+  - No truck available
+  - Rate too low for the distance
+  - Wrong equipment for the vehicle
+  - Too far outside coverage area
+  first_seen: '2026-07-28T18:24:05+00:00'
+  last_seen: '2026-07-28T18:24:05+00:00'
+  occurrence_count: 13
+  evidence:
+    sample_service_type_raw: *id013
+    affected_requests: 13
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - no truck available
+      - wrong equipment for the vehicle
+      out_of_area:
+      - too far outside coverage area
+      rate_mismatch:
+      - rate too low for the distance
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    - no truck\
+    \ available\n    - wrong equipment for the vehicle\n  out_of_area:\n    - too\
+    \ far outside coverage area\n  rate_mismatch:\n    - rate too low for the distance\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: closeoff-light-service-zero-accept-types
+  proposed_at: '2026-07-28T18:24:05+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Five specific light_service raw types are refused essentially every time
+    they're offered (0 of 10 accepted across 5 clients) yet still consume slots in
+    the same 3-minute decision window as tow offers. Auto-declining them at the source
+    is expected to lift the answer rate on tow/winch_out.
+  service_type_raw_samples: &id014
+  - Light Tire Change
+  - Flat Tire - Spare On Board
+  first_seen: '2026-07-28T18:24:05+00:00'
+  last_seen: '2026-07-28T18:24:05+00:00'
+  occurrence_count: 10
+  evidence:
+    sample_service_type_raw: *id014
+    affected_requests: 10
+  patch:
+    acceptance_policy:
+      auto_decline:
+      - service_type_raw: Light Tire Change
+        client: Allstate
+      - service_type_raw: Flat Tire - Spare On Board
+        clients:
+        - Quest Roadside
+        - Agero
+        - Honk Technologies
+        - Urgently
+  patch_yaml: "acceptance_policy:\n  auto_decline:\n    - service_type_raw: \"Light\
+    \ Tire Change\"\n      client: \"Allstate\"\n    - service_type_raw: \"Flat Tire\
+    \ - Spare On Board\"\n      clients: [\"Quest Roadside\", \"Agero\", \"Honk Technologies\"\
+    , \"Urgently\"]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-equipment-denials
+  proposed_at: '2026-07-28T18:25:16+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: The phrase 'Wrong equipment for the vehicle' and 'No truck available'
+    currently fall outside the equipment_unavailable normalization used for 'Equipment
+    Not Available', so they land in the unattributed bucket instead of the equipment
+    cause where they belong. Mapping them closes most of the unattributed gap.
+  service_type_raw_samples: &id015
+  - Wrong equipment for the vehicle
+  - No truck available
+  first_seen: '2026-07-28T18:25:16+00:00'
+  last_seen: '2026-07-28T18:25:16+00:00'
+  occurrence_count: 6
+  evidence:
+    sample_service_type_raw: *id015
+    affected_requests: 6
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - Equipment Not Available
+      - Wrong equipment for the vehicle
+      - No truck available
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    - \"Equipment\
+    \ Not Available\"\n    - \"Wrong equipment for the vehicle\"\n    - \"No truck\
+    \ available\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-distance-denials
+  proposed_at: '2026-07-28T18:25:16+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: '''Too far outside coverage area'' and ''Rate too low for the distance''
+    are currently unmapped raw strings landing in the unattributed cause; they clearly
+    belong to out_of_area and rate_too_low causes respectively.'
+  service_type_raw_samples: &id016
+  - Too far outside coverage area
+  - Rate too low for the distance
+  first_seen: '2026-07-28T18:25:16+00:00'
+  last_seen: '2026-07-28T18:25:16+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id016
+    affected_requests: 4
+  patch:
+    denial_reason_normalization:
+      out_of_area:
+      - Out Of Coverage Area
+      - Too far outside coverage area
+      rate_too_low:
+      - Rate too low for the distance
+  patch_yaml: "denial_reason_normalization:\n  out_of_area:\n    - \"Out Of Coverage\
+    \ Area\"\n    - \"Too far outside coverage area\"\n  rate_too_low:\n    - \"Rate\
+    \ too low for the distance\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-diagnostic-storage
+  proposed_at: '2026-07-28T18:25:16+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: 4 offers (Mobile Diagnostic x2, Storage Release x2) fall through to unclassified
+    because no service class matches them. Volume is low but consistent enough today
+    to warrant a named bucket instead of unclassified, so future reports can attribute
+    cause correctly for this work.
+  service_type_raw_samples: &id017
+  - Mobile Diagnostic
+  - Storage Release
+  first_seen: '2026-07-28T18:25:16+00:00'
+  last_seen: '2026-07-28T18:25:16+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id017
+    affected_requests: 4
+  patch:
+    service_classes:
+      ancillary:
+        matches:
+        - mobile diagnostic
+        - storage release
+  patch_yaml: "service_classes:\n  ancillary:\n    matches:\n      - mobile diagnostic\n\
+    \      - storage release\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: close-off-light-service-strings
+  proposed_at: '2026-07-28T18:28:26+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Battery Jump, Light Tire Change, Lock Out and Tire Change are all light_service
+    (already should_decline) but keep landing as live offers that eat into the same
+    3-minute decision window as wanted tow/winch_out work. Auto-declining them removes
+    that competition.
+  service_type_raw_samples: &id018
+  - Battery Jump
+  - Light Tire Change
+  - Lock Out
+  - Tire Change
+  first_seen: '2026-07-28T18:28:26+00:00'
+  last_seen: '2026-07-28T18:28:26+00:00'
+  occurrence_count: 63
+  evidence:
+    sample_service_type_raw: *id018
+    affected_requests: 63
+  patch:
+    acceptance_policy:
+      auto_decline_service_types:
+      - Battery Jump
+      - Light Tire Change
+      - Lock Out
+      - Tire Change
+  patch_yaml: "acceptance_policy:\n  auto_decline_service_types:\n    - \"Battery\
+    \ Jump\"\n    - \"Light Tire Change\"\n    - \"Lock Out\"\n    - \"Tire Change\"\
+    \n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-driver-truck-denials
+  proposed_at: '2026-07-28T18:28:26+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: '"No driver on shift" and "No truck available" are currently falling
+    into the unattributed cause bucket instead of attention/equipment, so they''re
+    invisible to the daily cause ranking.'
+  service_type_raw_samples: &id019
+  - No driver on shift
+  - No truck available
+  first_seen: '2026-07-28T18:28:26+00:00'
+  last_seen: '2026-07-28T18:28:26+00:00'
+  occurrence_count: 3
+  evidence:
+    sample_service_type_raw: *id019
+    affected_requests: 3
+  patch:
+    denial_reason_normalization:
+      No driver on shift: attention
+      No truck available: equipment
+  patch_yaml: "denial_reason_normalization:\n  \"No driver on shift\": attention\n\
+    \  \"No truck available\": equipment\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: agero-battery-jump-closeoff
+  proposed_at: '2026-07-28T18:29:06+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Battery Jump from Agero (Swoop) is refused every time it's offered and
+    consumes a slot in the same 3-minute decision window as tow offers we want; closing
+    it off should raise the response rate on tow.
+  service_type_raw_samples: &id020
+  - Battery Jump
+  first_seen: '2026-07-28T18:29:06+00:00'
+  last_seen: '2026-07-28T18:29:06+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id020
+    affected_requests: 5
+  patch:
+    acceptance_policy:
+      client_overrides:
+        agero (swoop):
+          exclude_service_types:
+          - Battery Jump
+  patch_yaml: "acceptance_policy:\n  client_overrides:\n    \"agero (swoop)\":\n \
+    \     exclude_service_types:\n        - \"Battery Jump\""
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: alert-sat-afternoon-blind-spot
+  proposed_at: '2026-07-28T18:29:52+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Sat 13:00 and 14:00 both cleared the no-response threshold today (80%
+    and 100%), matching the median 3-minute response window meaning these offers were
+    lost almost instantly. Add an alert so dispatch knows this window is unmanned.
+  service_type_raw_samples: &id021 []
+  first_seen: '2026-07-28T18:29:52+00:00'
+  last_seen: '2026-07-28T18:29:52+00:00'
+  occurrence_count: 10
+  evidence:
+    sample_service_type_raw: *id021
+    affected_requests: 10
+  patch:
+    alerts:
+      blind_spot_watch:
+        day: Sat
+        hours:
+        - 13
+        - 14
+        threshold_no_response_rate: 0.35
+        action: notify_dispatch
+  patch_yaml: "alerts:\n  blind_spot_watch:\n    day: Sat\n    hours: [13, 14]\n \
+    \   threshold_no_response_rate: 0.35\n    action: notify_dispatch\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: capture-denial-reason-other
+  proposed_at: '2026-07-28T18:29:52+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: 14 Agero (Swoop) tow denials today were logged only as 'Other', hiding
+    the real cause and forcing manual review.
+  service_type_raw_samples: &id022
+  - Other
+  first_seen: '2026-07-28T18:29:52+00:00'
+  last_seen: '2026-07-28T18:29:52+00:00'
+  occurrence_count: 14
+  evidence:
+    sample_service_type_raw: *id022
+    affected_requests: 14
+  patch:
+    denial_reason_normalization:
+      agero_swoop:
+        require_reason_detail: true
+        disallow_generic_other: true
+  patch_yaml: "denial_reason_normalization:\n  agero_swoop:\n    require_reason_detail:\
+    \ true\n    disallow_generic_other: true\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: allstate-light-tire-change-decline
+  proposed_at: '2026-07-28T18:31:42+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: This service type is refused every time it's offered by this client,
+    yet it still eats a slot in the 3-minute decision window competing with wanted
+    tow offers.
+  service_type_raw_samples: &id023
+  - Light Tire Change
+  first_seen: '2026-07-28T18:31:42+00:00'
+  last_seen: '2026-07-28T18:31:42+00:00'
+  occurrence_count: 8
+  evidence:
+    sample_service_type_raw: *id023
+    affected_requests: 8
+  patch:
+    acceptance_policy:
+      auto_decline:
+      - client: allstate
+        service_type_raw: Light Tire Change
+        reason: 0% acceptance over 8 offers, competes with tow response window
+  patch_yaml: "acceptance_policy:\n  auto_decline:\n    - client: allstate\n     \
+    \ service_type_raw: \"Light Tire Change\"\n      reason: \"0% acceptance over\
+    \ 8 offers, competes with tow response window\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: evening-coverage-alert
+  proposed_at: '2026-07-28T18:31:42+00:00'
+  source_report: daily
+  target: alerts
+  rationale: No-response rates spike well above the daily average in the 17:00-21:00
+    stretch, all Agero tow offers, and today's blind-spot flag is at 19:00.
+  service_type_raw_samples: &id024
+  - Tow
+  first_seen: '2026-07-28T18:31:42+00:00'
+  last_seen: '2026-07-28T18:31:42+00:00'
+  occurrence_count: 7
+  evidence:
+    sample_service_type_raw: *id024
+    affected_requests: 7
+  patch:
+    alerts:
+    - name: evening_no_response_watch
+      hours: 17:00-21:00
+      weekday: any
+      condition: no_response_rate > 0.35
+      action: notify_dispatcher
+  patch_yaml: "alerts:\n  - name: evening_no_response_watch\n    hours: \"17:00-21:00\"\
+    \n    weekday: any\n    condition: \"no_response_rate > 0.35\"\n    action: notify_dispatcher\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: extend-coverage-wed-evening
+  proposed_at: '2026-07-28T18:32:37+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Wed 17:00 and 18:00 are flagged blind spots with no_response rates of
+    40% and 66.7%, both above the 35% threshold, while the stated staffed window ends
+    at 18:00. Extending coverage or alert escalation into this window would catch
+    offers currently going unanswered.
+  service_type_raw_samples: &id025 []
+  first_seen: '2026-07-28T18:32:37+00:00'
+  last_seen: '2026-07-28T18:32:37+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id025
+    affected_requests: 2
+  patch:
+    missed_work:
+      coverage:
+        covered:
+          end: '19:00'
+  patch_yaml: "missed_work:\n  coverage:\n    covered:\n      end: \"19:00\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: lower-blind-spot-min-offers
+  proposed_at: '2026-07-28T18:34:26+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Hour 21:00 had 3 offers and 3 no_response (100% unanswered) but was not
+    flagged because the alert requires at least 5 offers in the hour. A low-volume
+    hour with total non-response should still surface.
+  service_type_raw_samples: &id026 []
+  first_seen: '2026-07-28T18:34:26+00:00'
+  last_seen: '2026-07-28T18:34:26+00:00'
+  occurrence_count: 3
+  evidence:
+    sample_service_type_raw: *id026
+    affected_requests: 3
+  patch:
+    missed_work:
+      blind_spots:
+        thresholds:
+          min_offers: 3
+          threshold: 0.35
+  patch_yaml: "missed_work:\n  blind_spots:\n    thresholds:\n      min_offers: 3\n\
+    \      threshold: 0.35\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: close-off-tire-change-agero
+  proposed_at: '2026-07-28T18:34:26+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change offers from Agero (Swoop) are never accepted (0 of 7 yesterday)
+    yet they occupy the same 3-minute decision window as tow offers we do want. Closing
+    this off should improve response rate on wanted work.
+  service_type_raw_samples: &id027
+  - Tire Change
+  first_seen: '2026-07-28T18:34:26+00:00'
+  last_seen: '2026-07-28T18:34:26+00:00'
+  occurrence_count: 7
+  evidence:
+    sample_service_type_raw: *id027
+    affected_requests: 7
+  patch:
+    acceptance_policy:
+      client_overrides:
+        agero (swoop):
+          should_decline:
+          - light_service
+  patch_yaml: "acceptance_policy:\n  client_overrides:\n    agero (swoop):\n     \
+    \ should_decline:\n        - light_service\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-refuse-denial-reason
+  proposed_at: '2026-07-28T18:35:01+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Urgent.ly's denial came through with the raw reason 'Refuse', which the
+    rules bucket as generic 'other'. One occurrence today isn't enough to be sure
+    of the right mapping, but it's worth a human decision on whether 'Refuse' should
+    map to an existing reason category so it doesn't get lost in 'other'.
+  service_type_raw_samples: &id028
+  - Refuse
+  first_seen: '2026-07-28T18:35:01+00:00'
+  last_seen: '2026-07-28T18:35:01+00:00'
+  occurrence_count: 1
+  evidence:
+    sample_service_type_raw: *id028
+    affected_requests: 1
+  patch:
+    denial_reason_normalization:
+      other:
+      - remove: Refuse
+      client_declined:
+      - add: Refuse
+  patch_yaml: "denial_reason_normalization:\n  other:\n    - remove: \"Refuse\"\n\
+    \  client_declined:\n    - add: \"Refuse\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: agero-close-light-service
+  proposed_at: '2026-07-28T18:35:31+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change and Battery Jump offers from Agero are refused every time
+    (0 accepted of 13 combined offers) yet still consume slots in the same 3-minute
+    decision window as wanted tow work. Closing these off is expected to lift the
+    response rate on tow/winch_out.
+  service_type_raw_samples: &id029
+  - Tire Change
+  - Battery Jump
+  first_seen: '2026-07-28T18:35:31+00:00'
+  last_seen: '2026-07-28T18:35:31+00:00'
+  occurrence_count: 13
+  evidence:
+    sample_service_type_raw: *id029
+    affected_requests: 13
+  patch:
+    acceptance_policy:
+      clients:
+        agero (swoop):
+          should_decline:
+          - light_service
+  patch_yaml: "acceptance_policy:\n  clients:\n    agero (swoop):\n      should_decline:\n\
+    \        - light_service\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: saturday-afternoon-alert
+  proposed_at: '2026-07-28T18:35:31+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Nine hour-of-week cells on Saturday (14:00-19:00, 22:00, plus 06:00 and
+    11:00) show no_response rates of 50-91% on 5+ offers. These are unmanned windows,
+    not pricing problems given the 3-minute response requirement.
+  service_type_raw_samples: &id030 []
+  first_seen: '2026-07-28T18:35:31+00:00'
+  last_seen: '2026-07-28T18:35:31+00:00'
+  occurrence_count: 38
+  evidence:
+    sample_service_type_raw: *id030
+    affected_requests: 38
+  patch:
+    alerts:
+      blind_spot_watch:
+        weekday: Sat
+        hours:
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 22
+        action: escalate_to_on_call
+  patch_yaml: "alerts:\n  blind_spot_watch:\n    weekday: Sat\n    hours: [14,15,16,17,18,19,22]\n\
+    \    action: escalate_to_on_call\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: closeoff-agero-battery-jump
+  proposed_at: '2026-07-28T18:36:22+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Battery Jump offered to Agero is refused every time (0 of 5 accepted,
+    1 no_response) yet it competes for attention inside the same 3-minute window as
+    tow offers we do want.
+  service_type_raw_samples: &id031
+  - Battery Jump
+  first_seen: '2026-07-28T18:36:22+00:00'
+  last_seen: '2026-07-28T18:36:22+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id031
+    affected_requests: 5
+  patch:
+    acceptance_policy:
+      should_decline:
+      - client: agero (swoop)
+        service_type: Battery Jump
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - client: \"agero (swoop)\"\
+    \n      service_type: \"Battery Jump\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: friday-evening-blind-spot-alert
+  proposed_at: '2026-07-28T18:36:22+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Four Friday evening hours (17:00, 18:00, 20:00, 23:00) show no-response
+    rates from 37.5% to 77.8%, accounting for 19 of the day's 32 no-response misses.
+    An alert to page a dispatcher in these windows would catch offers before they
+    expire.
+  service_type_raw_samples: &id032 []
+  first_seen: '2026-07-28T18:36:22+00:00'
+  last_seen: '2026-07-28T18:36:22+00:00'
+  occurrence_count: 19
+  evidence:
+    sample_service_type_raw: *id032
+    affected_requests: 19
+  patch:
+    alerts:
+      blind_spot_watch:
+      - label: Fri 17:00-23:00
+        weekday: Fri
+        hours:
+        - 17
+        - 18
+        - 20
+        - 23
+        no_response_rate_threshold: 0.35
+  patch_yaml: "alerts:\n  blind_spot_watch:\n    - label: \"Fri 17:00-23:00\"\n  \
+    \    weekday: \"Fri\"\n      hours: [17, 18, 20, 23]\n      no_response_rate_threshold:\
+    \ 0.35\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: alert-thu-evening-blind-spot
+  proposed_at: '2026-07-28T18:37:04+00:00'
+  source_report: daily
+  target: alerts
+  rationale: Three consecutive Thursday evening hours (17:00, 19:00, 20:00) each showed
+    a no-response rate at or above 42%, well past the 35% blind-spot threshold, and
+    all fell on the same day.
+  service_type_raw_samples: &id033
+  - Tow
+  - Flat Bed Towing
+  - Tow / Flatbed
+  first_seen: '2026-07-28T18:37:04+00:00'
+  last_seen: '2026-07-28T18:37:04+00:00'
+  occurrence_count: 3
+  evidence:
+    sample_service_type_raw: *id033
+    affected_requests: 3
+  patch:
+    missed_work:
+      alerts:
+      - name: thu_evening_no_response
+        day: Thu
+        hours:
+        - 17
+        - 19
+        - 20
+        no_response_rate_threshold: 0.35
+        min_offers: 5
+        notify: dispatcher_on_call
+  patch_yaml: "missed_work:\n  alerts:\n    - name: thu_evening_no_response\n    \
+    \  day: Thu\n      hours: [17, 19, 20]\n      no_response_rate_threshold: 0.35\n\
+    \      min_offers: 5\n      notify: dispatcher_on_call"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-refuse-denial
+  proposed_at: '2026-07-28T18:38:24+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Urgent.ly's denial reason 'Refuse' is landing in the generic 'other'
+    bucket twice, which hides whether this is a capacity, price, or policy refusal.
+    A named reason would let cause_assessments actually say what to fix.
+  service_type_raw_samples: &id034
+  - Refuse
+  first_seen: '2026-07-28T18:38:24+00:00'
+  last_seen: '2026-07-28T18:38:24+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id034
+    affected_requests: 2
+  patch:
+    denial_reason_normalization:
+      refuse:
+      - refuse
+      - refused
+      - driver refused
+  patch_yaml: "denial_reason_normalization:\n  refuse: [\"refuse\", \"refused\", \"\
+    driver refused\"]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: classify-start-as-light-service
+  proposed_at: '2026-07-28T18:40:41+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: Raw service type 'Start' is falling into unclassified every time it's
+    offered; it matches the intent of light_service's jump/light start category already
+    defined in rules.
+  service_type_raw_samples: &id035
+  - Start
+  first_seen: '2026-07-28T18:40:41+00:00'
+  last_seen: '2026-07-28T23:31:03+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id035
+    affected_requests: 4
+  patch:
+    service_classes:
+      light_service:
+        match:
+        - start
+  patch_yaml: "service_classes:\n  light_service:\n    match:\n      - start\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: auto-decline-tire-change
+  proposed_at: '2026-07-28T18:43:29+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change is already classified light_service (should_decline) but
+    still sits in the queue long enough to go no_response 4 of 6 times, eating attention
+    that should go to tow offers in the same 3-minute window.
+  service_type_raw_samples: &id036
+  - Tire Change
+  first_seen: '2026-07-28T18:43:29+00:00'
+  last_seen: '2026-07-28T23:30:24+00:00'
+  occurrence_count: 6
+  evidence:
+    sample_service_type_raw: *id036
+    affected_requests: 6
+  patch:
+    missed_work:
+      closeoff_candidates:
+        auto_decline_service_types:
+        - Tire Change
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type_raw: \"Tire\
+    \ Change\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: add-start-to-light-service
+  proposed_at: '2026-07-28T18:43:57+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: 4 offers came in as raw service type 'Start' and fell through to unclassified
+    all day, all 4 expired unanswered. This looks like a jump/light start variant
+    that the current light_service match list (jump start, light start) doesn't catch.
+  service_type_raw_samples: &id037
+  - Start
+  first_seen: '2026-07-28T18:43:57+00:00'
+  last_seen: '2026-07-28T18:43:57+00:00'
+  occurrence_count: 4
+  evidence:
+    sample_service_type_raw: *id037
+    affected_requests: 4
+  patch:
+    service_classes:
+      light_service:
+        match:
+        - start
+  patch_yaml: "service_classes:\n  light_service:\n    match:\n      - start\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: close-off-tire-change
+  proposed_at: '2026-07-28T18:44:42+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change offers are refused or ignored almost every time (6 offers,
+    0 accepted) and they compete for the same 3-minute decision window as tow, the
+    work we actually want. Closing this off is expected to raise the answer rate on
+    tow.
+  service_type_raw_samples: &id038
+  - Tire Change
+  first_seen: '2026-07-28T18:44:42+00:00'
+  last_seen: '2026-07-28T18:44:42+00:00'
+  occurrence_count: 6
+  evidence:
+    sample_service_type_raw: *id038
+    affected_requests: 6
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type: Tire Change
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type: \"Tire Change\"\
+    \n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: close-off-light-service-noshow-types
+  proposed_at: '2026-07-28T18:47:07+00:00'
+  source_report: weekly
+  target: acceptance_policy
+  rationale: Six light_service raw types were offered a combined 78 times this week
+    and accepted zero times, the same pattern as last week (four of the six persisted,
+    two are new). They consume slots in the 3-minute decision window that competes
+    with tow/winch offers we do want, and the existing closeoff_candidate alert already
+    flags Light Lock-out at 0 of 10.
+  service_type_raw_samples: &id039
+  - Tire Change
+  - Battery Jump
+  - Light Tire Change
+  - Light Lock-out
+  - Lock Out
+  - Jump Start
+  first_seen: '2026-07-28T18:47:07+00:00'
+  last_seen: '2026-07-28T18:47:07+00:00'
+  occurrence_count: 78
+  evidence:
+    sample_service_type_raw: *id039
+    affected_requests: 78
+  patch:
+    acceptance_policy:
+      auto_decline_service_types:
+      - Tire Change
+      - Battery Jump
+      - Light Tire Change
+      - Light Lock-out
+      - Lock Out
+      - Jump Start
+  patch_yaml: "acceptance_policy:\n  auto_decline_service_types:\n    - \"Tire Change\"\
+    \n    - \"Battery Jump\"\n    - \"Light Tire Change\"\n    - \"Light Lock-out\"\
+    \n    - \"Lock Out\"\n    - \"Jump Start\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: weekend-daytime-blind-spot-alert
+  proposed_at: '2026-07-28T18:48:26+00:00'
+  source_report: weekly
+  target: alerts
+  rationale: The current blind_spot list is dominated by Sunday daytime/evening hours
+    (11:00 through 21:00) where offers go unanswered at rates from 50% to 100%, a
+    new pattern this week (12 newly opened cells, 9 of them Sunday). This is a staffing
+    gap the alerting config should surface automatically rather than wait for the
+    weekly report.
+  service_type_raw_samples: &id040
+  - Sun 21:00
+  - Sun 14:00
+  - Sun 17:00
+  - Sun 15:00
+  - Sun 11:00
+  - Sun 12:00
+  - Sun 16:00
+  - Sun 19:00
+  - Sun 18:00
+  first_seen: '2026-07-28T18:48:26+00:00'
+  last_seen: '2026-07-28T18:48:26+00:00'
+  occurrence_count: 9
+  evidence:
+    sample_service_type_raw: *id040
+    affected_requests: 9
+  patch:
+    missed_work:
+      alerts:
+      - name: sunday_daytime_blind_spot
+        condition: no_response_rate >= 0.5
+        window: Sun 11:00-21:00
+        min_offers: 5
+        notify: dispatch_manager
+  patch_yaml: "missed_work:\n  alerts:\n    - name: sunday_daytime_blind_spot\n  \
+    \    condition: no_response_rate >= 0.5\n      window: \"Sun 11:00-21:00\"\n \
+    \     min_offers: 5\n      notify: dispatch_manager\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: information-reason-normalization
+  proposed_at: '2026-07-28T18:48:26+00:00'
+  source_report: weekly
+  target: denial_reason_normalization
+  rationale: The denial reason "Not Enough Information" is currently grouped into
+    the catch-all "other" bucket alongside "Other" and "Refuse" (18 combined at Agero),
+    which routes it to the low-priority review cause instead of the cheap-fix information
+    cause the report already tracks separately (only 3 jobs currently attributed there).
+    Splitting this string out would correctly flag it as an easy save.
+  service_type_raw_samples: &id041
+  - Not Enough Information
+  first_seen: '2026-07-28T18:48:26+00:00'
+  last_seen: '2026-07-28T18:48:26+00:00'
+  occurrence_count: 18
+  evidence:
+    sample_service_type_raw: *id041
+    affected_requests: 18
+  patch:
+    missed_work:
+      denial_reason_map:
+        Not Enough Information: information
+  patch_yaml: "missed_work:\n  denial_reason_map:\n    \"Not Enough Information\"\
+    : information\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: add-service-call-class
+  proposed_at: '2026-07-28T18:49:44+00:00'
+  source_report: weekly
+  target: service_classes
+  rationale: Mobile Diagnostic and Storage Release are being offered and mostly accepted
+    (71% rate) but fall into 'unclassified' because no service_class matches them,
+    so they get no policy or alerting treatment.
+  service_type_raw_samples: &id042
+  - Mobile Diagnostic
+  - Storage Release
+  - Parts Delivery + 1hr Labor
+  - Start
+  first_seen: '2026-07-28T18:49:44+00:00'
+  last_seen: '2026-07-28T18:49:44+00:00'
+  occurrence_count: 31
+  evidence:
+    sample_service_type_raw: *id042
+    affected_requests: 31
+  patch:
+    service_classes:
+      service_call:
+        match:
+        - mobile diagnostic
+        - diagnostic
+        - storage release
+        - parts delivery
+        - start
+  patch_yaml: "service_classes:\n  service_call:\n    match:\n      - mobile diagnostic\n\
+    \      - diagnostic\n      - storage release\n      - parts delivery\n      -\
+    \ start\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: weekend-blind-spot-alert
+  proposed_at: '2026-07-28T18:49:44+00:00'
+  source_report: weekly
+  target: alerts
+  rationale: Saturday and Sunday show the densest cluster of blind_spot cells (no_response
+    rate above 60% in many hours) and are newly opened this week, but there is currently
+    no alert distinguishing weekend coverage gaps from weekday ones.
+  service_type_raw_samples: &id043
+  - Sat 06:00
+  - Sun 16:00
+  - Sat 09:00
+  - Sun 10:00
+  first_seen: '2026-07-28T18:49:44+00:00'
+  last_seen: '2026-07-28T18:49:44+00:00'
+  occurrence_count: 16
+  evidence:
+    sample_service_type_raw: *id043
+    affected_requests: 16
+  patch:
+    alerts:
+      weekend_coverage_gap:
+        when: weekday in ['Sat','Sun'] and no_response_rate > 0.6 and offers >= 5
+        severity: high
+        detail: Weekend blind spot -- no staffed responder
+  patch_yaml: "alerts:\n  weekend_coverage_gap:\n    when: \"weekday in ['Sat','Sun']\
+    \ and no_response_rate > 0.6 and offers >= 5\"\n    severity: high\n    detail:\
+    \ \"Weekend blind spot -- no staffed responder\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: decline-light-service-low-accept
+  proposed_at: '2026-07-28T18:52:45+00:00'
+  source_report: weekly
+  target: acceptance_policy
+  rationale: Light-service offers (Tire Change, Battery Jump, Lock Out, Light Tire
+    Change) are accepted almost never yet still consume the same 3-minute decision
+    window as tow offers. Closing them off at the policy level should reduce noise
+    and lift response rate on tow/winch_out.
+  service_type_raw_samples: &id044
+  - Tire Change
+  - Battery Jump
+  - Lock Out
+  - Light Tire Change
+  first_seen: '2026-07-28T18:52:45+00:00'
+  last_seen: '2026-07-28T18:52:45+00:00'
+  occurrence_count: 66
+  evidence:
+    sample_service_type_raw: *id044
+    affected_requests: 66
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_class: light_service
+      notes: 66 offers, 2 accepted (3.0%) over the reporting week -- see closeoff_candidates
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_class: light_service\n\
+    \  notes: \"66 offers, 2 accepted (3.0%) over the reporting week -- see closeoff_candidates\""
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: staff-evening-weekend-blindspots
+  proposed_at: '2026-07-28T18:52:45+00:00'
+  source_report: weekly
+  target: alerts
+  rationale: No-response rate spikes far above the covered-window baseline in the
+    evening block and on weekend afternoons; these are ranked as recoverable but nobody
+    is rostered to answer them.
+  service_type_raw_samples: &id045 []
+  first_seen: '2026-07-28T18:52:45+00:00'
+  last_seen: '2026-07-28T18:52:45+00:00'
+  occurrence_count: 90
+  evidence:
+    sample_service_type_raw: *id045
+    affected_requests: 90
+  patch:
+    alerts:
+      blind_spot_watch:
+        windows:
+        - Mon-Fri 20:00-22:00
+        - Sat-Sun 11:00-19:00
+        threshold_no_response_rate: 0.35
+        min_offers: 5
+  patch_yaml: "alerts:\n  blind_spot_watch:\n    windows:\n      - \"Mon-Fri 20:00-22:00\"\
+    \n      - \"Sat-Sun 11:00-19:00\"\n    threshold_no_response_rate: 0.35\n    min_offers:\
+    \ 5"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-equipment-unavailable-reason
+  proposed_at: '2026-07-28T18:52:45+00:00'
+  source_report: weekly
+  target: denial_reason_normalization
+  rationale: Agero's 'Equipment Not Available' and Allied Dispatch's 'Equipment Availability'
+    are being tallied as the same underlying cause already, but the raw strings differ
+    enough that a stricter matcher could miss variants in future feeds; codify the
+    mapping explicitly.
+  service_type_raw_samples: &id046
+  - Equipment Not Available
+  - Equipment Availability
+  first_seen: '2026-07-28T18:52:45+00:00'
+  last_seen: '2026-07-28T18:52:45+00:00'
+  occurrence_count: 61
+  evidence:
+    sample_service_type_raw: *id046
+    affected_requests: 61
+  patch:
+    denial_reason_normalization:
+      equipment_unavailable:
+      - Equipment Not Available
+      - Equipment Availability
+  patch_yaml: "denial_reason_normalization:\n  equipment_unavailable:\n    - \"Equipment\
+    \ Not Available\"\n    - \"Equipment Availability\""
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: decline-light-service-tire-lockout
+  proposed_at: '2026-07-28T18:53:58+00:00'
+  source_report: weekly
+  target: acceptance_policy
+  rationale: Light Tire Change, Tire Change, and Light Lock-out are declined essentially
+    100% of the time (0 of 54 offers accepted) yet they occupy the same 3-minute decision
+    window as wanted tow/winch_out offers. Closing them off should raise the answer
+    rate on wanted work.
+  service_type_raw_samples: &id047
+  - Light Tire Change
+  - Tire Change
+  - Light Lock-out
+  first_seen: '2026-07-28T18:53:58+00:00'
+  last_seen: '2026-07-28T18:53:58+00:00'
+  occurrence_count: 54
+  evidence:
+    sample_service_type_raw: *id047
+    affected_requests: 54
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type_raw: Light Tire Change
+      - service_type_raw: Tire Change
+      - service_type_raw: Light Lock-out
+      auto_decline: true
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type_raw: \"Light\
+    \ Tire Change\"\n    - service_type_raw: \"Tire Change\"\n    - service_type_raw:\
+    \ \"Light Lock-out\"\n  auto_decline: true\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: alert-weekend-and-evening-coverage
+  proposed_at: '2026-07-28T18:53:58+00:00'
+  source_report: weekly
+  target: alerts
+  rationale: 22 blind-spot hour-of-week windows this week, concentrated Sat/Sun daytime
+    and weekday evenings 17:00-21:00, produced 101 unanswered offers out of 134 offered
+    in those windows. An alert routed to a rostered person in those windows targets
+    the largest recoverable bucket.
+  service_type_raw_samples: &id048 []
+  first_seen: '2026-07-28T18:53:58+00:00'
+  last_seen: '2026-07-28T18:53:58+00:00'
+  occurrence_count: 22
+  evidence:
+    sample_service_type_raw: *id048
+    affected_requests: 22
+  patch:
+    alerts:
+      blind_spot_windows:
+      - Sat 06:00-18:00
+      - Sun 06:00-18:00
+      - Mon-Fri 17:00-21:00
+      notify:
+      - dispatch-lead
+  patch_yaml: "alerts:\n  blind_spot_windows:\n    - \"Sat 06:00-18:00\"\n    - \"\
+    Sun 06:00-18:00\"\n    - \"Mon-Fri 17:00-21:00\"\n  notify: [\"dispatch-lead\"\
+    ]\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: light-service-start-synonym
+  proposed_at: '2026-07-28T18:59:30+00:00'
+  source_report: monthly
+  target: service_classes
+  rationale: Two offers came through as the bare string 'Start', which does not match
+    the existing 'light start' / 'jump start' phrases in the light_service class and
+    fell through to unclassified.
+  service_type_raw_samples: &id049
+  - Start
+  first_seen: '2026-07-28T18:59:30+00:00'
+  last_seen: '2026-07-28T18:59:30+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id049
+    affected_requests: 2
+  patch:
+    service_classes:
+      light_service:
+        match:
+        - tire change
+        - flat tire
+        - tire inflation
+        - jump start
+        - light start
+        - start
+        - battery
+        - lockout
+        - lock out
+        - lock-out
+        - fuel
+        - fuel delivery
+        - unleaded
+        - out of gas
+  patch_yaml: "service_classes:\n  light_service:\n    match:\n      - tire change\n\
+    \      - flat tire\n      - tire inflation\n      - jump start\n      - light\
+    \ start\n      - start\n      - battery\n      - lockout\n      - lock out\n \
+    \     - lock-out\n      - fuel\n      - fuel delivery\n      - unleaded\n    \
+    \  - out of gas\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: closeoff-tire-change
+  proposed_at: '2026-07-28T23:31:40+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change is offered by two clients and accepted 0% of 5 tries in the
+    last day, yet it eats time inside the same 3-minute decision window as tow offers.
+    Closing it off should raise the answer rate on wanted work.
+  service_type_raw_samples: &id050
+  - Tire Change
+  first_seen: '2026-07-28T23:31:40+00:00'
+  last_seen: '2026-07-28T23:31:40+00:00'
+  occurrence_count: 5
+  evidence:
+    sample_service_type_raw: *id050
+    affected_requests: 5
+  patch:
+    missed_work:
+      closeoff:
+      - client: Agero (Swoop)
+        service_type_raw: Tire Change
+        action: auto_decline
+      - client: Allied Dispatch Solutions
+        service_type_raw: Tire Change
+        action: auto_decline
+  patch_yaml: "missed_work:\n  closeoff:\n    - client: 'Agero (Swoop)'\n      service_type_raw:\
+    \ 'Tire Change'\n      action: auto_decline\n    - client: 'Allied Dispatch Solutions'\n\
+    \      service_type_raw: 'Tire Change'\n      action: auto_decline\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: decline-tire-change-battery-jump
+  proposed_at: '2026-07-28T23:32:56+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change and Battery Jump offers are almost never accepted yet they
+    sit in the same 3-minute decision window as tow offers, competing for dispatcher
+    attention.
+  service_type_raw_samples: &id051
+  - Tire Change
+  - Battery Jump
+  first_seen: '2026-07-28T23:32:56+00:00'
+  last_seen: '2026-07-28T23:32:56+00:00'
+  occurrence_count: 19
+  evidence:
+    sample_service_type_raw: *id051
+    affected_requests: 19
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type: Tire Change
+      - service_type: Battery Jump
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type: \"Tire Change\"\
+    \n    - service_type: \"Battery Jump\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: closeoff-tire-change-battery-jump
+  proposed_at: '2026-07-29T18:27:06+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change and Battery Jump are being offered repeatedly and refused
+    almost every time, consuming attention inside the same 3-minute decision window
+    as wanted tow/winch_out offers. Closing them off should raise the response rate
+    on the work we do want.
+  service_type_raw_samples: &id052
+  - Tire Change
+  - Battery Jump
+  first_seen: '2026-07-29T18:27:06+00:00'
+  last_seen: '2026-07-29T18:27:06+00:00'
+  occurrence_count: 41
+  evidence:
+    sample_service_type_raw: *id052
+    affected_requests: 41
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type: Tire Change
+      - service_type: Battery Jump
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type: \"Tire Change\"\
+    \n    - service_type: \"Battery Jump\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-bac0cd2fd679
+- id: normalize-refuse-reason
+  proposed_at: '2026-08-11T09:33:09+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Urgent.ly's denial reason 'Refuse' is landing in the generic 'other'
+    bucket, which hides it from cause attribution. Small volume today but worth a
+    clean label.
+  service_type_raw_samples: &id053
+  - Refuse
+  first_seen: '2026-08-11T09:33:09+00:00'
+  last_seen: '2026-08-11T09:33:09+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id053
+    affected_requests: 2
+  patch:
+    denial_reason_normalization:
+      other:
+      - match: Refuse
+        map_to: client_declined
+  patch_yaml: "denial_reason_normalization:\n  other:\n    - match: \"Refuse\"\n \
+    \     map_to: \"client_declined\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41
+- id: decline-tire-change
+  proposed_at: '2026-08-12T10:01:01+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change is offered repeatedly but essentially never accepted (0 of
+    21 over 7 days, 0 of 9 today) and it competes for attention inside the same 3-minute
+    window as wanted tow offers.
+  service_type_raw_samples: &id054
+  - Tire Change
+  first_seen: '2026-08-12T10:01:01+00:00'
+  last_seen: '2026-08-12T10:01:01+00:00'
+  occurrence_count: 21
+  evidence:
+    sample_service_type_raw: *id054
+    affected_requests: 21
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type_raw: Tire Change
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type_raw: \"Tire\
+    \ Change\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41
+- id: classify-medium-heavy-duty-rsa
+  proposed_at: '2026-08-12T10:01:01+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: '"Medium/Heavy Duty RSA" falls through to unclassified today, hiding
+    it from the should_accept inventory even though it looks like recovery/tow work.'
+  service_type_raw_samples: &id055
+  - Medium/Heavy Duty RSA
+  first_seen: '2026-08-12T10:01:01+00:00'
+  last_seen: '2026-08-12T10:01:01+00:00'
+  occurrence_count: 1
+  evidence:
+    sample_service_type_raw: *id055
+    affected_requests: 1
+  patch:
+    service_classes:
+      tow:
+        match:
+        - medium/heavy duty rsa
+  patch_yaml: "service_classes:\n  tow:\n    match:\n      - \"medium/heavy duty rsa\"\
+    \n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41

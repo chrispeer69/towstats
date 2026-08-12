@@ -1,0 +1,768 @@
+# ==========================================================================
+# schema.yaml -- drives ALL field mapping from an acquired payload to the
+# canonical request record. Ingestion contains no column names of its own.
+#
+# TWO SOURCES, ONE CANONICAL RECORD
+# ---------------------------------
+# Everything at the top level of this file (`columns`, `required_headers`,
+# `sheet`, `identity`) describes the UI **CSV export**. The `api:` block at the
+# bottom is the parallel field mapping for the **JSON API**, which is the
+# PRIMARY acquisition path (TOWBOOK_PORTAL_FACTS.md sections 3-5).
+#
+# WHICH MAPPING IS APPLIED IS DECIDED BY THE PAYLOAD ITSELF, not by a key in
+# this file: ingestion dispatches on the archived file's format (`sheet` ->
+# `json_suffixes` / `csv_suffixes`), because the file on disk is what it is
+# regardless of what any setting claims. A .json archive gets the `api:`
+# mapping; a .csv / .xlsx archive gets the top-level one.
+#
+# The `api:` block is an OVERLAY, not a second schema: it replaces only the
+# source-shaped keys (which field feeds which canonical field, which keys are
+# required, whether there is a fallback identity). `datetime_formats`,
+# `value_cleanup`, `source_timezone`, `unknown_status_action` and the status
+# vocabulary are shared, so the two sources cannot drift into two different
+# definitions of what a canonical request record is. Their FIELD NAMES never
+# merge -- that would be how a wrong number gets in -- but their NORMALISATION
+# is deliberately one implementation.
+#
+# HOW MAPPING WORKS
+# -----------------
+# `columns` maps a canonical field to a LIST of candidate source headers. The
+# ingester compares them case-insensitively, ignoring surrounding whitespace
+# and any trailing "*" or ":" the portal may add, and takes the first
+# candidate that is present in the sheet. Order is priority order.
+#
+# HEADER DRIFT IS A HARD FAILURE
+# ------------------------------
+# If the exported headers do not satisfy `required_headers`, the run does NOT
+# guess. It writes what it actually saw to config/schema.detected.yaml and
+# aborts, which raises a pipeline_failure alert. A wrong number is worse than
+# a missing one, and silence is never treated as success.
+#
+# CONFIDENCE
+# ----------
+# The nine documented Digital Requests columns are marked ASSUMPTION because
+# only the column *titles* are documented -- the exact header text produced by
+# Export -> Excel has never been observed. Reconcile after the first real
+# export, using config/schema.detected.yaml.
+# ==========================================================================
+
+version: 2
+
+# --------------------------------------------------------------------------
+# source -- DOCUMENTATION ONLY. Which acquisition path this account uses.
+#
+#   api : the JSON endpoint at /api/digitaldispatch/callrequests
+#         (agents/acquisition_api.py). PRIMARY. It returns callRequestId --
+#         verified unique across 3,079 rows -- so ingestion has a real primary
+#         key instead of a synthesised fingerprint.
+#   csv : the UI "Export to Excel" download (agents/acquisition.py). The
+#         fallback for the day Towbook revokes the endpoint.
+#
+# This key does NOT select a mapping. Ingestion dispatches on the archived
+# payload's own format, so ingesting an old .csv archive keeps working the day
+# this says `api`, and a .json archive is read as JSON the day it says `csv`.
+#
+# WHICH PATH A SCHEDULED RUN USES is set per job in config/schedule.yaml
+# (`source: api` / `source: ui`), or on the CLI with `--source`.
+# --------------------------------------------------------------------------
+source: api
+
+# --------------------------------------------------------------------------
+# Headers that must be present or the run aborts.
+# Deliberately minimal: identity, time, status. Everything else can be absent
+# without making the acceptance-rate numbers wrong.
+# --------------------------------------------------------------------------
+required_headers:
+  # VERIFIED against three real exports in raw/2026/07/27/. The live header row
+  # is:
+  #   Request Date, Provider, Contractor ID, Service Needed, Call #, PO #,
+  #   Expiration Date, Status, Response Reason, Responded by, ETA, Vehicle
+  # There is NO "ID" column and no "Date and Time" column -- both were taken
+  # from Towbook's documentation, which does not match what Export produces.
+  # Requiring them aborted every real run.
+  - "Request Date"
+  - "Status"
+
+header_validation:
+  mode: strict
+  on_mismatch: write_detected_and_abort
+  detected_output: config/schema.detected.yaml
+  # Ignore fully blank columns and Excel's "Unnamed: 3" style filler when
+  # deciding whether the header row matched.
+  ignore_blank_headers: true
+  # Extra columns that we do not map are fine and are not an error. Towbook
+  # adding a column must not stop the pipeline.
+  allow_extra_headers: true
+
+# --------------------------------------------------------------------------
+# canonical_field: [candidate source header names]
+# Canonical field names are the canonical request record and must not change.
+# --------------------------------------------------------------------------
+columns:
+  request_id:
+    # The real export has NO id column. These remain for an export that does
+    # (and for the generated test fixtures); when none of them is present the
+    # `identity` block below derives a deterministic key instead.
+    #
+    # "Call #" is deliberately NOT a candidate. It is blank on every offer that
+    # was never accepted and is filled in later, so using it as the identity
+    # would give one offer two different keys across two exports and count it
+    # twice -- inflating `offered`, the denominator this system exists to
+    # get right.
+    - "ID"
+    - "Request ID"
+    - "RequestId"
+    - "Digital Request ID"
+
+  job_number:
+    # The Towbook JOB / CALL NUMBER -- what the owner types into Towbook to pull
+    # a job back up. VERIFIED as the "Call #" column of the real export.
+    #
+    # READ THIS BEFORE RELYING ON IT. Towbook does not issue a call number until
+    # the offer becomes a job, which means it is BLANK on ~84% of the offers we
+    # did not accept (0 of 817 Expired, 1 of 428 Rejected, 0 of 25 Another
+    # Provider Responded across 3,124 archived records). It is populated on 99%
+    # of accepted offers and on the cancelled/GOA rows that were accepted first.
+    #
+    # That is a fact about Towbook, not a gap in the mapping, and it is why
+    # every report pairs this with the Digital Request id (`request_id`, the
+    # API's callRequestId), which is present on 3,124 of 3,124 records. The
+    # reference shown for an offer we did not take is the request id.
+    #
+    # STILL NOT AN IDENTITY. See `columns.request_id` below: "Call #" is filled
+    # in after the fact, so keying on it would give one offer two different keys
+    # across two exports and count it twice. It is stored, never keyed on.
+    - "Call #"
+    - "Call Number"
+    - "Call#"
+    - "Job #"
+    - "Job Number"
+
+  client_name:
+    # VERIFIED: the real column is "Provider" ("Agero (Swoop)", "NSD", ...).
+    # "Contractor ID" is a separate numeric column and is NOT the client.
+    - "Provider"
+    - "Provider/Contractor ID"
+    - "Contractor"
+    - "Provider/Contractor"
+    - "Account"
+    - "Account Name"
+    - "Company"
+    - "Customer"
+    - "Client"
+    - "Motor Club"
+
+  offered_at:
+    # VERIFIED: the real column is "Request Date" ("7/27/2026 11:13 PM").
+    - "Request Date"
+    - "Date and Time"
+    - "Date/Time"
+    - "Date Time"
+    - "Received"
+    - "Received Date"
+    - "Requested"
+    - "Request Date"
+    - "Offered"
+    - "Created"
+
+  responded_at:
+    # ASSUMPTION: unconfirmed. Not among the nine documented columns; it may
+    # simply not be exported, which is why it is not required.
+    - "Responded"
+    - "Response Time"
+    - "Responded At"
+    - "Accepted Date"
+    - "Action Date"
+    - "Updated"
+
+  status:
+    # ASSUMPTION: unconfirmed. "Status" is a documented column.
+    - "Status"
+    - "Request Status"
+    - "Result"
+    - "Disposition"
+
+  denial_reason:
+    # VERIFIED: the real column is "Response Reason". Free text -- see
+    # denial_reason_normalization in rules.yaml.
+    - "Response Reason"
+    - "Denial Reason"
+    - "Decline Reason"
+    - "Reject Reason"
+    - "Rejection Reason"
+    - "Reason"
+    - "Notes"
+    - "Comments"
+
+  service_type_raw:
+    # ASSUMPTION: unconfirmed. "Service Needed" is a documented column.
+    # IMMUTABLE once stored: the verbatim string is never overwritten.
+    - "Service Needed"
+    - "Service"
+    - "Service Type"
+    - "Reason For Call"
+    - "Call Reason"
+    - "Job Type"
+
+  vehicle:
+    # VERIFIED present in the real export. The customer's car, as the club
+    # wrote it. It is what `duplicate_offers` in rules.yaml matches on, because
+    # this feed carries no customer name at all.
+    #
+    # STILL A FINGERPRINT INGREDIENT. "Vehicle" also appears under
+    # `identity.fallback_source_columns` below, and must stay there: it is one
+    # of the raw columns that keeps two genuinely different CSV rows apart.
+    # A field can be both mapped and part of the fallback identity; removing it
+    # from that list would re-key every CSV-ingested offer.
+    - "Vehicle"
+    - "Vehicle Description"
+    - "Unit Description"
+
+  pickup_location:
+    # ASSUMPTION: unconfirmed. Not among the documented columns.
+    - "Pickup Location"
+    - "Pickup"
+    - "Pickup Address"
+    - "From"
+    - "Origin"
+    - "Location"
+
+  dropoff_location:
+    # ASSUMPTION: unconfirmed. Not among the documented columns.
+    - "Dropoff Location"
+    - "Drop Off Location"
+    - "Dropoff"
+    - "Drop Off"
+    - "Destination"
+    - "To"
+    - "Tow To"
+
+  truck_assigned:
+    # ASSUMPTION: unconfirmed. Not among the documented columns.
+    - "Truck"
+    - "Truck Assigned"
+    - "Unit"
+    - "Vehicle Assigned"
+
+  driver_assigned:
+    # VERIFIED: the real column is "Responded by" -- the person at this company
+    # who actioned the offer, which is the closest thing the export carries to
+    # a driver.
+    - "Responded by"
+    - "Driver"
+    - "Driver Assigned"
+    - "Assigned To"
+    - "Operator"
+
+  amount:
+    # ASSUMPTION: unconfirmed. Not among the documented columns.
+    - "Amount"
+    - "Total"
+    - "Total Amount"
+    - "Price"
+    - "Rate"
+    - "Invoice Total"
+
+# --------------------------------------------------------------------------
+# Documented columns with no canonical field yet.
+# The canonical request record is fixed, so these are NOT stored. They are
+# listed here so the header validator recognises them as expected rather than
+# surprising, and so that adding one later is a one-line change.
+# --------------------------------------------------------------------------
+optional_columns:
+  # VERIFIED present in the real export.
+  - "Contractor ID"
+  - "PO #"
+  - "Expiration Date"
+  - "ETA"
+  # "Vehicle" was here and is now a mapped canonical field -- see
+  # columns.vehicle above. It remains in `identity.fallback_source_columns`.
+  # Documented but not observed; harmless to keep recognised.
+  - "PO#"
+  - "Request Expiration Time"
+  - "Provider/Contractor ID"
+  # "Call #" / "Call Number" were here and are now mapped canonical fields --
+  # see columns.job_number above.
+
+# --------------------------------------------------------------------------
+# identity -- how a row gets its request_id when the export has no id column.
+#
+# The verified Towbook export carries no request identifier at all, so the key
+# is a fingerprint of the row's own offer-time content. The same offer seen
+# again in a later overlapping export fingerprints identically and upserts,
+# which is what keeps re-running a window idempotent (hard constraint #4).
+#
+# ONLY offer-time values may appear below. A field that changes once the job is
+# accepted (Status, Call #, Responded by, ETA) would give one offer two keys on
+# two passes and count it twice.
+# --------------------------------------------------------------------------
+identity:
+  # Canonical fields, resolved through `columns` above.
+  fallback_fields:
+    - offered_at
+    - client_name
+    - service_type_raw
+  # Raw source headers with no canonical field of their own. They exist purely
+  # to separate two genuinely different offers that share a provider, a service
+  # and a minute.
+  fallback_source_columns:
+    - "Expiration Date"
+    - "Vehicle"
+  fallback_prefix: "tb"
+  fallback_length: 20
+
+# --------------------------------------------------------------------------
+# status_vocabulary: source string (LOWERCASED, trimmed) -> canonical status.
+#
+# Controlled vocabulary: accepted, denied, expired, canceled, pending.
+# This indirection is what lets denied / expired / canceled be split apart
+# later WITHOUT a migration -- the stored value changes, the schema does not.
+#
+# A source status that is not listed here is a hard failure for that row, not
+# a silent default. Unknown statuses are reported so this list can be extended.
+# --------------------------------------------------------------------------
+status_vocabulary:
+  # ----------------------------------------------------------------------
+  # VERIFIED strings observed in the real Request Log export. Without these
+  # every one of them fell through to unknown_status_action and was parked in
+  # `pending`, which silently moved real denials and cancellations out of the
+  # numbers they belong to.
+  # ----------------------------------------------------------------------
+  "accept sent": accepted
+  # VERIFIED status code 21. "Accept Failed" means WE TRIED TO ACCEPT AND LOST
+  # the job -- it is lost work, not an owner decline, so it must never inflate
+  # the denial rate. Mapped to `expired` alongside "Another Provider Responded".
+  "accept failed": expired
+  "accepting": pending
+  "another provider responded": expired
+  "goa approved by motor club": canceled
+  "reject failed": denied
+  # RECONCILED against TOWBOOK_PORTAL_FACTS.md section 5, and against
+  # `status_vocabulary_extra` at the bottom of this file, which mapped the same
+  # two outcomes differently. One file cannot hold two answers.
+  #
+  # code 40 "Rejected By Motor Club" is THE CLIENT WITHDRAWING THE OFFER, not
+  # us declining it. It was mapped to `denied`, which put client withdrawals
+  # into our own decline count -- 721 offers over 30 days ended in a
+  # client_withdrew status, and this label is a large share of them. That is the
+  # exact error MISSED_WORK_MODEL.md section 1 exists to prevent: it makes the
+  # owner look like they refuse work they never got the chance to refuse.
+  "rejected by motor club": canceled
+  # code 7 "Rejecting" is IN FLIGHT -- the reject is still being submitted, the
+  # same way "Accepting" (code 6) is an accept in flight. It was mapped to
+  # `denied` while its numeric twin mapped to `pending`. An in-flight row is not
+  # yet an outcome and must not be counted as one.
+  "rejecting": pending
+  "service failure confirmed": canceled
+  "service no longer needed": canceled
+
+  # accepted
+  "accepted": accepted
+  "accept": accepted
+  "acknowledged": accepted
+  "assigned": accepted
+  "dispatched": accepted
+  "completed": accepted
+  "complete": accepted
+  "closed": accepted
+  "en route": accepted
+  "enroute": accepted
+  "on scene": accepted
+  "tow complete": accepted
+
+  # denied -- an active decision not to take the job
+  "denied": denied
+  "deny": denied
+  "declined": denied
+  "decline": denied
+  "rejected": denied
+  "reject": denied
+  "refused": denied
+  "not accepted": denied
+  "no bid": denied
+  "passed": denied
+
+  # expired -- the offer timed out with no response
+  "expired": expired
+  "expire": expired
+  "timed out": expired
+  "timeout": expired
+  "no response": expired
+  "unanswered": expired
+  "lapsed": expired
+
+  # canceled -- withdrawn by the client or by us after the offer
+  "canceled": canceled
+  "cancelled": canceled
+  "cancel": canceled
+  "canceled by client": canceled
+  "cancelled by client": canceled
+  "goa": canceled
+  "gone on arrival": canceled
+  "withdrawn": canceled
+  "recalled": canceled
+
+  # pending -- still live, no outcome yet
+  "pending": pending
+  "new": pending
+  "open": pending
+  "offered": pending
+  "waiting": pending
+  "in progress": pending
+  "awaiting response": pending
+  "unassigned": pending
+
+# What to do with a status string that is not in the table above.
+#
+# pending     : store the row with status "pending" and report the unmapped
+#               source string on the Health view so this table can be extended.
+#               THE DEFAULT, and deliberately so: an offer we cannot classify
+#               is still an offer, and dropping it would understate the offered
+#               count -- the denominator of the one number this whole system
+#               exists to get right. A wrong status is visible and fixable; a
+#               missing row is invisible.
+# reject_row  : do not store the row and count it as an error. Choose this only
+#               if a bad status must never reach the numbers at all.
+# ignore      : store the row with a NULL status.
+#
+# Either way, every unmapped string is counted and surfaced, and crossing
+# unknown_status_abort_threshold marks the run "partial" and raises a
+# pipeline_failure alert -- silence is never treated as success.
+unknown_status_action: pending
+unknown_status_abort_threshold: 0.10  # >10% unmapped statuses degrades the run
+
+# --------------------------------------------------------------------------
+# datetime_formats -- strptime patterns tried IN ORDER against the raw cell.
+# openpyxl returns real datetime objects for true date cells, and those skip
+# this list entirely; it exists for the case where the export writes strings.
+# --------------------------------------------------------------------------
+datetime_formats:
+  # ASSUMPTION: unconfirmed. US 12-hour formats are listed first because
+  # Towbook is a US product and the account is in America/Detroit.
+  - "%m/%d/%Y %I:%M:%S %p"
+  - "%m/%d/%Y %I:%M %p"
+  - "%m/%d/%Y %H:%M:%S"
+  - "%m/%d/%Y %H:%M"
+  - "%m/%d/%Y"
+  - "%m/%d/%y %I:%M:%S %p"
+  - "%m/%d/%y %I:%M %p"
+  - "%m/%d/%y %H:%M"
+  - "%m/%d/%y"
+  - "%Y-%m-%d %H:%M:%S"
+  - "%Y-%m-%d %H:%M"
+  # VERIFIED: the JSON API writes requestDate as "2026-07-28T10:31:39.71" --
+  # ISO with a TWO digit fraction. %f accepts 1-6 digits, so this pattern
+  # covers it; without it the parse falls through to fromisoformat, which
+  # works on Python 3.11+ but is one interpreter upgrade away from being the
+  # only thing standing between us and a silently unparsed timestamp.
+  - "%Y-%m-%dT%H:%M:%S.%f"
+  - "%Y-%m-%d %H:%M:%S.%f"
+  - "%Y-%m-%dT%H:%M:%S"
+  - "%Y-%m-%dT%H:%M"
+  - "%Y-%m-%d"
+  - "%b %d, %Y %I:%M %p"
+  - "%b %d %Y %I:%M %p"
+  - "%B %d, %Y %I:%M %p"
+  - "%d %b %Y %H:%M"
+
+# Timezone of the timestamps in the export. Everything is converted to UTC on
+# the way into the database; local time exists only for display and windowing.
+# ASSUMPTION: unconfirmed -- Towbook is believed to render times in the
+# account's local timezone. Overridden by the TZ environment variable.
+#
+# DEMO ROOT: America/Chicago, not the production America/Detroit.
+#
+# This setting is INSTALL-WIDE (agents/ingestion.py -> _source_timezone), not
+# per-company, and the demo tenant is the only company on this root. It trades
+# in Fort Worth, so its portal timestamps are Central. Leaving this on Eastern
+# would shift every offer one hour on the way in -- which would not look like
+# a bug, it would look like a business whose overnight gap starts at 20:00.
+# The blind-spot grid is an hour-of-week analysis and it is the headline of the
+# whole product; an hour of silent skew is exactly the kind of confidently
+# wrong number this system is built to refuse.
+source_timezone: America/Chicago
+
+# --------------------------------------------------------------------------
+# Value cleanup applied before type conversion.
+# --------------------------------------------------------------------------
+value_cleanup:
+  # Stripped from a currency cell before it becomes a number: "$1,234.50" ->
+  # 1234.50, "(45.00)" -> -45.00 is handled in code as an accounting negative.
+  amount_strip_chars: ["$", ",", " ", " ", "USD"]
+  # Cell values treated as empty rather than as literal text.
+  null_tokens: ["", "-", "--", "n/a", "N/A", "NA", "null", "NULL", "None", "TBD"]
+  # Fields where a source value of 0 means "there is none", NOT the number zero.
+  #
+  # This is not a general rule and must never become one: 0 is a perfectly real
+  # answer for `amount`, for `distance_miles`, for any count. It is listed here
+  # only for `job_number`, because Towbook's JSON sends `callNumber: 0` on every
+  # offer that never became a job rather than omitting the key. Without this,
+  # 1,731 of 3,124 archived offers would report a job number of "0", and a fake
+  # reference is worse than a blank one -- it is the kind of number somebody
+  # types into Towbook, gets nothing back for, and stops trusting the report.
+  zero_means_absent: ["job_number"]
+  # Every string cell is stripped of leading/trailing whitespace, and internal
+  # runs of whitespace are collapsed to a single space. service_type_raw is
+  # exempt: it is stored verbatim, hard constraint #6.
+  collapse_internal_whitespace: true
+  preserve_verbatim_fields: ["service_type_raw"]
+
+# --------------------------------------------------------------------------
+# Sheet location and file format.
+#
+# Towbook's "Export to Excel" actually delivers a CSV: comma separated, CRLF,
+# with two preamble lines above the header row (the report URL, then a
+# timestamp). header_row_scan below finds the real header row, so the preamble
+# needs no fixed offset and survives Towbook changing how many lines it writes.
+# --------------------------------------------------------------------------
+sheet:
+  # Which suffixes are read as the JSON API payload rather than as a sheet.
+  # An archive produced by agents/acquisition_api.py lands here.
+  json_suffixes: [".json"]
+  # Where the records live inside the archived envelope. `pages` is the shape
+  # acquisition_api writes (one entry per API page, each holding the verbatim
+  # response array); the rest let a hand-saved raw response be ingested too.
+  json_page_keys: ["pages"]
+  json_record_keys: ["records", "data", "items", "results", "rows"]
+  # Which suffixes are read as delimited text rather than through openpyxl.
+  csv_suffixes: [".csv", ".tsv", ".txt"]
+  # VERIFIED comma separated. Set to null to sniff the delimiter instead.
+  csv_delimiter: ","
+  # Tried in order until one decodes the file.
+  csv_encodings: ["utf-8-sig", "cp1252", "latin-1"]
+  # ASSUMPTION: unconfirmed. null means "the active/first worksheet".
+  name: null
+  # Row index (1-based) holding the headers. If header_row_scan is true the
+  # ingester scans the first N rows for the row that best matches
+  # required_headers, which survives a title/logo banner above the grid.
+  header_row: 1
+  header_row_scan: true
+  header_row_scan_limit: 10
+
+# ==========================================================================
+# api -- mapping for the JSON acquisition path (agents/acquisition_api.py),
+# which is the PRIMARY source. Everything above describes the UI's CSV/XLSX
+# export; this block describes the same records as the API returns them.
+#
+# It is an OVERLAY, not a second schema. Ingestion takes the document above and
+# replaces only the keys named here, so `status_vocabulary`, `datetime_formats`,
+# `value_cleanup`, `source_timezone`, `unknown_status_action` and the whole
+# validation / normalisation / upsert path are literally the same code and the
+# same configuration for both sources. There is exactly one definition of what
+# a canonical request record is.
+#
+# "Headers" for a JSON payload are the object's KEYS, so header validation
+# becomes required-key validation with no special case: a Towbook field rename
+# fails the run and writes schema.detected.yaml exactly as a column rename does.
+#
+# Field names verified live 2026-07-28 against 3,079 records.
+# ==========================================================================
+api:
+  # A record without these three has no identity, no time axis and no outcome.
+  # Note that callRequestId IS required here, unlike the CSV path -- see the
+  # `identity` note below.
+  required_keys:
+    - callRequestId
+    - requestDate
+    - status
+
+  # canonical_field: [candidate JSON keys]. Same contract as `columns` above:
+  # first key present wins, so order is priority order. An empty list means the
+  # API has no source for that field, which is reported as an unmapped
+  # canonical field rather than silently invented.
+  columns:
+    # VERIFIED unique: 3,079 records, 3,079 distinct ids, no blanks. This is
+    # the entire reason the API path exists.
+    request_id:
+      - callRequestId
+
+    # The Towbook job / call number. VERIFIED: `callNumber` is an INTEGER and is
+    # `0` -- not null, not absent -- on every offer that never became a job.
+    # `value_cleanup.zero_means_absent` below is what turns that 0 into NULL, so
+    # no report can ever print "Job #0".
+    #
+    # Population, measured over the 3,124 archived records:
+    #   accepted        1,074 / 1,085  (99%)
+    #   NOT accepted      319 / 2,039  (16%)  -- and 0 of 817 Expired
+    #
+    # Towbook issues it when the offer becomes a job, so the population that
+    # carries one is very nearly "the jobs we took". The reference that exists
+    # for the offers we did NOT take is `request_id` (callRequestId, 3,124 of
+    # 3,124), which is what the reports fall back to.
+    job_number:
+      - callNumber
+
+    # VERIFIED: the motor club offering the job ("Agero (Swoop)", "NSD", ...).
+    # NOT companyName, which is always this company.
+    client_name:
+      - providerName
+
+    # VERIFIED: company-local time, e.g. "2026-07-28T10:31:39.71".
+    #
+    # !! NEVER USE requestDateUtc. !!
+    # Despite the name it is NOT a UTC rendering of requestDate. It is
+    # ALWAYS "0001-01-01T00:00:00" -- on 100% of the 3,079 records checked --
+    # so every offer would be dated to the year 1, every hour-of-week cell in
+    # the blind-spot grid would collapse into one, and the single most valuable
+    # output in the system would silently read as garbage. It is absent from
+    # this candidate list on purpose and is listed under optional_keys only so
+    # the validator recognises it as expected. requestDate is company-local, and
+    # `source_timezone` above is what converts it to UTC on the way in.
+    offered_at:
+      - requestDate
+
+    # VERIFIED ABSENT: this API has no responded-at field. Left empty rather
+    # than approximated from expirationDate, because a fabricated response time
+    # would corrupt the one number the blind-spot analysis rests on. Documented
+    # as a known gap, not silently faked.
+    responded_at: []
+
+    # VERIFIED: statusName is the human label for the numeric `status` code and
+    # matches the strings the CSV export writes, so the SAME status_vocabulary
+    # maps both sources. The numeric code is the fallback and is covered by
+    # status_vocabulary_extra below.
+    status:
+      - statusName
+      - status
+
+    # VERIFIED: the decline reason, blank when accepted.
+    # `reason` is NOT a candidate -- it is the free-text problem description
+    # ("Dead battery"), a completely different field.
+    denial_reason:
+      - responseReasonName
+
+    # VERIFIED, and IMMUTABLE once stored (hard constraint #6).
+    service_type_raw:
+      - serviceNeeded
+
+    # VERIFIED populated on 3,124 of 3,124 records, 2,481 of them distinct
+    # ("2012 HONDA ODYSSEY EX red"). The only field in this feed that
+    # identifies the customer's job -- there is no customer name key -- so it
+    # is what `duplicate_offers` matches a re-broadcast job on.
+    vehicle:
+      - vehicle
+
+    pickup_location:
+      - startingLocation
+
+    # VERIFIED populated on 3,122 of 3,124 records. The API states the ZIP as
+    # its own field, so territory is keyed on it rather than on a regex over
+    # startingLocation, which is written half a dozen ways ("Columbus, OH,
+    # 43201", "COLUMBUS OH 43201", "43201-1234, USA"). The CSV export has no
+    # equivalent, so CSV-ingested rows leave this NULL by design.
+    pickup_zip:
+      - zip
+
+    dropoff_location:
+      - towDestination
+
+    # VERIFIED populated on 3,124 of 3,124 records (median 12.2 mi, p90 30.1).
+    # Miles, not money: the owner is quoted a hook rate PLUS mileage, and this
+    # is only the mileage half. Nothing may present it as revenue.
+    distance_miles:
+      - distance
+
+    # VERIFIED present on every record. `expires_at - offered_at` is the
+    # decision window the owner actually gets: median 2.8 minutes, mean 3.6,
+    # p90 7.0, max 15.0 across 3,123 records -- which is the evidence behind
+    # MISSED_WORK_MODEL.md section 4.
+    #
+    # This is NOT a response time and must never be read as one. It is when the
+    # club stops accepting an answer. See responded_at above: that field does
+    # not exist in this feed and is deliberately left unmapped.
+    expires_at:
+      - expirationDate
+
+    # VERIFIED ABSENT: no truck is named on an offer.
+    truck_assigned: []
+
+    # VERIFIED: the user at this company who actioned the offer -- the same
+    # meaning as the CSV's "Responded by".
+    driver_assigned:
+      - ownerUserName
+
+    # VERIFIED EMPTY ON 100% OF RECORDS. Mapped so that the day Towbook starts
+    # populating it the number arrives with no code change, but nothing in this
+    # system may rank, total or imply revenue from it. Every report states that
+    # it counts JOBS, not money.
+    amount:
+      - offerAmount
+
+    # companyId is the API's own name for the account these records belong to
+    # (61343 = Roadside Towing and Recovery Inc, VERIFIED live).
+    #
+    # READ THIS BEFORE RELYING ON IT: ingestion does NOT currently take
+    # account_id from the payload. It is passed into `ingest()` per run, from
+    # TOWBOOK_ACCOUNTS, because the run has to know which account it is pulling
+    # before it has any rows to look at. This mapping is therefore the DECLARED
+    # source of record, not a live read -- it exists so that the day a
+    # multi-account pull needs to verify "the rows I got back really are the
+    # account I asked for", the field name is already written down and agreed,
+    # in config, rather than being guessed at in code.
+    account_id:
+      - companyId
+
+  # Keys the payload carries that have no canonical field. Listed so the
+  # validator recognises them as expected rather than surprising, and so
+  # promoting one later is a one-line change.
+  optional_keys:
+    - statusName
+    - status
+    # ALWAYS "0001-01-01T00:00:00". NEVER USE IT. See offered_at above.
+    - requestDateUtc
+    - reason
+    # vehicle was here and is now a mapped canonical field -- see
+    # columns.vehicle above.
+    - companyId
+    - companyName
+    - contractorId
+    - accountId
+    - masterAccountId
+    # callNumber was here and is now a mapped canonical field -- see
+    # columns.job_number above.
+    - purchaseOrderNumber
+    - dispatchEntryId
+    - ownerUserId
+    # expirationDate, distance and zip were listed here and discarded for the
+    # first year of this system. They are now mapped canonical fields above.
+    - etaGiven
+    - maxEta
+    - availableActions
+    - supportedEtas
+
+  # NO fallback identity, deliberately. The CSV path must synthesise a
+  # fingerprint because its only id-shaped column ("Call #") is blank on
+  # precisely the unaccepted rows this system measures. callRequestId has no
+  # such problem, so a record without one is a real defect: it is rejected,
+  # counted in reject_reasons, and crosses unknown_status_abort_threshold into
+  # a pipeline_failure rather than being quietly fingerprinted.
+  identity: {}
+
+  # Merged OVER status_vocabulary above, for this source only.
+  #
+  # statusName does the work. These numeric codes are the safety net for a
+  # PAYLOAD in which statusName is absent entirely -- column mapping is decided
+  # once per payload, not per record, so `status` only becomes the mapped field
+  # when no record in the pull carries a statusName. A single record missing its
+  # label inside an otherwise labelled payload is reported as an unmapped status
+  # and surfaced on Health, which is the honest outcome: it is a defect in the
+  # feed, not something to paper over with a guess.
+  #
+  # VERIFIED: the portal emits 14 codes, not the 5 originally assumed. Codes 21
+  # and 80 are LOST WORK, not owner declines, and must not inflate the denial
+  # rate -- see MISSED_WORK_MODEL.md section 1.
+  status_vocabulary_extra:
+    "1": accepted    # Accepted
+    "2": denied      # Rejected -- we said no
+    "4": canceled    # Cancelled
+    "5": expired     # Expired -- nobody answered in time
+    "6": pending     # Accepting -- in flight
+    "7": pending     # Rejecting -- in flight
+    "10": accepted   # Accept Sent
+    "21": expired    # Accept Failed -- we tried to accept and lost it
+    "22": denied     # Reject Failed
+    "40": canceled   # Rejected By Motor Club -- client withdrew
+    "41": canceled   # Service No Longer Needed
+    "71": canceled   # Goa Approved By Motor Club
+    "80": expired    # Another Provider Responded -- we lost it to a competitor
+    "90": canceled   # Service Failure Confirmed

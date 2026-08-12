@@ -1,0 +1,828 @@
+# ==========================================================================
+# rules.yaml -- the business brain of the system, as DATA.
+#
+# Hard constraint #2: adding a service type, an acceptance policy, an alert
+# condition, a notification route or a schedule entry requires ZERO code
+# change and ZERO redeploy. This file is re-read whenever its modification
+# time changes, so an edit takes effect on the next job.
+#
+# Every metrics row and every run records rules_version() -- the `version`
+# key below combined with a sha256 of this file -- so any stored number can
+# be traced back to the exact rules that produced it. Bump `version` when you
+# make a change you want to be able to talk about; the hash changes either way.
+#
+# CLASSIFIER SEMANTICS (exact, do not re-interpret)
+#   * Matching is a case-insensitive SUBSTRING test of each `match_any` entry
+#     against service_type_raw. "Heavy Duty Tow - Accident" matches `tow`.
+#   * FILE ORDER IS EVALUATION ORDER. First match wins. YAML mappings preserve
+#     their order when loaded, so moving a block up or down changes precedence.
+#     `tow` sits first deliberately: "accident tow" must classify as tow.
+#   * `_default: unclassified` is MANDATORY. Keys starting with "_" are
+#     directives, not service classes.
+#   * service_type_raw is never modified. Re-running `backfill` re-derives
+#     service_class from the untouched original string.
+#
+# ALERT SEMANTICS
+#   * `when` is evaluated by the sandboxed AST evaluator in core/safe_eval.py.
+#     There is no bare eval() anywhere in this system.
+#   * Available operators: and or not, == != < <= > >=, in / not in, + - * /.
+#     No function calls, no attribute access, no indexing -- by design.
+#   * Names resolve from the evaluation context only. A rule that references a
+#     name the current context does not carry simply does not fire.
+#
+# MISSED WORK SEMANTICS
+#   * The headline of every report is the INVENTORY OF MISSED WORK -- what we
+#     did NOT accept, attributed to a cause, with an action attached. Acceptance
+#     rate is supporting context, not the deliverable. See MISSED_WORK_MODEL.md.
+#   * The `missed_work` block near the bottom of this file is the whole of that
+#     model's configuration: buckets, remedies, thresholds. Re-cutting a bucket
+#     or re-pricing a threshold is an edit here, never a code change.
+#   * RANKING IS BY JOB COUNT, NOT MONEY. offerAmount is empty on 100% of the
+#     records this account produces (3079/3079 over 30 days). Nothing in this
+#     system may imply revenue until missed_work.job_value_by_client is filled
+#     in by a human.
+# ==========================================================================
+
+version: 2
+
+# --------------------------------------------------------------------------
+# service_classes -- RECONCILED AGAINST REAL TRAFFIC (3079 offers / 30 days).
+#
+# "LIGHT" MEANS LIGHT-DUTY VEHICLE CLASS, NOT LIGHT SERVICE.
+# ---------------------------------------------------------
+# This is the single most important thing to understand before editing this
+# block. In this feed "Light Tow", "Light Duty Towing", "Light Accident Tow",
+# "Light Secondary Simple Tow" and "Light Standard Tow" are TOWS -- work the
+# owner wants -- and they classify correctly as `tow` because they contain the
+# substring "tow". `light_service` sits BELOW `tow` for exactly that reason.
+# DO NOT REORDER light_service ABOVE tow. Doing so would reclassify ~400 tows
+# per month as work we do not want and would invert the entire report.
+#
+# The only strings that legitimately reach `light_service` are the ones with no
+# "tow" in them at all: Tire Change, Battery Jump, Lock Out, Light Lock-out,
+# Light Start, Fuel Delivery, Light Duty Unleaded Fuel Delivery, Tire Inflation.
+#
+# Applying the previously shipped terms to real traffic left 61 rows (2.0%)
+# unclassified. The terms added below drop that to 7 rows (0.2%), verified by
+# running the classifier over all 3079 records.
+# --------------------------------------------------------------------------
+service_classes:
+  tow:
+    # ADDED against real data: `flat bed` (two words -- "Flat Bed Towing",
+    # "Flat Bed Accident") and `salvage` ("Salvage Tow"). `flatbed` alone did
+    # not match the spaced spelling.
+    match_any: [tow, recovery, accident, flatbed, flat bed, wrecker, impound,
+                salvage]
+  winch_out:
+    # REPLACED [winch out, winch-out, winchout] with the bare stem `winch`.
+    # Real traffic carries Winch, Winching, Light Winch and Winch Out; the bare
+    # stem covers all four and still matches everything the three longer terms
+    # did. Nothing in the `tow` list contains "winch", so precedence is unaffected.
+    match_any: [winch, extraction, stuck]
+    accept: true
+  light_service:
+    # ADDED against real data: `lock-out` (hyphenated -- "Light Lock-out"),
+    # `light start` ("Light Start" -- a jump start on a light-duty vehicle),
+    # `tire inflation`, the bare stem `fuel` and `unleaded`.
+    #
+    # Bare `fuel` covers Fuel, Fuel Delivery, Light Fuel Delivery and Light Duty
+    # Unleaded Fuel Delivery on its own. `fuel delivery` and `unleaded` are kept
+    # anyway: they are self-documenting, they cost nothing, and they keep the
+    # block readable to whoever inherits it.
+    match_any: [tire change, flat tire, tire inflation, jump start, light start,
+                battery, lockout, lock out, lock-out, fuel, fuel delivery,
+                unleaded, out of gas]
+    accept: false
+  _default: unclassified
+
+# LEAVE THESE UNCLASSIFIED ON PURPOSE -- DO NOT "FIX" THEM.
+# ---------------------------------------------------------
+# Two real service strings still fall through to `unclassified`, and that is the
+# correct outcome, not a gap:
+#
+#   "Start"                       (6 rows)  -- jump start? start a stalled unit?
+#                                              tow to a shop? genuinely unknown.
+#   "Parts Delivery + 1hr Labor"  (1 row)   -- not a tow, not roadside light
+#                                              service, not winching.
+#
+# Both are ambiguous, both are low volume, and both SHOULD surface on the
+# Health view via the `unclassified_service_type` alert so the owner decides
+# what they are instead of the machine guessing. Adding a `start` term here
+# would silently swallow them AND would be wrong: "Start" is not necessarily
+# light service. This is the `_default: unclassified` mechanism working exactly
+# as designed.
+
+acceptance_policy:
+  should_accept:
+    - service_class: tow
+    - service_class: winch_out
+  should_decline:
+    - service_class: light_service
+
+alerts:
+  # ---- original three, unchanged -------------------------------------------
+  - id: client_acceptance_drop
+    when: "client_acceptance_rate_24h < 0.60 and client_offers_24h >= 10"
+    severity: high
+  - id: missed_tow
+    # "We consciously declined a tow." Retained deliberately alongside
+    # `tow_unanswered` below -- declining and never answering are different
+    # failures with different remedies, and folding them together is what hid
+    # 655 unanswered tows a month behind a single acceptance-rate number.
+    when: "service_class == 'tow' and status in ['denied','expired']"
+    severity: medium
+  - id: unclassified_service_type
+    when: "service_class == 'unclassified'"
+    severity: low
+
+  # ---- missed-work alerts (MISSED_WORK_MODEL.md section 8) ------------------
+  # Every expression below was checked against core/safe_eval.py
+  # validate_expression before being committed. A rule that references a name
+  # the current evaluation context does not carry simply does not fire.
+  - id: tow_unanswered
+    # NOBODY ANSWERED. Higher severity than missed_tow on purpose: the median
+    # response window Towbook allows is 3 MINUTES (mean 4, max 15), so a missed
+    # notification is a lost job almost immediately. 836 offers went unanswered
+    # in 30 days, 655 of them tows.
+    # Context: service_class from the classifier, bucket from missed_work.buckets.
+    when: "service_class == 'tow' and bucket == 'no_response'"
+    severity: high
+  - id: blind_spot_forming
+    # The hour-of-week cell we are in is trending into a blind spot. Thresholds
+    # mirror missed_work.blind_spot; keep them in step if you change one.
+    # Context: hour_no_response_rate, hour_offers.
+    when: "hour_no_response_rate >= 0.35 and hour_offers >= 5"
+    severity: high
+  - id: decline_cause_spike
+    # One decline cause has doubled against its own 7-day baseline. The floor of
+    # 5 stops a 1 -> 2 move on a rare cause from paging anyone.
+    # Context: cause_count_24h, cause_baseline_7d.
+    when: "cause_count_24h >= cause_baseline_7d * 2 and cause_count_24h >= 5"
+    severity: medium
+  - id: closeoff_candidate
+    # A service type we systematically refuse is still being offered. Low
+    # severity: it is a conversation to have with the client, not a page.
+    # Context: service_type_offers_7d, service_type_rate_7d.
+    when: "service_type_offers_7d >= 10 and service_type_rate_7d <= 0.10"
+    severity: low
+  - id: coverage_gap
+    # A TOW WENT UNANSWERED OUTSIDE THE STAFFED WINDOW. This is the single
+    # most actionable row-level alert in the system, because it names the one
+    # fix that works: put somebody on the queue in that window.
+    #
+    # Measured on 30 days of real Agero traffic, offers inside Mon-Fri
+    # 06:00-18:00 expire 5.8% of the time and offers outside it expire 61.7%
+    # of the time -- on near-identical volume, with the same trucks. High
+    # severity because that gap is the whole business case.
+    #
+    # Context: coverage_label from missed_work.coverage (see the `coverage`
+    # block below -- 'uncovered' is its default_label and renaming it there
+    # means renaming it here), service_class from the classifier, bucket from
+    # missed_work.buckets.
+    when: "coverage_label == 'uncovered' and service_class == 'tow' and bucket == 'no_response'"
+    severity: high
+
+# --------------------------------------------------------------------------
+# denial_reason_normalization -- POPULATED FROM REAL VALUES, no longer a guess.
+#
+# This block shipped empty because inventing buckets before seeing the data
+# would have invented categories that do not exist in it. The data has now been
+# seen: nine distinct strings across 512 declines in 30 days, with obvious
+# duplicates that have to be merged before any cause can be counted.
+#
+#   355 Equipment Not Available     18 Out of Service Area
+#    68 No Drivers Available         8 Out Of Coverage Area
+#    27 Other                        7 Equipment Availability
+#    23 Refuse                       5 Not Enough Information
+#                                    1 Out of Area
+#
+# Semantics are identical to service_classes: case-insensitive SUBSTRING match
+# against the raw denial_reason, LIST ORDER IS EVALUATION ORDER, first match
+# wins. Anything that matches nothing keeps its raw text and is grouped under
+# "other" in reports. denial_reason itself is stored verbatim and is never
+# rewritten, so re-cutting these buckets is a read-time change, not a migration.
+#
+# `other` is LAST on purpose. Its terms are the broadest, and a bucket whose
+# whole job is "we did not record a real reason" must never win a match that a
+# specific bucket could have taken.
+#
+# NOTE the interaction with missed_work.remedies below: "Not Enough Information"
+# normalizes to `other` here (that is the verified grouping) but is broken back
+# out there as its own CAUSE, because it is the one decline reason with a cheap
+# process fix -- ask the client for the missing detail instead of declining.
+# --------------------------------------------------------------------------
+denial_reason_normalization:
+  - match_any: [out of service area, out of coverage area, out of area]
+    normalized: out_of_area
+  - match_any: [equipment not available, equipment availability]
+    normalized: equipment_unavailable
+  - match_any: [no drivers available]
+    normalized: no_drivers
+  # Keep last: broad terms, catch-all meaning.
+  - match_any: [other, refuse, not enough information]
+    normalized: other
+
+# ==========================================================================
+# duplicate_offers -- ONE JOB OFFERED TWICE IS ONE JOB.
+#
+# A motor club that does not get an answer asks again. Same car, same address,
+# same service, ten to twenty minutes later, a brand new callRequestId. Counted
+# as written that job lands in the report twice: twice in `offered`, and twice
+# in the decline or no-response count if we did not take it. The harder a club
+# re-asks, the worse this account looks.
+#
+# MEASURED over the 3,124 archived records: 228 clusters, 261 suppressed
+# offers -- 8.4% of everything offered in 30 days. The outcome simply repeats:
+#
+#     Cancelled -> Cancelled      56 clusters
+#     Expired   -> Expired        44
+#     Rejected  -> Rejected       29
+#     Rejected  -> Cancelled       9
+#     Expired   -> Rejected        8
+#     Expired   -> Accepted        5    <- asked again, and we took it that time
+#     Cancelled -> Accepted        5
+#
+# Median gap between consecutive offers in a cluster: 16 minutes. Longest: 59.
+#
+# NOTHING IS DELETED. This is applied when a window is READ, so the `requests`
+# table keeps every offer Towbook ever made and re-cutting this block re-cuts
+# every report with no migration and no re-pull. Every report says how many
+# offers it collapsed; the rule is never allowed to work silently.
+# ==========================================================================
+duplicate_offers:
+  # Off makes every count 8.4% higher on this account's traffic, in the
+  # direction that flatters the clubs and not the owner.
+  enabled: true
+
+  # How long after the FIRST offer a repeat still counts as the same job.
+  # The window is anchored to that first offer, not chained from the previous
+  # one, so a cluster can never stretch beyond this however many times a club
+  # asks. 60 covers the whole observed distribution -- the longest real gap was
+  # 59.5 minutes.
+  window_minutes: 60
+
+  # What two offers must share to be one job.
+  #
+  # THERE IS NO CUSTOMER NAME IN THIS FEED. All 30 keys the API returns were
+  # checked: the club is there, the address is there, the person is not. The
+  # car is the only thing that says whose job it is.
+  #
+  # `client_key` stays in the key deliberately. Two DIFFERENT clubs offering
+  # the same car is the customer's insurer and their roadside app both looking
+  # for a truck -- two real offers to us -- and collapsing across clients would
+  # corrupt the per-client rates the close-off decisions rest on.
+  #
+  # `pickup_location` is deliberately NOT here. It is free text and the clubs
+  # rewrite it: of the 18 same-car, same-club, inside-the-hour pairs whose
+  # addresses differed, all 18 were one job written two ways --
+  #   "I-270 N, Dublin, OH, 43017"  vs  "I-270, Dublin, OH, USA 43017"
+  # Matching on it would split every one of them back apart. `pickup_zip` is
+  # the stricter option that does survive rewording, if you want one.
+  match_fields: [client_key, vehicle]
+
+  # A row missing any of these can never be a duplicate of anything. Without
+  # it, every row with no vehicle would key alike and collapse into one -- the
+  # classic way a dedupe rule quietly eats unrelated records. Rows skipped this
+  # way are counted and reported, never just dropped from the logic.
+  require_fields: [vehicle]
+
+  # Which offer represents the job. First match wins; ties go to the earliest.
+  #
+  # This order is a claim about what happened, and it is the honest one: if a
+  # club asked twice, we missed the first and rejected the second, then we were
+  # asked once and we said no. That is a decline, not a no-response -- and
+  # recording it as a no-response would send the blind-spot analysis after a
+  # staffing gap that was never there.
+  outcome_precedence: [accepted, denied, canceled, expired, pending]
+
+  # THE ONE THING NEVER COLLAPSED: two offers that both became real Towbook
+  # jobs, with two different job numbers. Towbook does not issue a number until
+  # work is opened, so two numbers is two pieces of work, and merging them
+  # would understate what the company actually did. One such cluster exists in
+  # the 30-day sample.
+  keep_distinct_accepted: true
+
+# ==========================================================================
+# missed_work -- THE HEADLINE OF EVERY REPORT.
+#
+# The owner's question is not "what are we accepting". It is:
+#
+#     What are we NOT accepting? Do we want it? If yes, what do we need to do
+#     to accept it? If no, how do we stop it being offered at all?
+#
+# Acceptance rate is a symptom. The deliverable is an INVENTORY OF MISSED WORK,
+# attributed to a cause, with an action attached. This block is the entire
+# configuration of that model (MISSED_WORK_MODEL.md sections 1-5), so a bucket
+# can be re-cut, a remedy re-assigned or a threshold re-priced with no code
+# change and no redeploy.
+#
+# The 30-day baseline this was built against (3079 offers, real account):
+#   accepted        1061  (34.5%)
+#   never responded  836  (27.2%)   <- 655 of them TOWS. Work the owner wants.
+#   declined         450  (14.6%)
+#   client withdrew  721  (23.4%)
+# ==========================================================================
+missed_work:
+
+  # ------------------------------------------------------------------------
+  # 1. BUCKETS -- every offer lands in exactly one.
+  #
+  # KEYS ARE THE NUMERIC `status` CODE FROM THE JSON API (integers, not
+  # strings -- see TOWBOOK_PORTAL_FACTS.md section 5 and schema.yaml -> api).
+  # The statusName is given in the comment on each line so this table can be
+  # read without opening the other file.
+  #
+  # A code that is not listed here is NOT silently bucketed. It surfaces as an
+  # unknown status, the same way an unclassified service type does, because a
+  # new Towbook status code that quietly landed in `won` would corrupt the one
+  # number this system exists to get right.
+  # ------------------------------------------------------------------------
+  buckets:
+    1: won              # Accepted
+    10: won             # Accept Sent
+    6: in_flight        # Accepting        -- still deciding, no outcome yet
+    7: in_flight        # Rejecting        -- still deciding, no outcome yet
+    2: declined         # Rejected         -- WE said no, with a reason
+    22: declined        # Reject Failed
+    5: no_response      # Expired          -- NOBODY ANSWERED IN TIME
+    80: no_response     # Another Provider Responded -- lost to a competitor
+    21: accept_failed   # Accept Failed    -- we tried to accept and it failed
+    4: client_withdrew  # Cancelled
+    40: client_withdrew # Rejected By Motor Club
+    41: client_withdrew # Service No Longer Needed
+    71: client_withdrew # Goa Approved By Motor Club
+    90: client_withdrew # Service Failure Confirmed
+
+  # The CSV export path carries the statusName LABEL and no numeric code, so the
+  # same 14 rows are repeated here keyed by label. Lookup is an EXACT match on
+  # the lowercased, whitespace-collapsed label -- never a substring test.
+  # "rejected" (code 2, our own decline) and "rejected by motor club" (code 40,
+  # the client withdrawing) differ by three words and belong in different
+  # buckets; a substring test would merge them and move 721 client withdrawals
+  # into our own decline count.
+  bucket_by_status_name:
+    "accepted": won
+    "accept sent": won
+    "accepting": in_flight
+    "rejecting": in_flight
+    "rejected": declined
+    "reject failed": declined
+    "expired": no_response
+    "another provider responded": no_response
+    "accept failed": accept_failed
+    "cancelled": client_withdrew
+    "canceled": client_withdrew
+    "rejected by motor club": client_withdrew
+    "service no longer needed": client_withdrew
+    "goa approved by motor club": client_withdrew
+    "service failure confirmed": client_withdrew
+
+  # LAST-RESORT map, used only when a row carries NEITHER a numeric code NOR a
+  # source label: rows ingested before requests.status_raw / status_code existed,
+  # and hand-built fixtures. `requests.status` holds the five-value CONTROLLED
+  # VOCABULARY -- accepted, denied, expired, canceled, pending -- so this map is
+  # necessarily coarser than the two above.
+  #
+  # IT IS LOSSY IN EXACTLY ONE PLACE, stated plainly rather than hidden:
+  # canonical `expired` covers code 5 (Expired), code 80 (Another Provider
+  # Responded) AND code 21 (Accept Failed). The first two are no_response; the
+  # third is accept_failed, a technical failure with a completely different
+  # remedy. This map has to pick one, and picks no_response -- which is 836 of
+  # the 837 rows behind `expired` in 30 days of real traffic.
+  #
+  # That loss is why status_raw and status_code are stored: the fix for a lossy
+  # collapse is to keep the source value, not to dress a guess up as a number.
+  # Every document reports how many rows were bucketed by each route, under
+  # `bucket_sources`, so a report resting on this coarse map says so out loud.
+  bucket_by_canonical_status:
+    accepted: won
+    pending: in_flight
+    denied: declined
+    expired: no_response
+    canceled: client_withdrew
+
+  # Where a row goes when NONE of the three maps above knows it -- a status code
+  # Towbook has not emitted before. Deliberately its own bucket rather than a
+  # guess: silently filing an unknown status under `won` would corrupt the one
+  # number this system exists to get right, and filing it under `no_response`
+  # would invent a crisis. It surfaces in by_bucket with the offending values
+  # listed, the same way an unclassified service type does.
+  bucket_default: unknown_status
+
+  # Buckets that represent work we could plausibly have had. `client_withdrew`
+  # is deliberately absent -- see the next key.
+  recoverable_buckets: [declined, no_response, accept_failed]
+
+  # Buckets counted as MISSED -- offered and not won. client_withdrew IS missed
+  # (we did not get the job); whether it is *recoverable* is the separate,
+  # configurable judgement below. in_flight is not missed: it has no outcome yet.
+  # unknown_status is not missed either -- an unreadable status is a data defect
+  # to fix, not a job to claim we lost.
+  missed_buckets: [declined, no_response, accept_failed, client_withdrew]
+
+  # THE client_withdrew JUDGEMENT CALL.
+  # Some withdrawals are genuinely the client's doing. Others are a client
+  # giving up because WE were slow -- and this feed cannot tell the two apart.
+  # Rather than hardcode a guess, the default is to report client_withdrew as
+  # its own line and keep it OUT of the recoverable total, so the headline
+  # number is defensible under challenge. Set to true to fold it in. Either way
+  # the reports show BOTH numbers, so this choice never hides one.
+  count_client_withdrew_as_recoverable: false
+
+  # ------------------------------------------------------------------------
+  # 2. REMEDIES -- reason -> cause class + remedy class.
+  #
+  # Keyed by a stable reason key; `match_any` is a case-insensitive SUBSTRING
+  # test against the RAW denial_reason, same semantics as everywhere else in
+  # this file, and ENTRY ORDER IS EVALUATION ORDER.
+  #
+  # Matching happens on the raw text rather than on the normalized bucket
+  # because "Not Enough Information" normalizes to `other` (see
+  # denial_reason_normalization above -- that grouping is verified and correct)
+  # yet deserves its own cause: it is the one decline with a cheap process fix.
+  # `normalized:` on each entry records which bucket it rolls up into, so the
+  # two blocks can be reconciled by eye.
+  #
+  # `question` is the sentence the report prints next to the number. It is what
+  # turns "355 declines for equipment" into an action.
+  # ------------------------------------------------------------------------
+  remedies:
+    equipment_unavailable:
+      match_any: [equipment not available, equipment availability]
+      normalized: equipment_unavailable
+      cause: equipment
+      remedy: capital
+      question: "Which truck class is missing?"
+    no_drivers:
+      match_any: [no drivers available]
+      normalized: no_drivers
+      cause: staffing
+      remedy: scheduling
+      question: "Which hours are uncovered?"
+    out_of_area:
+      match_any: [out of service area, out of coverage area, out of area]
+      normalized: out_of_area
+      cause: coverage
+      remedy: territory
+      question: "Where, and how far out?"
+    not_enough_information:
+      # Listed BEFORE `other`, the bucket it normalizes into.
+      match_any: [not enough information]
+      normalized: other
+      cause: information
+      remedy: process
+      question: "Cheap fix -- ask the client before declining."
+    other:
+      match_any: [other, refuse]
+      normalized: other
+      cause: review
+      remedy: review
+      question: "Reason not captured -- needs a human to look at these."
+    unrecorded:
+      # No match_any. Applies when denial_reason is blank on a declined row:
+      # we said no and wrote down nothing.
+      match_blank: true
+      normalized: null
+      cause: unrecorded
+      remedy: data
+      question: "We declined without recording why -- fix the dispatch habit."
+
+  # Buckets that carry NO denial_reason by definition take their cause from the
+  # bucket itself rather than from a reason lookup. `no_response` is the one
+  # that matters: its cause is always attention and its remedy is always
+  # alerting/coverage in a specific window, which is what blind_spot quantifies.
+  bucket_remedies:
+    no_response:
+      cause: attention
+      remedy: alerting
+      question: "Which hour-of-week window is unmanned? See blind_spot below."
+    accept_failed:
+      cause: technical
+      remedy: engineering
+      question: "We tried to accept and the accept failed. Why?"
+    client_withdrew:
+      cause: client
+      remedy: relationship
+      question: "Did the client pull it, or did they give up waiting on us?"
+    # The three buckets that are not missed work still need an entry, so that
+    # attribute_cause() does not fall through to the reason lookup and label an
+    # accepted job "unrecorded" on the grounds that it carries no decline
+    # reason. `none` is a real answer here: there is nothing to fix.
+    won:
+      cause: none
+      remedy: none
+      question: "We took this one."
+    in_flight:
+      cause: none
+      remedy: none
+      question: "Still deciding -- no outcome yet, nothing to attribute."
+    unknown_status:
+      cause: data
+      remedy: data
+      question: "A status no map recognises. Extend missed_work.buckets."
+
+  # ------------------------------------------------------------------------
+  # 3. THE RECOVERABLE INVENTORY
+  #
+  # For each (service_class, cause) pair, per period: offers, accepted, missed,
+  # missed_share, cause_breakdown, top_clients, top_service_types, recoverable,
+  # remedy.
+  # ------------------------------------------------------------------------
+  inventory:
+    # RANK BY JOB COUNT. NOT BY MONEY. offerAmount is empty on 100% of the
+    # records in this account (3079/3079), so no dollar figure is derivable and
+    # none may be implied. Every report states that it is counting jobs.
+    rank_by: job_count
+    # The inventory is about WORK WE WANT, so it is filtered to the service
+    # classes named in acceptance_policy.should_accept. Set false to inventory
+    # everything, including work the owner is happy to lose.
+    restrict_to_should_accept: true
+    # How many rows a report shows before "and N more".
+    top_n: 10
+    top_clients: 5
+    top_service_types: 5
+
+  # ------------------------------------------------------------------------
+  # 3b. THE JOB LIST -- one row per job we did not get.
+  #
+  # Everything above this is an aggregate, which is what you want for deciding
+  # what to change and useless for the other thing these reports are used for:
+  # pulling one job up in Towbook and asking why THAT one went the way it did.
+  #
+  # Each row leads with the reference Towbook searches on: the job (call)
+  # number when the offer became a job, and the Digital Request id when it did
+  # not. Towbook does not issue a call number for an offer nobody accepted --
+  # 0 of 817 Expired offers in the archived data have one -- so on this list
+  # the request id is the normal case, not the exception. Both are shown with
+  # their kind spelled out, because they are searched in two different Towbook
+  # screens and are not interchangeable.
+  # ------------------------------------------------------------------------
+  job_list:
+    # Rows per report before it says "and N more". A day misses ~60 offers on
+    # this account, so 100 shows a daily window whole; weekly and monthly
+    # windows truncate, say so, and point at the dashboard for the full set.
+    max_rows: 100
+    # FALSE ON PURPOSE, unlike the inventory above. That section is about work
+    # we want, so it filters to acceptance_policy.should_accept. This one is a
+    # lookup table, and "why did we turn that lockout down" is a fair question
+    # about a class the policy declines.
+    restrict_to_should_accept: false
+
+  # DOLLAR RANKING IS ON. Values supplied by the owner on 2026-07-28.
+  #
+  # offerAmount arrives EMPTY on every record from Towbook, so money can only
+  # come from an average job value per client, taken from invoice data the owner
+  # has and this feed does not. Keys are the client_key (lowercased, normalized
+  # client name) -- verified against the five real clients in this account.
+  #
+  # These are AVERAGE TOW values and are applied to TOW jobs. They are GROSS
+  # revenue, not margin: no fuel, labour or truck cost is deducted. Any report
+  # built on them must say so.
+  #
+  # urgent.ly was NOT supplied by the owner. It is assumed equal to the $65
+  # cluster and MUST stay flagged as an assumption wherever it is used. At 85
+  # offers per 30 days it moves totals very little. Replace it with the real
+  # figure when known, and delete this paragraph.
+  job_value_by_client:
+    agero (swoop): 65
+    allstate: 65
+    nsd: 85
+    allied dispatch solutions: 65
+    urgent.ly: 65          # ASSUMPTION: not supplied by owner, flagged in reports
+
+  # FLAT VALUE OF A LIGHT-SERVICE JOB WE DECLINE. Owner-supplied 2026-07-30.
+  #
+  # Used ONLY by the Maps view's "what are we giving away" tally, which counts
+  # the light-service jobs we did not accept and multiplies by this figure. It
+  # is deliberately separate from job_value_by_client above: those are average
+  # TOW values and must never be applied to light service (a declined Tire
+  # Change is not a $65 tow). This is a single flat gross figure for the
+  # roadside light-service work the owner declines by policy, so he can see the
+  # dollar value of what is being turned down. offerAmount is empty on every
+  # record, so like every other value in this file it is an owner estimate, not
+  # a Towbook number. Set to 0 to switch the tally off.
+  light_service_value: 35
+
+  # WHICH JOBS THOSE VALUES MAY BE APPLIED TO.
+  # The figures above are average TOW values. Applying them to a missed Tire
+  # Change would price a $0 job at $65 and inflate the one number a reader is
+  # most likely to quote. So by default they are applied only to the service
+  # classes in acceptance_policy.should_accept -- the work we want and the work
+  # those averages describe.
+  #
+  #   should_accept  (default) price only should_accept classes
+  #   all                      price every missed row, whatever the service
+  #
+  # Rows outside the priced set contribute NOTHING and are counted in
+  # `unpriced_missed`, so a partial valuation understates visibly rather than
+  # inventing a number.
+  job_value_applies_to: should_accept
+
+  # ------------------------------------------------------------------------
+  # 4. BLIND SPOTS -- a 7 x 24 hour-of-week grid of when we fail to respond.
+  #
+  # A cell is a blind spot when offers >= min_offers AND
+  # no_response_rate >= threshold. min_offers exists so that a 1-of-2 hour on a
+  # Tuesday night does not read as a crisis.
+  #
+  # On 30 days of real data this isolates 17:00-21:00 (47/46/40/55/56% missed)
+  # and 01:00-04:00 (49/49/59/50%), while 08:00-13:00 sits at 9-15%. That is an
+  # evidence-backed staffing conversation, and it is the highest-value output in
+  # the system.
+  #
+  # Why it is urgent: the median response window Towbook allows is 3 minutes
+  # (mean 4, max 15), so a missed notification becomes a lost job quickly.
+  #
+  # BUT DO NOT CONCLUDE THAT THE SHORT WINDOW CAUSES THE MISSES -- measured on
+  # 30 days of real data, window length does NOT predict miss rate:
+  #     Allstate    window 1.8 min -> 0.1% missed
+  #     Allied      window 1.5 min -> 43%  missed
+  #     NSD         window 2.0 min -> 40%  missed
+  #     Agero       window 3.0 min -> 34%  missed
+  #     Urgent.ly   window 15  min -> 31%  missed
+  # Urgent.ly allows fifteen minutes and a third are still missed, while
+  # Allstate allows under two and virtually none are. The constraint is
+  # ATTENTION, not time. Negotiating longer windows would not help; making sure
+  # somebody or something is watching the queue would.
+  #
+  # Keep these two numbers in step with the `blind_spot_forming` alert above.
+  # ------------------------------------------------------------------------
+  blind_spot:
+    min_offers: 5
+    threshold: 0.35
+
+  # ------------------------------------------------------------------------
+  # 5. CLOSE-OFF CANDIDATES -- work we do not want, being offered anyway.
+  #
+  # A service type qualifies when, over the window, offers >= min_offers and
+  # acceptance_rate <= max_rate. Output is grouped BY CLIENT, because the action
+  # is a conversation with that client: "stop sending us these".
+  #
+  # On real data: Tire Change 145 offers / 0 accepted, Battery Jump 77/3,
+  # Lock Out 61/4, Light Tire Change 59/1, Fuel Delivery 18/0 -- roughly 450
+  # light-service offers producing 13 jobs.
+  #
+  # Closing these off is not only noise reduction. It is expected to IMPROVE THE
+  # TOW RESPONSE RATE, because it removes competing offers from the same
+  # 3-minute decision window. The report states that as the rationale, and the
+  # system tracks whether it holds by watching no_response_rate before/after.
+  #
+  # Keep these two numbers in step with the `closeoff_candidate` alert above,
+  # which uses a higher offer floor (10) because it fires on a 7-day window.
+  # ------------------------------------------------------------------------
+  closeoff:
+    min_offers: 5
+    max_rate: 0.10
+    # Close-off is the mirror image of the inventory. The inventory keeps the
+    # service classes in acceptance_policy.should_accept, because it is about
+    # work we WANT; everything else lands here. Without this, "Accident Tow"
+    # (29 offers, 2 accepted) and "Winch Out" (23, 2) qualify on the numbers and
+    # the report ends up advising the owner to ask a client to stop sending tows.
+    # Set false to see every low-rate service type regardless of policy.
+    exclude_wanted_classes: true
+
+  # ------------------------------------------------------------------------
+  # 6. CLIENT COMPARISON
+  #
+  # Per client, per period: offers, accepted, rate, declined, no_response,
+  # withdrew, and no_response_rate.
+  #
+  # Its purpose is to expose INCONSISTENCY BETWEEN CLIENTS THAT SHOULD BEHAVE
+  # ALIKE. On real data Allstate's offers go unanswered 0.1% of the time while
+  # Agero's do 34% -- same trucks, same staff, same three-minute window. A gap
+  # that large is a process or integration difference worth finding, and it is
+  # surfaced as an explicit finding rather than left for the reader to spot.
+  #
+  #   min_offers   floor before a client is eligible to be named in a finding,
+  #                so a client with four offers cannot be the headline.
+  #   gap_pp       percentage-POINT spread between the best and worst
+  #                no_response_rate that counts as a finding. 20pp is wide
+  #                enough that it cannot be noise and narrow enough to catch a
+  #                problem before it is 34 points.
+  # ------------------------------------------------------------------------
+  client_comparison:
+    min_offers: 20
+    gap_pp: 20.0
+
+  # ------------------------------------------------------------------------
+  # 7. COVERAGE WINDOWS -- WHEN SOMEBODY IS ACTUALLY WATCHING THE QUEUE.
+  #
+  # THIS IS THE CUT THAT MATTERS. Raw hour-of-day is the wrong dimension; the
+  # right one is INSIDE vs OUTSIDE the hours the owner staffs. The window below
+  # is the owner's STATED staffed window -- Monday to Friday, 06:00 to 18:00 --
+  # and it is VERIFIED IN THE DATA, not assumed:
+  #
+  #   Agero offers INSIDE  Mon-Fri 06:00-18:00:   989 offers,  57 expired ( 5.8%)
+  #   Agero offers OUTSIDE Mon-Fri 06:00-18:00:  1017 offers, 627 expired (61.7%)
+  #
+  # Response is near-flawless inside the window and collapses outside it, on
+  # roughly the same offer volume. 99.1% of accepted rows carry a named human
+  # responder, so every job needs a person. THIS IS A COVERAGE PROBLEM, NOT A
+  # TRUCK PROBLEM -- the equipment sat idle at 19:00 exactly as it sat idle at
+  # 11:00; the difference is that at 11:00 somebody was looking at the screen.
+  #
+  # HOW IT IS EVALUATED
+  #   * `windows` is a LIST and MULTIPLE WINDOWS ARE SUPPORTED. Adding a
+  #     Saturday day shift is an edit here -- append a second entry -- and
+  #     requires no code change. LIST ORDER IS EVALUATION ORDER; the first
+  #     window a row falls inside gives that row its label.
+  #   * `days` accepts mon/tue/.../sun, the full names, or `all` for every day.
+  #   * `start` / `end` are LOCAL clock times, "HH:MM", half-open [start, end),
+  #     so 06:00-18:00 includes 06:00 and excludes 18:00 and two windows that
+  #     meet at 18:00 neither overlap nor leave a gap. `end: "24:00"` means
+  #     midnight. An `end` EARLIER than `start` is an overnight shift and wraps
+  #     past midnight onto the following morning (a Fri 22:00-06:00 window
+  #     covers Saturday 05:00).
+  #   * A row that falls in no window gets `default_label`. That label is the
+  #     one the headline recoverable figure is reported against, because that
+  #     is where essentially all of the missed work sits.
+  #
+  # Every window name and the default label appear verbatim in the reports, in
+  # the dashboard, and in the `coverage_gap` alert above -- so renaming
+  # `uncovered` here means renaming it in that alert expression too.
+  # ------------------------------------------------------------------------
+  coverage:
+    windows:
+      - name: covered
+        days: [mon, tue, wed, thu, fri]
+        start: "06:00"
+        end: "18:00"
+        # Free text, carried into every report so the number can be challenged
+        # against the claim it rests on.
+        note: >-
+          Owner's stated staffed window. Verified against 30 days of real Agero
+          traffic: 5.8% of offers expire inside it, 61.7% outside it.
+    default_label: uncovered
+
+  # ------------------------------------------------------------------------
+  # territory -- "was this even our job to take?"
+  #
+  # The other half of the question `coverage` asks. Coverage asks whether
+  # anybody was at a desk; this asks whether the job was inside the area this
+  # company works at all. An offer failing either test is not a miss the owner
+  # should be judged on, and counting it as one is precisely what makes an
+  # honest acceptance rate read badly: 18.8% of everything this company is
+  # offered is light service it declines by policy or work outside its area.
+  #
+  # PER COMPANY, and the second override a new tenant sets after `coverage`.
+  # A company entry in companies.yaml may declare its own `territory:` block,
+  # which REPLACES this one outright rather than merging -- exactly like
+  # `coverage` and `job_value_by_client`, and for the same reason: a tenant
+  # that lists its own service area must not silently inherit somebody else's
+  # ZIPs and be measured against a market it has never worked.
+  #
+  # Bands are NEAREST FIRST and a ZIP belongs to the first band naming it, so
+  # the ordering here is the tie-break. They are reported separately because
+  # the contrast is a real operating fact, verified over 30 days:
+  #
+  #     core   2,628 offers   39.6% accepted
+  #     edge     187 offers    9.1% accepted
+  #     ext       12 offers    8.3% accepted
+  #     outside  169 offers    3.0% accepted   (5 jobs in a month)
+  #
+  # Derived from the owner's own service-area definition -- Franklin County
+  # plus the I-270 outerbelt and eight miles beyond it -- and VALIDATED against
+  # 30 days of real offers: only 5 accepted jobs of 1,085 fell outside these
+  # 79 ZIPs, which is 0.5% of the work.
+  #
+  # Quote every ZIP. Unquoted, YAML reads 43201 as an integer and a leading-zero
+  # ZIP like 01234 as 1234, which would leave a New England tenant with no
+  # territory at all. The loader normalises either way, but quoting keeps the
+  # file honest about what these are: labels, not numbers.
+  # ------------------------------------------------------------------------
+  territory:
+    bands:
+      # Franklin County and the ring that touches it. Home.
+      - name: core
+        note: >-
+          Columbus and the inner suburbs -- Dublin, Hilliard, Grove City,
+          Westerville, Gahanna, Reynoldsburg, Pickerington, Canal Winchester,
+          Powell, New Albany, Pataskala, Groveport, Ashville, West Jefferson.
+        zips: ["43002", "43004", "43016", "43017", "43021", "43026", "43035", "43054",
+               "43062", "43064", "43065", "43068", "43081", "43082", "43085", "43103",
+               "43109", "43110", "43116", "43117", "43119", "43123", "43125", "43126",
+               "43136", "43137", "43146", "43147", "43162", "43201", "43202", "43203",
+               "43204", "43205", "43206", "43207", "43209", "43210", "43211", "43212",
+               "43213", "43214", "43215", "43217", "43219", "43220", "43221", "43222",
+               "43223", "43224", "43227", "43228", "43229", "43230", "43231", "43232",
+               "43235", "43240"]
+
+      # The long runs. Taken when a truck is free -- 9.1% of them over 30 days,
+      # against 39.6% in the core. Worth watching: if this stays near zero the
+      # honest answer is to stop calling it territory.
+      - name: edge
+        note: >-
+          Delaware, Marysville, London, Circleville, Newark's western edge,
+          Sunbury, Granville, Johnstown, Mount Sterling, Baltimore, Carroll.
+        zips: ["43001", "43015", "43023", "43031", "43040", "43046", "43061", "43074",
+               "43102", "43105", "43112", "43113", "43140", "43143"]
+
+      # Reachable, rarely worked: 12 offers and one job in 30 days. Kept
+      # separate so it cannot flatter the edge band's rate.
+      - name: ext
+        note: Croton, Hebron, Irwin, Kilbourne, Kirkersville, Thurston, Unionville Center.
+        zips: ["43013", "43025", "43029", "43032", "43033", "43077", "43157"]
+
+    # Everything else. Chillicothe, Zanesville, Logan, Waverly, Mansfield:
+    # 169 offers and 5 jobs in 30 days, and the clubs know it.
+    default_label: outside
