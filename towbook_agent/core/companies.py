@@ -9,11 +9,23 @@ set of credentials.
     requests.company_id     which company every stored row belongs to
     company_id filters      on every query, in every module
 
-WHAT THIS IS NOT
-----------------
-Not a SaaS. There is no billing, no signup, no user management, no per-user
-permission model. It is multi-company *reporting*: one operator, running one
-install, producing separate numbers for several towing companies.
+WHO MAY SEE WHICH COMPANY
+-------------------------
+The roster says which companies exist. :func:`use_visible_companies` says which
+of them the current *reader* is allowed to see, and while it is set this whole
+module behaves as though the roster contained only those:
+:func:`enabled_companies`, :func:`company_choices`, :func:`get_company`,
+:func:`default_company_id` and the merged scope are all restricted to it, so a
+switcher cannot offer a company the reader may not open, and ``/company/<id>``
+for somebody else's company resolves to one of their own instead.
+
+It is set once per HTTP request from the signed-in user's record (see
+``web/accounts.py`` and ``web/auth.py``) and is NEVER set for the scheduler,
+the CLI or the pipeline -- those run unscoped, over every company on the
+install, because a nightly run that quietly skipped a tenant is a tenant whose
+board silently stops updating.
+
+There is no billing and no self-serve signup: an operator creates the accounts.
 
 AND THE SUM OF THEM
 -------------------
@@ -93,7 +105,7 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .config_loader import CONFIG, ConfigError
 
@@ -111,6 +123,7 @@ __all__ = [
     "default_company_id",
     "is_multi_company",
     "company_choices",
+    "normalise_company_id",
     "merged_company",
     "is_merged_id",
     "company_ids_for",
@@ -119,6 +132,9 @@ __all__ = [
     "timezone_for",
     "active_company_id",
     "use_company",
+    "visible_company_ids",
+    "use_visible_companies",
+    "is_visible",
     "reload_companies",
 ]
 
@@ -146,6 +162,16 @@ DEFAULT_COMPANY_ID: str = "default"
 #: underscores survive :func:`_slug` intact, so it stays recognisable in a URL
 #: (``/company/__all__``) and cannot be produced by slugging a company name.
 MERGED_COMPANY_ID: str = "__all__"
+
+#: The id of the empty scope: a reader whose account names no company this
+#: install actually has. It is not a company and never appears in the roster --
+#: it exists so :func:`resolve_company` has something to return that is
+#: guaranteed to match no stored row, giving that reader an empty board instead
+#: of somebody else's. Reserved at parse time alongside :data:`MERGED_COMPANY_ID`.
+_NO_COMPANY_ID: str = "__none__"
+
+#: Ids a roster entry may not claim, because each already means something else.
+_RESERVED_IDS: frozenset[str] = frozenset({MERGED_COMPANY_ID, _NO_COMPANY_ID})
 
 #: Prefix for the per-company credential variables. ``credentials_env: ACME``
 #: means TOWBOOK_ACME_USER / TOWBOOK_ACME_PASS.
@@ -348,6 +374,17 @@ def _slug(value: Any) -> str:
     return text
 
 
+def normalise_company_id(value: Any) -> str:
+    """The slugging rule for a company id, for callers outside this module.
+
+    ``web/accounts.py`` stores company ids in a user's scope and the roster
+    stores them in companies.yaml. Both have to agree about what "Auto Lyft"
+    slugs down to or a scope would silently name a company that exists under a
+    slightly different id, so there is one implementation and this is it.
+    """
+    return _slug(value)
+
+
 def _env_prefix(value: Any) -> str | None:
     text = str(value or "").strip().upper()
     if not text:
@@ -378,15 +415,17 @@ def _parse_company(entry: Mapping[str, Any], position: int) -> Company | None:
         )
         return None
 
-    if company_id == MERGED_COMPANY_ID:
-        # Reserved for the merged scope. Honoured, a real company here would
-        # take over the id the switcher uses to mean "all of them" -- and would
-        # be a company whose rows the merged read then counts twice.
+    if company_id in _RESERVED_IDS:
+        # Reserved. `__all__` is the merged scope: a real company holding it
+        # would take over the id the switcher uses to mean "all of them", and
+        # would be a company whose rows the merged read then counts twice.
+        # `__none__` is the empty scope, and a real company holding it would be
+        # shown to every reader entitled to no company at all.
         logger.error(
-            "config/companies.yaml: entry #%d uses the reserved id %r, which names the "
-            "merged (all companies) view; skipping it. Give this company its own id.",
+            "config/companies.yaml: entry #%d uses the reserved id %r; skipping it. "
+            "Give this company its own id.",
             position + 1,
-            MERGED_COMPANY_ID,
+            company_id,
         )
         return None
 
@@ -521,24 +560,117 @@ def reload_companies() -> None:
 
 
 # ==========================================================================
+# The visibility scope -- which companies the current READER may see
+#
+# The roster is what this install reports on. The scope is what one signed-in
+# person is allowed to look at, and it exists because the two stopped being the
+# same thing the moment this system was sold to a company that is not the one
+# that owns the server.
+#
+# UNSET IS UNSCOPED, AND UNSCOPED MEANS EVERYTHING. The scheduler, the CLI, the
+# pipeline and the test suite never set it: a nightly run that skipped a tenant
+# because of a permission model would be a tenant whose board silently stops
+# updating, which is a worse failure than the one this guards against. Only the
+# web layer sets it, once per request, from the signed-in user's record.
+#
+# WHILE IT IS SET, THE ROSTER LOOKS SMALLER THAN IT IS. Every lookup below
+# filters through it, so there is no second code path to keep in step and no
+# "did that endpoint remember to check" question to answer: a company outside
+# the scope cannot be listed, cannot be resolved by id, cannot be reached by
+# typing its slug into the URL, and is not a member of the merged view.
+# ==========================================================================
+
+#: The ids the current reader may see, or None for "every company". A tuple
+#: rather than a set so the order the roster declares is preserved -- it is the
+#: order the switcher renders and the order `default_company_id` picks from.
+_visible: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "towbook_visible_companies", default=None
+)
+
+
+def visible_company_ids() -> tuple[str, ...] | None:
+    """The ids the current reader may see, or ``None`` when unscoped."""
+    return _visible.get()
+
+
+@contextmanager
+def use_visible_companies(company_ids: Iterable[str] | None) -> Iterator[tuple[str, ...] | None]:
+    """Restrict every lookup in this module to ``company_ids`` for the block.
+
+    ``None`` (or the sentinel ``"*"`` anywhere in the iterable) means unscoped
+    -- the operator's own account, which sees the whole install. An EMPTY
+    iterable is not the same thing and is not treated as one: it scopes the
+    reader to nothing, and everything below then resolves to nothing rather
+    than helpfully falling back to the roster. A user with no companies is a
+    misconfiguration, and it must fail closed at the point of use.
+
+    Always restores the previous value, including on an exception, so one
+    request's scope cannot leak into the next request served by the thread.
+    """
+    if company_ids is None:
+        scope: tuple[str, ...] | None = None
+    else:
+        wanted = [_slug(value) for value in company_ids]
+        scope = None if "*" in wanted else tuple(value for value in wanted if value)
+    token = _visible.set(scope)
+    try:
+        yield scope
+    finally:
+        _visible.reset(token)
+
+
+def is_visible(company_id: str | None) -> bool:
+    """May the current reader see this company?
+
+    True for everything when unscoped. The merged scope is visible whenever the
+    reader has more than one company to merge, since it is assembled from their
+    own companies and nobody else's.
+    """
+    scope = _visible.get()
+    if scope is None:
+        return True
+    wanted = _slug(company_id)
+    if wanted == MERGED_COMPANY_ID:
+        return len(scope) > 1
+    return wanted in scope
+
+
+# ==========================================================================
 # Lookup
 # ==========================================================================
 
 
 def all_companies() -> list[Company]:
-    """Every company in the roster, enabled or not, in file order."""
-    return list(_roster()[0])
+    """Every company in the roster, enabled or not, in file order.
+
+    Filtered by the visibility scope when one is set -- this is the funnel
+    :func:`enabled_companies` and :func:`get_company` both go through, so
+    scoping it once is what makes every other lookup in this module obey it.
+    """
+    companies = list(_roster()[0])
+    scope = _visible.get()
+    if scope is None:
+        return companies
+    return [company for company in companies if company.id in scope]
 
 
 def enabled_companies() -> list[Company]:
     """The companies the scheduler runs and the dashboard offers.
 
-    Never empty: if every entry is disabled the roster is treated as
-    unconfigured, because a scheduler with nothing to do and a dashboard with
+    Never empty WHEN UNSCOPED: if every entry is disabled the roster is treated
+    as unconfigured, because a scheduler with nothing to do and a dashboard with
     no company to show are both silent failures.
+
+    Under a visibility scope it CAN be empty, and the fallback company is
+    deliberately not substituted: a reader scoped to companies that do not
+    exist must see nothing, not the default tenant's numbers.
     """
     companies = [company for company in all_companies() if company.enabled]
-    return companies or [_fallback_company()]
+    if companies:
+        return companies
+    if _visible.get() is not None:
+        return []
+    return [_fallback_company()]
 
 
 def get_company(company_id: str | None) -> Company | None:
@@ -554,6 +686,10 @@ def get_company(company_id: str | None) -> Company | None:
         return None
     if wanted == MERGED_COMPANY_ID:
         return merged_company() if is_multi_company() else None
+    # `all_companies()` is already filtered by the visibility scope, so a
+    # company the reader may not see is not findable by id -- typing another
+    # tenant's slug into /company/<id> is indistinguishable from typing one
+    # that does not exist.
     for company in all_companies():
         if company.id == wanted:
             return company
@@ -561,8 +697,19 @@ def get_company(company_id: str | None) -> Company | None:
 
 
 def default_company_id() -> str:
-    """``default_company:`` from companies.yaml, or the first enabled entry."""
-    return _roster()[1]
+    """``default_company:`` from companies.yaml, or the first enabled entry.
+
+    Under a visibility scope the roster default is only honoured when the
+    reader can actually see it; otherwise it is their first visible company.
+    Falling back to ``default_company`` for a reader not entitled to it is the
+    one place this module could hand somebody another company's board by
+    accident, so it is decided here rather than at each call site.
+    """
+    configured = _roster()[1]
+    if _visible.get() is None or is_visible(configured):
+        return configured
+    visible = enabled_companies() or all_companies()
+    return visible[0].id if visible else configured
 
 
 def resolve_company(company_id: str | None = None) -> Company:
@@ -585,10 +732,30 @@ def resolve_company(company_id: str | None = None) -> Company:
         if found is not None:
             return found
         logger.warning(
-            "unknown company %r; falling back to %r", company_id, active_company_id()
+            "unknown or not-permitted company %r; falling back to %r",
+            company_id,
+            active_company_id(),
         )
     fallback = get_company(active_company_id())
-    return fallback if fallback is not None else _fallback_company()
+    if fallback is not None:
+        return fallback
+    # Nothing resolved. Unscoped, that means an install with no roster, and the
+    # single-company fallback is right. SCOPED, it must never be: `default` is
+    # a real company on this install and handing it to a reader who is not
+    # entitled to it is the exact failure the scope exists to prevent. Their
+    # own first company, or -- if they have none -- a company that holds
+    # nothing, whose id matches no row and whose board is therefore empty.
+    if _visible.get() is None:
+        return _fallback_company()
+    visible = enabled_companies()
+    if visible:
+        return visible[0]
+    logger.error(
+        "a reader is scoped to %r, none of which is an enabled company on this "
+        "install; showing an empty board rather than another company's numbers",
+        _visible.get(),
+    )
+    return Company(id=_NO_COMPANY_ID, name="No company", enabled=False, configured=False)
 
 
 def resolve_company_id(company_id: str | None = None) -> str:
@@ -788,13 +955,22 @@ def _build_merged() -> Company:
 
 
 def merged_company() -> Company:
-    """The merged scope, rebuilt whenever companies.yaml or rules.yaml changes."""
+    """The merged scope, rebuilt whenever companies.yaml or rules.yaml changes.
+
+    THE CACHE KEY CARRIES THE VISIBILITY SCOPE, and must. The merged scope is
+    assembled from :func:`enabled_companies`, which is scoped, so two readers
+    entitled to different companies have two different merged views. Keyed on
+    the config digests alone, whichever of them loaded a page first would have
+    served their total to the other -- a cache that hands one towing company a
+    figure computed over another's jobs.
+    """
     global _cached_merged
     try:
         rules_digest = CONFIG.digest("rules")
     except ConfigError:
         rules_digest = ""
-    stamp = f"{rules_digest}:{_digest()}"
+    scope = _visible.get()
+    stamp = f"{rules_digest}:{_digest()}:{'*' if scope is None else ','.join(scope)}"
     with _lock:
         if _cached_merged is not None and _cached_merged[0] == stamp:
             return _cached_merged[1]

@@ -85,6 +85,23 @@
       <button type="button" class="icon-btn" id="print-btn"
               title="Print this page, or save it as a PDF">&#128424; Print</button>
       <button type="button" class="icon-btn" id="theme-toggle">&#9728; Light</button>
+      {#- WHO IS SIGNED IN.
+
+          `principal` is null only in shared-password mode, where there is no
+          account and so no name to show. On a board serving more than one
+          towing company that name is not decoration: it is how a reader knows
+          whose session they are in before they read a number off the screen.
+
+          The Accounts link renders for an operator and for nobody else -- and
+          the route behind it 404s for anybody else too, so hiding it here is
+          the courtesy, not the control. -#}
+      {% if principal %}
+      {% if principal.may_manage_accounts %}
+      <a class="icon-btn" href="/accounts" title="Who can sign in, and what they can see">Accounts</a>
+      {% endif %}
+      <a class="icon-btn" href="/account/password"
+         title="Signed in as {{ principal.username }}">{{ principal.label }}</a>
+      {% endif %}
       <form method="post" action="/logout" style="display:inline">
         <button type="submit" class="icon-btn" title="End this session">Sign out</button>
       </form>

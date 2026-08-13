@@ -80,9 +80,9 @@ from contextlib import asynccontextmanager
 from datetime import date as _date
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from fastapi import FastAPI, Form, Query, Request as HTTPRequest
+from fastapi import FastAPI, Form, HTTPException, Query, Request as HTTPRequest
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -91,6 +91,7 @@ from .. import __version__
 from ..core import companies as _companies
 from ..core.logging_setup import redact, setup_logging
 from ..core.paths import STATIC_DIR, TEMPLATES_DIR, ensure_dirs
+from . import accounts
 from . import auth
 from . import queries as q
 from . import rules_admin
@@ -278,7 +279,12 @@ def f_truncate_mid(value: Any, length: int = 60) -> str:
 #: What the startup hook did, for /health and /healthz. Populated by
 #: :func:`lifespan`; empty until the app has actually been served, which is the
 #: honest answer for a TestClient that never entered its context manager.
-BOOT: dict[str, Any] = {"migration": None, "scheduler": None, "storage_warning": None}
+BOOT: dict[str, Any] = {
+    "migration": None,
+    "scheduler": None,
+    "storage_warning": None,
+    "accounts": None,
+}
 
 
 @asynccontextmanager
@@ -319,6 +325,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             BOOT["migration"].get("error"),
         )
 
+    # After the migration, because it writes a row into a table migration 0008
+    # creates. Before the scheduler, because it is the difference between a
+    # fresh deployment that is behind one account per customer and one that is
+    # behind a shared password with access to every company on it.
+    try:
+        BOOT["accounts"] = accounts.bootstrap_operator_from_env()
+        if BOOT["accounts"]:
+            logger.warning("dashboard accounts: %s", BOOT["accounts"])
+    except Exception as exc:  # pragma: no cover - never stop the app booting
+        BOOT["accounts"] = None
+        logger.error("could not create the operator account from the environment: %s", exc)
+
     BOOT["scheduler"] = core_scheduler.start_background_scheduler()
     try:
         yield
@@ -347,7 +365,16 @@ def create_app() -> FastAPI:
     # default -- a dashboard where forgetting a decorator publishes a customer's
     # numbers is a dashboard that will eventually publish a customer's numbers.
     application.add_middleware(PasswordGateMiddleware)
-    if auth.password_is_default():
+    # Only meaningful while the install is still in shared-password mode. Once
+    # an account exists the shared password is refused outright, and warning
+    # about a credential that no longer opens anything trains people to ignore
+    # the line that matters. The check is wrapped because create_app runs
+    # before the lifespan migration, so the table may not exist yet.
+    try:
+        shared_password_still_in_use = not accounts.accounts_are_configured()
+    except Exception:  # pragma: no cover - the database is not up yet
+        shared_password_still_in_use = True
+    if shared_password_still_in_use and auth.password_is_default():
         # Said on the login page too, but the login page is only read by
         # somebody who was already going to sign in. This line is in the deploy
         # log, which is what the person who put it on a public URL is looking at.
@@ -473,6 +500,17 @@ def _shell(request: HTTPRequest, active: str, **extra: Any) -> dict[str, Any]:
             "multi_company": bool(companies),
             "notice": request.query_params.get("notice") or None,
             "notice_level": request.query_params.get("level") or "info",
+            # WHO IS READING THIS PAGE. None only in shared-password mode,
+            # where there is no account and therefore no name to show. The
+            # header uses it for the sign-out label, the Accounts link (which
+            # renders for an operator and for nobody else) and -- on a board
+            # that now serves several towing companies -- for the plain
+            # statement of whose numbers these are.
+            "principal": (
+                principal.as_dict()
+                if (principal := auth.current_principal(request)) is not None
+                else None
+            ),
         }
         context.update(extra)
         return context
@@ -613,14 +651,29 @@ DAY_OPTIONS = (7, 14, 30, 60, 90)
 
 
 def _login_context(request: HTTPRequest, **extra: Any) -> dict[str, Any]:
+    """Everything the login form needs, including WHICH form it is.
+
+    ``accounts_mode`` decides between a username-and-password form and the
+    single shared-password box this board started with. It is read from the
+    database rather than from a setting, because the presence of an account IS
+    the setting -- see web/accounts.py.
+    """
+    try:
+        accounts_mode = accounts.accounts_are_configured()
+    except Exception:  # pragma: no cover - the database is unreachable
+        accounts_mode = False
     return {
         "next": auth.safe_next(request.query_params.get("next")),
-        "password_is_default": auth.password_is_default(),
+        "accounts_mode": accounts_mode,
+        # Only ever shown in shared-password mode: the default password stops
+        # opening anything the moment an account exists.
+        "password_is_default": auth.password_is_default() and not accounts_mode,
         "default_password": auth.DEFAULT_PASSWORD,
         "session_days": auth.session_max_age() // 86400,
         "session_secret_is_ephemeral": not (os.environ.get("SESSION_SECRET") or "").strip(),
         "APP_VERSION": __version__,
         "error": None,
+        "username": "",
         **extra,
     }
 
@@ -643,27 +696,68 @@ def view_login(request: HTTPRequest) -> HTMLResponse:
 def submit_login(
     request: HTTPRequest,
     password: str = Form(default=""),
+    username: str = Form(default=""),
     next: str = Form(default="/"),
 ) -> Any:
-    """Check the shared password and issue a signed session cookie.
+    """Sign in, by account if this install has any and by shared password if not.
 
-    A wrong password re-renders the form with a 401 and a deliberately vague
-    message. There is no rate limiting here and the docstring says so rather
-    than implying otherwise: with a single shared secret and no account to lock,
-    the honest mitigation is a long ``DASHBOARD_PASSWORD``, not a counter this
-    process would lose on every redeploy.
+    ONE MESSAGE FOR EVERY KIND OF FAILURE. An unknown username, a disabled
+    account and a wrong password all render "That username and password do not
+    match an account here". Saying which of the three it was tells whoever is
+    guessing which usernames are real, and that is the expensive half of the
+    guessing.
+
+    There is no lockout after repeated attempts, and saying so is better than
+    implying otherwise. The honest mitigations are in place instead: PBKDF2 at
+    600,000 iterations makes each guess cost real CPU, and a wrong username
+    costs the same as a wrong password so the endpoint cannot be used to
+    enumerate accounts. A counter would live in this process's memory and be
+    lost on every redeploy, which is security theatre with a maintenance bill.
     """
     target = auth.safe_next(next)
-    if not auth.verify_password(password):
-        logger.warning("failed dashboard login from %s", request.client.host if request.client else "?")
+    who = request.client.host if request.client else "?"
+
+    try:
+        accounts_mode = accounts.accounts_are_configured()
+    except Exception:  # pragma: no cover - the database is unreachable
+        accounts_mode = False
+
+    if not accounts_mode:
+        if not auth.verify_password(password):
+            logger.warning("failed dashboard login from %s", who)
+            return _render(
+                request,
+                "login.html",
+                _login_context(request, error="That password is not correct.", next=target),
+                status_code=401,
+            )
+        response = RedirectResponse(url=target, status_code=303)
+        return auth.set_session_cookie(response, request)
+
+    user = accounts.authenticate(username, password)
+    if user is None:
+        logger.warning(
+            "failed dashboard sign-in for %r from %s",
+            accounts.normalise_username(username),
+            who,
+        )
         return _render(
             request,
             "login.html",
-            _login_context(request, error="That password is not correct.", next=target),
+            _login_context(
+                request,
+                error="That username and password do not match an account here.",
+                next=target,
+                username=accounts.normalise_username(username),
+            ),
             status_code=401,
         )
+
+    logger.info("dashboard sign-in: %r from %s", user.username, who)
+    if user.must_change_password:
+        target = auth.PASSWORD_CHANGE_PATH
     response = RedirectResponse(url=target, status_code=303)
-    return auth.set_session_cookie(response, request)
+    return auth.set_user_session_cookie(response, request, user)
 
 
 @app.post("/logout")
@@ -671,6 +765,300 @@ def submit_logout(request: HTTPRequest) -> RedirectResponse:
     """Drop the session cookie. POST only, so a prefetched link cannot do it."""
     response = RedirectResponse(url="/login", status_code=303)
     return auth.clear_session_cookie(response, request)
+
+
+# ==========================================================================
+# The reader's own account
+#
+# Two pages, both about the person signed in rather than about the numbers.
+# They exist because a first password is handed over by the operator -- read
+# down a phone line, typed into an email -- and an account still carrying one
+# is an account whose password is in somebody else's records.
+# ==========================================================================
+
+
+@app.get(auth.PASSWORD_CHANGE_PATH, response_class=HTMLResponse)
+def view_password_change(request: HTTPRequest) -> HTMLResponse:
+    """The change-your-password form.
+
+    Reachable at any time from the header, and the ONLY page reachable while
+    ``must_change_password`` is set -- the middleware redirects everything else
+    here, so a new account cannot read a single figure until the password that
+    travelled to it has been replaced.
+    """
+    principal = auth.current_principal(request)
+    return _render(
+        request,
+        "password.html",
+        _password_context(request, principal),
+    )
+
+
+def _password_context(
+    request: HTTPRequest, principal: Any, **extra: Any
+) -> dict[str, Any]:
+    return {
+        "APP_VERSION": __version__,
+        "principal": principal.as_dict() if principal is not None else None,
+        "forced": bool(principal is not None and principal.must_change_password),
+        "min_length": accounts.MIN_PASSWORD_LENGTH,
+        "error": None,
+        "APP_TITLE": "Change your password",
+        **extra,
+    }
+
+
+@app.post(auth.PASSWORD_CHANGE_PATH)
+def submit_password_change(
+    request: HTTPRequest,
+    current_password: str = Form(default=""),
+    new_password: str = Form(default=""),
+    confirm_password: str = Form(default=""),
+) -> Any:
+    """Replace the signed-in reader's password.
+
+    The current password is required even though the session already proves who
+    this is: it is what stops an unattended browser from becoming a permanent
+    handover of the account.
+
+    On success every OTHER session this user has open dies too, because
+    ``password_changed_at`` is part of the session signature. A fresh cookie is
+    issued to the browser doing the changing, so the person who just chose a
+    new password is not immediately thrown back to the login form.
+    """
+    principal = auth.current_principal(request)
+    if principal is None or principal.user_id is None:
+        # Shared-password mode has no account to change. It is not an error
+        # worth a page of its own -- there is nothing here for that reader.
+        return RedirectResponse(url="/", status_code=303)
+
+    def fail(message: str) -> HTMLResponse:
+        return _render(
+            request,
+            "password.html",
+            _password_context(request, principal, error=message),
+            status_code=400,
+        )
+
+    if accounts.authenticate(principal.username, current_password) is None:
+        return fail("That is not your current password.")
+    if new_password != confirm_password:
+        return fail("The two new passwords do not match.")
+    if new_password == current_password:
+        return fail("That is the password you already have. Choose a different one.")
+
+    try:
+        accounts.set_password(principal.user_id, new_password, must_change=False)
+    except accounts.AccountError as exc:
+        return fail(str(exc))
+
+    user = accounts.get_user(user_id=principal.user_id)
+    response = RedirectResponse(
+        url="/?notice=Your+password+has+been+changed.+Any+other+device+signed+in+as+you+has+been+signed+out.&level=info",
+        status_code=303,
+    )
+    return auth.set_user_session_cookie(response, request, user)
+
+
+# ==========================================================================
+# Accounts -- operator only
+#
+# The screen where a towing company is given a login. Everything here is
+# refused to a member: an account that can widen its own company scope is not
+# a permission model, it is a suggestion.
+# ==========================================================================
+
+
+def _require_operator(request: HTTPRequest) -> Any:
+    """The principal, if it may manage accounts. Otherwise raise a 404.
+
+    404 and not 403, and deliberately: a member has no business knowing this
+    screen exists, and "forbidden" confirms it does. The operator reaching it
+    legitimately never sees either.
+    """
+    principal = auth.current_principal(request)
+    if principal is None or not principal.may_manage_accounts():
+        raise HTTPException(status_code=404, detail="Not found")
+    return principal
+
+
+def _accounts_context(request: HTTPRequest, **extra: Any) -> dict[str, Any]:
+    users = accounts.list_users()
+    return _shell(
+        request,
+        "accounts",
+        users=[
+            {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "email": user.email,
+                "role": user.role,
+                "is_operator": user.role == accounts.ROLE_OPERATOR,
+                "company_scope": list(user.company_scope or []),
+                "scope_label": accounts.scope_description(
+                    accounts.principal_for_user(user)
+                ),
+                "enabled": user.enabled,
+                "must_change_password": user.must_change_password,
+                "last_login_at": user.last_login_at,
+                "created_at": user.created_at,
+            }
+            for user in users
+        ],
+        # Every company on the install, because only an operator sees this page
+        # and an operator is unscoped by definition.
+        roster=[
+            {"id": company.id, "label": company.label}
+            for company in _companies.enabled_companies()
+        ],
+        min_length=accounts.MIN_PASSWORD_LENGTH,
+        role_operator=accounts.ROLE_OPERATOR,
+        role_member=accounts.ROLE_MEMBER,
+        error=None,
+        **extra,
+    )
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+def view_accounts(request: HTTPRequest) -> HTMLResponse:
+    """Who can sign in, what they can see, and when they last did."""
+    _require_operator(request)
+    return _render(request, "accounts.html", _accounts_context(request))
+
+
+@app.post("/accounts/create")
+def submit_account_create(
+    request: HTTPRequest,
+    username: str = Form(default=""),
+    display_name: str = Form(default=""),
+    email: str = Form(default=""),
+    password: str = Form(default=""),
+    role: str = Form(default=accounts.ROLE_MEMBER),
+    company_ids: list[str] = Form(default=[]),
+) -> Any:
+    """Create an account for one towing company.
+
+    ``company_ids`` is a multi-select, so a customer who runs two entities gets
+    both and one login. The new account is created with
+    ``must_change_password``: the password chosen here is going to be read down
+    a phone or pasted into an email, and it must not survive first use.
+
+    THE ONE EXCEPTION is the account somebody creates for themselves out of the
+    shared-password bootstrap. That password did not travel anywhere -- they
+    typed it into this form and they are about to type it into the login form
+    thirty seconds later -- so forcing a change would be a hoop for its own
+    sake, and hoops for their own sake are how people learn to click through
+    warnings.
+    """
+    operator = _require_operator(request)
+    bootstrapping_self = operator.is_shared_password and role == accounts.ROLE_OPERATOR
+    try:
+        accounts.create_user(
+            username,
+            password,
+            role=role,
+            company_ids=company_ids,
+            display_name=display_name,
+            email=email,
+            must_change_password=not bootstrapping_self,
+        )
+    except accounts.AccountError as exc:
+        return _render(
+            request, "accounts.html", _accounts_context(request, error=str(exc)), status_code=400
+        )
+    return RedirectResponse(
+        url=f"/accounts?notice={quote(f'Created {accounts.normalise_username(username)}. Give them the password once; the board will make them change it before it shows them anything.')}",
+        status_code=303,
+    )
+
+
+@app.post("/accounts/{user_id}/update")
+def submit_account_update(
+    request: HTTPRequest,
+    user_id: int,
+    display_name: str = Form(default=""),
+    email: str = Form(default=""),
+    role: str = Form(default=accounts.ROLE_MEMBER),
+    company_ids: list[str] = Form(default=[]),
+    enabled: str = Form(default=""),
+) -> Any:
+    """Change an account's companies, role or name, or disable it."""
+    operator = _require_operator(request)
+    if operator.user_id == user_id and role != accounts.ROLE_OPERATOR:
+        # Demoting yourself is how an operator locks themselves out of the one
+        # screen that could undo it. `update_user` guards the last-operator
+        # case; this guards the more common single-click version of it.
+        return _render(
+            request,
+            "accounts.html",
+            _accounts_context(
+                request,
+                error=(
+                    "You cannot take your own operator role away from this screen. "
+                    "Make somebody else an operator first, then have them change you."
+                ),
+            ),
+            status_code=400,
+        )
+    try:
+        accounts.update_user(
+            user_id,
+            role=role,
+            company_ids=company_ids,
+            display_name=display_name,
+            email=email,
+            enabled=bool(enabled),
+        )
+    except accounts.AccountError as exc:
+        return _render(
+            request, "accounts.html", _accounts_context(request, error=str(exc)), status_code=400
+        )
+    return RedirectResponse(url="/accounts?notice=Saved.", status_code=303)
+
+
+@app.post("/accounts/{user_id}/password")
+def submit_account_password(
+    request: HTTPRequest, user_id: int, password: str = Form(default="")
+) -> Any:
+    """Set a new password for somebody else -- the forgotten-password path.
+
+    Always leaves ``must_change_password`` set, whoever it is for. An operator
+    resetting a customer's password has, for that moment, a credential to that
+    customer's board; forcing the change on first use is what closes that
+    window without needing an email path this system does not have.
+    """
+    _require_operator(request)
+    try:
+        accounts.set_password(user_id, password, must_change=True)
+    except accounts.AccountError as exc:
+        return _render(
+            request, "accounts.html", _accounts_context(request, error=str(exc)), status_code=400
+        )
+    return RedirectResponse(
+        url="/accounts?notice=Password+reset.+They+will+be+asked+to+change+it+when+they+sign+in.",
+        status_code=303,
+    )
+
+
+@app.post("/accounts/{user_id}/delete")
+def submit_account_delete(request: HTTPRequest, user_id: int) -> Any:
+    """Remove an account. Prefer disabling -- see ``accounts.delete_user``."""
+    operator = _require_operator(request)
+    if operator.user_id == user_id:
+        return _render(
+            request,
+            "accounts.html",
+            _accounts_context(request, error="You cannot delete the account you are signed in as."),
+            status_code=400,
+        )
+    try:
+        accounts.delete_user(user_id)
+    except accounts.AccountError as exc:
+        return _render(
+            request, "accounts.html", _accounts_context(request, error=str(exc)), status_code=400
+        )
+    return RedirectResponse(url="/accounts?notice=Account+deleted.", status_code=303)
 
 
 # ==========================================================================
@@ -1249,6 +1637,42 @@ def api_close_off(
     )
 
 
+@app.get("/api/companies")
+def api_companies(request: HTTPRequest) -> JSONResponse:
+    """Which companies the reader may open, and which one they are looking at.
+
+    The scope, made visible. Everything else on this board enforces it
+    silently, which is right for the product and useless for anybody trying to
+    confirm the enforcement is real -- including the test suite, which asserts
+    against this endpoint that one member's merged view covers their companies
+    and not the install's.
+
+    It reports the READER'S roster, not the server's: a member scoped to one
+    company sees one entry here, and cannot learn from it that the install
+    holds four others.
+    """
+    company_id = _company(request)
+    principal = auth.current_principal(request)
+    merged = (
+        _companies.merged_company() if _companies.is_multi_company() else None
+    )
+    return JSONResponse(
+        q.jsonable(
+            {
+                "company_id": company_id,
+                "companies": [
+                    {"id": company.id, "label": company.label}
+                    for company in _companies.enabled_companies()
+                ],
+                "merged_available": merged is not None,
+                "merged_members": list(merged.members) if merged is not None else [],
+                "signed_in_as": principal.username if principal is not None else None,
+                "is_operator": bool(principal is not None and principal.is_operator),
+            }
+        )
+    )
+
+
 @app.get("/api/hourly")
 def api_hourly(
     request: HTTPRequest, company: str | None = Query(default=None)
@@ -1259,10 +1683,18 @@ def api_hourly(
     where somebody will eventually re-attach a message transport, and it should
     not have to be rebuilt from the parts to do it.
     """
-    data = q.hourly_snapshot(company_id=_api_company(request, company))
+    company_id = _api_company(request, company)
+    data = q.hourly_snapshot(company_id=company_id)
     return JSONResponse(
         q.jsonable(
             {
+                # WHICH COMPANY THIS IS ABOUT, stated in the payload rather
+                # than assumed from the request. `?company=` is a request, not
+                # an answer: it is resolved against the reader's own companies
+                # and quietly falls back to one of theirs, so a caller that
+                # echoed its own parameter back would be labelling one
+                # company's figures with another company's name.
+                "company_id": company_id,
                 "date": data["date"],
                 "generated_at": data["generated_at"],
                 "current_hour": data["current_hour"],

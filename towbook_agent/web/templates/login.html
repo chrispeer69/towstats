@@ -39,11 +39,30 @@
     </div>
     {% endif %}
 
+    {#- ===================================================================
+        TWO FORMS, ONE TEMPLATE.
+
+        `accounts_mode` is true once this install has at least one account,
+        and it is read from the database rather than from a setting -- the
+        presence of an account IS the setting. Until then this is the single
+        shared-password box the board started with, which is what the
+        single-company installs already running still see.
+        =================================================================== -#}
     <form method="post" action="/login" class="login-form">
       <input type="hidden" name="next" value="{{ next }}">
+      {% if accounts_mode %}
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username"
+             value="{{ username }}" autofocus required
+             autocapitalize="none" spellcheck="false">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             required>
+      {% else %}
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password"
              autofocus required>
+      {% endif %}
       <button type="submit" class="btn btn-primary">Sign in</button>
     </form>
 
@@ -73,6 +92,13 @@
         Set <code>DASHBOARD_PASSWORD</code> to something long and random before
         this holds data anybody would mind losing. On Railway that is
         <em>Variables &rarr; New Variable</em>, then redeploy.
+        <br><br>
+        <strong>If this install serves a towing company you do not own, the
+        password is not the fix.</strong> Set <code>DASHBOARD_ADMIN_USER</code>
+        and <code>DASHBOARD_ADMIN_PASS</code> instead and redeploy: that creates
+        an operator account, switches this board to per-company logins, and
+        stops the shared password from opening anything at all. Each customer
+        then gets a login that can reach their companies and no others.
       </span>
     </div>
     {% endif %}

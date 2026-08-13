@@ -90,6 +90,10 @@ __all__ = [
     "MetricsMissedWork",
     "ClientDaily",
     "AlertFired",
+    "DashboardUser",
+    "ROLE_OPERATOR",
+    "ROLE_MEMBER",
+    "ROLE_VALUES",
     "STATUS_VALUES",
     "DEFAULT_ACCOUNT_ID",
     "DEFAULT_COMPANY_ID",
@@ -728,3 +732,109 @@ class AlertFired(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<AlertFired {self.alert_id} {self.entity!r} {self.severity} at {self.fired_at}>"
+
+
+#: Sees every company on the install and may manage accounts. This is the
+#: person who runs the server, not a customer.
+ROLE_OPERATOR: str = "operator"
+
+#: Sees only the companies named in ``company_scope``. This is the customer.
+ROLE_MEMBER: str = "member"
+
+ROLE_VALUES: tuple[str, ...] = (ROLE_OPERATOR, ROLE_MEMBER)
+
+
+class DashboardUser(Base):
+    """One person who may sign in, and the companies they may look at.
+
+    THE ONLY TABLE HERE THAT IS NOT PER-COMPANY. Every other table carries a
+    ``company_id`` saying which tenant the row is about; this one carries a
+    ``company_scope`` saying which tenants a *reader* may open, which is a
+    different question and points the other way. It deliberately has no
+    ``company_id`` column: a user who belongs to two companies would need two
+    rows and two passwords, and rotating one of them would leave the other
+    live.
+
+    ``company_scope`` is a JSON list of ids from config/companies.yaml. It is
+    ignored for :data:`ROLE_OPERATOR`, who sees everything by definition --
+    stored as an empty list there rather than as a wildcard, so that demoting
+    an operator to a member cannot silently leave a "*" behind and grant them
+    the whole install under a name that reads as restricted.
+
+    An id in the list that is not in the roster is not an error and is not
+    cleaned up: companies.yaml is edited by hand and a company may be added
+    after the account that will read it. ``core.companies`` simply never
+    resolves it, so the entry does nothing until the company exists.
+
+    WHAT IS NOT STORED. No password, ever -- ``password_hash`` is a PBKDF2
+    digest and the plaintext exists only for the length of one request. No
+    session table either: sessions are signed cookies (``web/auth.py``), and
+    the ``password_changed_at`` stamp below is what invalidates them, because a
+    password reset that left the old sessions signed in would not be a reset.
+    """
+
+    __tablename__ = "dashboard_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    #: Casefolded at write time by ``web.accounts.normalise_username``. Stored
+    #: casefolded rather than compared case-insensitively so the UNIQUE
+    #: constraint does the work on every backend -- SQLite and PostgreSQL do
+    #: not agree about case-insensitive uniqueness, and "Owner" and "owner"
+    #: being two accounts on one and the same as the other is not a difference
+    #: anybody should discover in production.
+    username: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    #: ``pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>``. See web/accounts.py.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    display_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
+    #: Where a password reset would be sent if this system ever sends one. It
+    #: does not today -- every route in notifications.yaml is disabled -- so
+    #: this is a record of who the account belongs to, nothing more.
+    email: Mapped[Optional[str]] = mapped_column(String(255))
+
+    role: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ROLE_MEMBER, server_default=ROLE_MEMBER
+    )
+    company_scope: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+    #: False disables the login without deleting the row, so the account keeps
+    #: its name in the log of who signed in. Deleting a departed dispatcher
+    #: makes the record of their sessions unreadable.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+
+    #: True until the user has chosen their own password. The board redirects
+    #: them to the change form and refuses to render anything else, because an
+    #: account still on the password that was emailed to it is an account
+    #: whose password is in an inbox.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, default=utcnow
+    )
+    #: Bumped on every password change. It is part of the session signature, so
+    #: moving it invalidates every cookie issued to this user -- including the
+    #: one held by whoever the password was being rotated away from.
+    password_changed_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, default=utcnow
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+
+    __table_args__ = (
+        # Named rather than `unique=True` on the column so the migration and
+        # the models produce the same constraint under the same name --
+        # tests/test_migrations.py compares them by name, and an anonymous
+        # inline UNIQUE is reported differently by the two backends.
+        UniqueConstraint("username", name="uq_dashboard_users_username"),
+        Index("ix_dashboard_users_enabled", "enabled"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<DashboardUser {self.username!r} {self.role} scope={self.company_scope}>"

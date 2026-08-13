@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Accounts{% endblock %}
+
+{#- ===================================================================
+    THE OPERATOR'S SCREEN, AND NOBODY ELSE'S.
+
+    The route raises 404 for a member, so a customer never learns this page
+    exists. Everything on it answers one question -- who can open this board,
+    and whose numbers can they see -- because that is the question that has to
+    have an obvious answer before a second towing company is added to the
+    roster.
+    =================================================================== -#}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Accounts</h1>
+    <div class="sub">
+      Who can sign in, and which companies each of them can open. A member sees
+      only the companies listed against their name &mdash; the switcher does not
+      offer the others, and typing another company's address does not reach it.
+    </div>
+  </div>
+</div>
+
+{% if error %}
+<div class="notice notice-error">
+  <span class="ico">&#9888;</span>
+  <span>{{ error }}</span>
+</div>
+{% endif %}
+
+{#- The one-time bootstrap. A shared-password session can reach this screen
+    only while there are no accounts, and the first one it creates ends it. Say
+    so before the click rather than after, because being signed out is
+    otherwise indistinguishable from something having gone wrong. -#}
+{% if principal and principal.is_shared_password %}
+<div class="notice notice-warn">
+  <span class="ico">&#9888;</span>
+  <span>
+    <strong>You are signed in with the shared password, which opens every
+    company on this board.</strong>
+    Create the first account below and that stops: the shared password will no
+    longer be accepted, this session will end, and you will sign in again under
+    the account you just made. Make that first one an <em>operator</em> &mdash;
+    it is the only role that can come back to this screen.
+  </span>
+</div>
+{% endif %}
+
+<div class="card">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Account</th>
+        <th>Role</th>
+        <th>Can see</th>
+        <th>Last signed in</th>
+        <th>Status</th>
+        <th class="right">Change</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>
+          <strong>{{ user.username }}</strong>
+          {% if user.display_name %}<div class="muted small">{{ user.display_name }}</div>{% endif %}
+          {% if user.email %}<div class="muted small">{{ user.email }}</div>{% endif %}
+        </td>
+        <td>
+          {% if user.is_operator %}
+          <span class="chip" title="Sees every company on this install and can manage accounts">Operator</span>
+          {% else %}
+          <span class="chip">Member</span>
+          {% endif %}
+        </td>
+        <td>{{ user.scope_label }}</td>
+        <td>
+          {% if user.last_login_at %}{{ user.last_login_at|dt("%b %d, %Y %I:%M %p") }}
+          {% else %}<span class="muted">Never</span>{% endif %}
+        </td>
+        <td>
+          {% if not user.enabled %}
+          <span class="chip chip-bad">Disabled</span>
+          {% elif user.must_change_password %}
+          <span class="chip chip-warn" title="Still on the password it was given">Password not yet changed</span>
+          {% else %}
+          <span class="chip chip-good">Active</span>
+          {% endif %}
+        </td>
+        <td class="right">
+          <details>
+            <summary class="icon-btn">Edit</summary>
+            <form method="post" action="/accounts/{{ user.id }}/update" class="stack">
+              <label>Name
+                <input type="text" name="display_name" value="{{ user.display_name }}">
+              </label>
+              <label>Email
+                <input type="email" name="email" value="{{ user.email or '' }}">
+              </label>
+              <label>Role
+                <select name="role">
+                  <option value="{{ role_member }}"{% if not user.is_operator %} selected{% endif %}>Member &mdash; only the companies below</option>
+                  <option value="{{ role_operator }}"{% if user.is_operator %} selected{% endif %}>Operator &mdash; every company, and this screen</option>
+                </select>
+              </label>
+              {#- The companies a member may open. Ignored for an operator, who
+                  sees everything by role; the list is still submitted so that
+                  demoting them back to member restores the scope they had. -#}
+              <fieldset>
+                <legend>Companies</legend>
+                {% for company in roster %}
+                <label class="check">
+                  <input type="checkbox" name="company_ids" value="{{ company.id }}"
+                         {% if company.id in user.company_scope %}checked{% endif %}>
+                  {{ company.label }}
+                </label>
+                {% endfor %}
+              </fieldset>
+              <label class="check">
+                <input type="checkbox" name="enabled" value="1"{% if user.enabled %} checked{% endif %}>
+                Can sign in
+              </label>
+              <button type="submit" class="btn btn-primary">Save</button>
+            </form>
+
+            <form method="post" action="/accounts/{{ user.id }}/password" class="stack">
+              <label>Reset their password to
+                <input type="password" name="password" minlength="{{ min_length }}"
+                       autocomplete="new-password" required>
+              </label>
+              <p class="small muted">
+                They will be made to change it the next time they sign in, so this
+                one only has to survive the phone call you read it down.
+              </p>
+              <button type="submit" class="icon-btn">Reset password</button>
+            </form>
+
+            <form method="post" action="/accounts/{{ user.id }}/delete"
+                  onsubmit="return confirm('Delete {{ user.username }}? Disabling keeps the record of what this account did; deleting does not.')">
+              <button type="submit" class="icon-btn">Delete</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6" class="muted">
+          No accounts yet. This board is on the shared password, and everyone who
+          has it can see every company on it.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Add an account</h2>
+  <p class="sub">
+    One per person, not one per company: two people at the same towing company
+    should have two logins, so that the record of who signed in means something
+    and so that one of them leaving does not take the other's access with it.
+  </p>
+  <form method="post" action="/accounts/create" class="stack">
+    <label>Username
+      <input type="text" name="username" required autocapitalize="none" spellcheck="false"
+             placeholder="dave.acme">
+    </label>
+    <label>Name
+      <input type="text" name="display_name" placeholder="Dave Whitfield">
+    </label>
+    <label>Email
+      <input type="email" name="email" placeholder="dave@acmetowing.com">
+    </label>
+    <label>First password
+      <input type="password" name="password" minlength="{{ min_length }}"
+             autocomplete="new-password" required>
+    </label>
+    <label>Role
+      <select name="role">
+        <option value="{{ role_member }}" selected>Member &mdash; only the companies below</option>
+        <option value="{{ role_operator }}">Operator &mdash; every company, and this screen</option>
+      </select>
+    </label>
+    <fieldset>
+      <legend>Companies this account may open</legend>
+      {% for company in roster %}
+      <label class="check">
+        <input type="checkbox" name="company_ids" value="{{ company.id }}">
+        {{ company.label }}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <p class="small muted">
+      At least {{ min_length }} characters. Give them the password once, in
+      person or over the phone &mdash; the board will make them replace it before
+      it shows them a single figure, so it does not matter that it travelled.
+    </p>
+    <button type="submit" class="btn btn-primary">Create account</button>
+  </form>
+</div>
+{% endblock %}
