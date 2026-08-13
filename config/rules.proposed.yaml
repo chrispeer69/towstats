@@ -1635,3 +1635,79 @@ proposals:
   reviewed_by: null
   reviewed_at: null
   rules_version: 2-bac0cd2fd679
+- id: normalize-refuse-reason
+  proposed_at: '2026-08-11T09:33:09+00:00'
+  source_report: daily
+  target: denial_reason_normalization
+  rationale: Urgent.ly's denial reason 'Refuse' is landing in the generic 'other'
+    bucket, which hides it from cause attribution. Small volume today but worth a
+    clean label.
+  service_type_raw_samples: &id053
+  - Refuse
+  first_seen: '2026-08-11T09:33:09+00:00'
+  last_seen: '2026-08-11T09:33:09+00:00'
+  occurrence_count: 2
+  evidence:
+    sample_service_type_raw: *id053
+    affected_requests: 2
+  patch:
+    denial_reason_normalization:
+      other:
+      - match: Refuse
+        map_to: client_declined
+  patch_yaml: "denial_reason_normalization:\n  other:\n    - match: \"Refuse\"\n \
+    \     map_to: \"client_declined\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41
+- id: decline-tire-change
+  proposed_at: '2026-08-12T10:01:01+00:00'
+  source_report: daily
+  target: acceptance_policy
+  rationale: Tire Change is offered repeatedly but essentially never accepted (0 of
+    21 over 7 days, 0 of 9 today) and it competes for attention inside the same 3-minute
+    window as wanted tow offers.
+  service_type_raw_samples: &id054
+  - Tire Change
+  first_seen: '2026-08-12T10:01:01+00:00'
+  last_seen: '2026-08-12T10:01:01+00:00'
+  occurrence_count: 21
+  evidence:
+    sample_service_type_raw: *id054
+    affected_requests: 21
+  patch:
+    acceptance_policy:
+      should_decline:
+      - service_type_raw: Tire Change
+  patch_yaml: "acceptance_policy:\n  should_decline:\n    - service_type_raw: \"Tire\
+    \ Change\"\n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41
+- id: classify-medium-heavy-duty-rsa
+  proposed_at: '2026-08-12T10:01:01+00:00'
+  source_report: daily
+  target: service_classes
+  rationale: '"Medium/Heavy Duty RSA" falls through to unclassified today, hiding
+    it from the should_accept inventory even though it looks like recovery/tow work.'
+  service_type_raw_samples: &id055
+  - Medium/Heavy Duty RSA
+  first_seen: '2026-08-12T10:01:01+00:00'
+  last_seen: '2026-08-12T10:01:01+00:00'
+  occurrence_count: 1
+  evidence:
+    sample_service_type_raw: *id055
+    affected_requests: 1
+  patch:
+    service_classes:
+      tow:
+        match:
+        - medium/heavy duty rsa
+  patch_yaml: "service_classes:\n  tow:\n    match:\n      - \"medium/heavy duty rsa\"\
+    \n"
+  status: pending
+  reviewed_by: null
+  reviewed_at: null
+  rules_version: 2-eea51056ef41
