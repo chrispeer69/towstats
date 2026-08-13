@@ -67,10 +67,34 @@ defaults:
   source: api
 
 jobs:
+  # ------------------------------------------------------------------------
+  # HOURLY IS PINNED TO ONE COMPANY, AND THAT IS DELIBERATE.
+  #
+  # `company_id` names the only company this job runs for. Every other job
+  # below omits it, which means "every enabled company" -- so a new tenant
+  # added to companies.yaml automatically gets daily, weekly and monthly, and
+  # does NOT get hourly.
+  #
+  # Two reasons it is pinned:
+  #
+  #   COST. The Analyst is the one LLM component and it runs once per pipeline
+  #   run. Hourly is 24 of the 25 runs a company does in a day -- roughly 96%
+  #   of the API spend. Running it for the whole roster multiplies that by the
+  #   number of tenants for commentary on a single hour that nobody reads.
+  #
+  #   EXPOSURE. Every run is a Towbook sign-in. Hourly across twenty tenants is
+  #   480 logins a day from one address; daily across twenty is twenty.
+  #
+  # The owner's own account wants the live hour -- that is what the board on
+  # the wall is for -- so it keeps hourly. Customers get daily and up. To give
+  # a customer hourly, copy this block and change `company_id`; do not delete
+  # the pin and let it run for everyone.
+  # ------------------------------------------------------------------------
   - name: hourly
     cron: "0 * * * *"
     range: previous_full_hour
     source: api
+    company_id: default        # Roadside Towing and Recovery Inc
     # Was 50. Raised to 1000 because the portal filters by date, not by hour,
     # so the hourly job still exports the whole day. See the note above.
     # Applies to the `ui` source only.
