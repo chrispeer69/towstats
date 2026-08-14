@@ -186,7 +186,51 @@ def backfill_if_empty() -> None:
         log.exception("backfill failed; the board starts empty and fills on the next run")
 
 
+#: The demo tenant's id. Must match scripts/seed_demo.py -> COMPANY_ID.
+_DEMO_COMPANY_ID = "example-towing"
+
+
+def is_demo_deployment() -> bool:
+    """Whether this process was pointed at the demo roster rather than a real one.
+
+    WHY THIS DISPATCH EXISTS. `railway.json` and `Procfile` name ONE start
+    command for the whole repository, and the demo needs a different boot
+    sequence -- it seeds itself before serving (see start_demo.py). Railway can
+    override the start command per service in its dashboard, but that puts a
+    load-bearing setting somewhere the repository cannot see, where it is
+    invisible in review and lost on a service rebuild. Deciding from the roster
+    keeps the whole thing in git.
+
+    It reads the roster rather than a flag, because the roster is the thing
+    that actually makes a deployment the demo. A `DEMO=true` variable could be
+    set on a production service by accident; a production roster opening on
+    `example-towing` is not a mistake anyone can make by mistyping a variable.
+
+    Production cannot trigger this: its roster opens on `default`.
+    """
+    if not (os.environ.get("TOWBOOK_REPO_ROOT") or "").strip():
+        return False
+    try:
+        from towbook_agent.core.companies import default_company_id
+
+        return default_company_id() == _DEMO_COMPANY_ID
+    except Exception:
+        # An unreadable roster is not evidence of a demo. Fall through to the
+        # production path, which reports the problem properly.
+        return False
+
+
 def main() -> int:
+    if is_demo_deployment():
+        log.info(
+            "TOWBOOK_REPO_ROOT names the demo roster (default company %r); "
+            "handing off to start_demo.py",
+            _DEMO_COMPANY_ID,
+        )
+        import start_demo
+
+        return start_demo.main()
+
     check_storage()
     migrate()
     backfill_if_empty()
