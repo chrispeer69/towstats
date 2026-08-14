@@ -94,7 +94,17 @@ jobs:
     cron: "0 * * * *"
     range: previous_full_hour
     source: api
-    company_id: default        # Roadside Towing and Recovery Inc
+    # DEMO ROOT: the pin is removed on purpose.
+    #
+    # Production pins this job to `default`, because the Analyst runs once per
+    # pipeline run and hourly is ~96% of the API spend -- so customers get
+    # daily and up, and only the owner's own board gets the live hour.
+    #
+    # The demo has one company and never runs the scheduler at all (the board
+    # is seeded, see start_demo.py), so the cost argument does not apply. What
+    # the pin WOULD do here is make the demo tenant the one company hourly
+    # never runs for, which shows up on the Health tab as a report type that
+    # has never once pulled -- on the one board built to be looked at.
     # Was 50. Raised to 1000 because the portal filters by date, not by hour,
     # so the hourly job still exports the whole day. See the note above.
     # Applies to the `ui` source only.

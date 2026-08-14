@@ -74,7 +74,8 @@ import math
 import os
 import random
 import sys
-from datetime import date, datetime, timedelta
+import zlib
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Iterable
@@ -806,8 +807,19 @@ def main() -> int:
         return _refuse("an unmapped status would land in the wrong bucket.")
 
     print("\nComputing metrics through the real metrics passes ...")
+    # ALERTS ON, which is not recompute_days' default and is deliberate here.
+    #
+    # It defaults off because replaying a month of history should not replay a
+    # month of text messages. On this root it cannot: every route in
+    # demo-root/config/notifications.yaml is `enabled: false`, so each alert is
+    # recorded and then held, and the Health tab shows exactly what the real
+    # board shows -- "held: delivery_disabled".
+    #
+    # Worth the care because the alternative was writing alert rows directly,
+    # which would have made the demo's Recent alerts the one panel on the board
+    # not produced by the product's own rules.
     days = metrics.recompute_days(
-        start.date(), end.date(), company_id=COMPANY_ID, emit_alerts=False
+        start.date(), end.date(), company_id=COMPANY_ID, emit_alerts=True
     )
     print(f"  daily:   {len(days)} days")
 
@@ -823,10 +835,151 @@ def main() -> int:
     )
     print("  hourly:  most recent full hour")
 
+    _seed_run_history(timezone_name)
     _ensure_demo_account()
 
     print("\nSeed complete.")
     return 0
+
+
+def _seed_run_history(timezone_name: str) -> None:
+    """Write the pull history the Health tab reports on.
+
+    WHY THIS IS NOT OPTIONAL. Seeding ingests everything in ONE call, so the
+    `runs` table ends up with a single row -- and the Health tab is largely a
+    report ON that table: last successful pull per report type, the run
+    history, staleness. With one row it renders every heading correctly and
+    fills almost nothing in, which reads as a board nobody has run rather than
+    a board that has been running for a quarter. Measured against the real
+    board: 19 table rows against 100.
+
+    So the history is written to look like what it would look like if the
+    scheduler had been running all along: hourly for the last three days,
+    daily for the window, weekly on Mondays, monthly on the 1st. Cadences come
+    from config/schedule.yaml.
+
+    ALL SUCCEEDED. A demo is not the place to exhibit a failure state -- the
+    banner, the staleness warning and the error column all have their own
+    behaviour and none of it is what a prospect is here to evaluate.
+
+    Timestamps are UTC, like every other stored datetime. The board converts
+    for display, so writing local time here would render every pull several
+    hours stale on a tab whose entire subject is staleness.
+    """
+    from sqlalchemy import delete
+
+    from towbook_agent.core.db import get_session
+    from towbook_agent.core.models import Run
+
+    zone = ZoneInfo(timezone_name)
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+    now_local = datetime.now(zone).replace(tzinfo=None, microsecond=0)
+    offset = timedelta(seconds=round((now_utc - now_local).total_seconds()))
+
+    def to_utc(local: datetime) -> datetime:
+        return local + offset
+
+    rows: list[dict[str, Any]] = []
+
+    def add(report: str, run_id: str, start: datetime, end: datetime, finished: datetime) -> None:
+        # A pull that would land in the future is one the scheduler has not
+        # reached yet; skip it rather than post-dating the history.
+        if finished > now_utc:
+            return
+        rows.append(
+            {
+                "run_id": run_id,
+                "company_id": COMPANY_ID,
+                "report_type": report,
+                "window_start": start,
+                "window_end": end,
+                "status": "success",
+                "started_at": finished - timedelta(seconds=rng_seconds(run_id)),
+                "finished_at": finished,
+                "source_file": f"raw/{finished:%Y/%m/%d}/callrequests-{finished:%H%M%S}.json",
+            }
+        )
+
+    # Hourly, the last three days. Matches `cron: "0 * * * *"`.
+    top_local = now_local.replace(minute=0, second=0, microsecond=0)
+    for hour in range(1, 73):
+        window_start = top_local - timedelta(hours=hour)
+        window_end = window_start + timedelta(hours=1)
+        add(
+            "hourly",
+            f"hourly-{COMPANY_ID}-{window_start:%Y%m%d%H}",
+            to_utc(window_start),
+            to_utc(window_end),
+            to_utc(window_end + timedelta(minutes=1)),
+        )
+
+    # Daily at 06:00 local, for the whole seeded window. `cron: "0 6 * * *"`.
+    for day in range(0, 92):
+        target = (now_local - timedelta(days=day)).date()
+        window_start = datetime.combine(target, datetime.min.time())
+        fired = window_start + timedelta(days=1, hours=6)
+        add(
+            "daily",
+            f"daily-{COMPANY_ID}-{target:%Y%m%d}",
+            to_utc(window_start),
+            to_utc(window_start + timedelta(days=1)),
+            to_utc(fired),
+        )
+
+    # Weekly, Mondays at 06:00 local. `cron: "0 6 * * 1"`.
+    monday = (now_local - timedelta(days=now_local.weekday())).date()
+    for week in range(0, 14):
+        start_day = monday - timedelta(weeks=week)
+        window_start = datetime.combine(start_day, datetime.min.time())
+        add(
+            "weekly",
+            f"weekly-{COMPANY_ID}-{start_day:%Y%m%d}",
+            to_utc(window_start - timedelta(days=7)),
+            to_utc(window_start),
+            to_utc(window_start + timedelta(hours=6)),
+        )
+
+    # Monthly, the 1st at 06:00 local. `cron: "0 6 1 * *"`.
+    first = now_local.replace(day=1).date()
+    for _ in range(0, 5):
+        window_start = datetime.combine(first, datetime.min.time())
+        previous = (first - timedelta(days=1)).replace(day=1)
+        add(
+            "monthly",
+            f"monthly-{COMPANY_ID}-{previous:%Y%m}",
+            to_utc(datetime.combine(previous, datetime.min.time())),
+            to_utc(window_start),
+            to_utc(window_start + timedelta(hours=6)),
+        )
+        first = previous
+
+    with get_session() as session:
+        session.execute(delete(Run).where(Run.company_id == COMPANY_ID))
+        for row in rows:
+            session.add(Run(**row))
+
+    by_type: dict[str, int] = {}
+    for row in rows:
+        by_type[row["report_type"]] = by_type.get(row["report_type"], 0) + 1
+    print(
+        "  run history: "
+        + ", ".join(f"{count} {name}" for name, count in sorted(by_type.items()))
+    )
+
+
+def rng_seconds(seed_text: str) -> int:
+    """A stable 8-40 second run duration derived from the run id.
+
+    Derived rather than random so that re-seeding an unchanged window produces
+    an unchanged history, and so no two adjacent rows show the same duration --
+    a column of identical durations is the sort of detail that tells a reader
+    they are looking at fixture data.
+
+    crc32, not hash(): Python randomises string hashing per process unless
+    PYTHONHASHSEED is set, so hash() would have made this vary between runs,
+    which is the opposite of what the paragraph above promises.
+    """
+    return 8 + (zlib.crc32(seed_text.encode("utf-8")) % 33)
 
 
 def _ensure_demo_account() -> None:
