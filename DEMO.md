@@ -134,11 +134,71 @@ the demo root, and names `pwd -W` in the error. Use `pwd -W`.
 
 ---
 
+## Putting it on the web
+
+The demo needs **its own Railway service**, from this same repo. The isolation
+is entirely environment variables, and those are per-service.
+
+| Setting | Value |
+|---|---|
+| Start command | `python start_demo.py` |
+| `TOWBOOK_REPO_ROOT` | `/app/demo-root` |
+| `DATABASE_URL` | `sqlite:////app/demo-root/data/demo.db` (four slashes — absolute) |
+
+Set no Towbook, Anthropic, Twilio or SMTP variables. The demo tenant has no
+account and contacts nothing; `start_demo.py` forces `RUN_SCHEDULER` and
+`BOOTSTRAP_ON_EMPTY` off so nothing can try.
+
+It does **not** need its own domain — Railway issues a `*.up.railway.app` URL.
+For sales, add `demo.ustowstats.com` as a custom domain on the service and
+point a CNAME at the target Railway gives you, the same way `www` is set up for
+the marketing site.
+
+### The ephemeral filesystem is the refresh mechanism
+
+A container's disk does not survive a redeploy, so a SQLite database on it is
+wiped every `git push`. For the production service that is a data-loss warning
+and `start.py` says so at CRITICAL. For the demo it is the design.
+
+`start_demo.py` seeds on boot when the database is empty **or** when the newest
+offer is older than `DEMO_MAX_AGE_HOURS`. That solves two problems with one
+mechanism: the wiped disk refills itself, and the demo never goes stale — which
+it otherwise would, because the generated window ends at the moment it was
+seeded. A demo seeded in May is, by August, a board whose newest job is three
+months old, shown to a prospect as evidence the product watches their work in
+real time.
+
+Cold start measured at about **45 seconds** from empty database to serving.
+`railway.json` already allows a 300-second health-check window, so there is
+room.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEMO_SEED_ON_BOOT` | `true` | seed at startup at all |
+| `DEMO_MAX_AGE_HOURS` | `20` | re-seed if the newest offer is older |
+| `DEMO_WEEKS` | `13` | whole weeks of history to generate |
+| `DEMO_FORCE_RESEED` | `false` | re-seed every boot, however fresh |
+
+If you would rather the demo persist, attach a Postgres service and set
+`DATABASE_URL` to it; boot-seeding then only fires on the first deploy and
+whenever the data ages past the threshold.
+
+### What it refuses to do
+
+`start_demo.py` will not start against a roster whose default company is not
+the demo tenant — pointing it at the production root exits with a message
+naming what it found instead. The seeder additionally refuses a `DATABASE_URL`
+that does not look like the demo database, and one that resolves outside the
+demo root. Three separate checks, because the thing being guarded against is
+writing thousands of synthetic offers into a real customer's board.
+
+---
+
 ## Known limits
 
-* **The demo does not update itself.** Its window ends at the moment it was
-  seeded, so it ages. Re-run the seeder to refresh it. Anything long-lived
-  should run it on a schedule.
+* **Locally, the demo does not update itself.** Its window ends at the moment
+  it was seeded, so it ages. Re-run the seeder with `--reset` to refresh it.
+  Deployed, `start_demo.py` handles this on boot — see above.
 * **`--weeks 13` is one quarter,** which gives the monthly view three full
   months plus the current partial one. Fewer weeks and the monthly comparison
   has nothing to compare against.

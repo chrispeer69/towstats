@@ -75,6 +75,7 @@ import os
 import random
 import sys
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -464,11 +465,35 @@ def _expiry_minutes(rng: random.Random) -> float:
     return min(15.0, max(1.0, value))
 
 
-def _generate(rng: random.Random, weeks: int) -> tuple[list[dict[str, Any]], datetime, datetime]:
-    """Build the record list. Returns (records, window_start, window_end)."""
+def _generate(
+    rng: random.Random, weeks: int, timezone_name: str
+) -> tuple[list[dict[str, Any]], datetime, datetime]:
+    """Build the record list. Returns (records, window_start, window_end).
+
+    Timestamps are COMPANY-LOCAL naive, because that is what the portal writes
+    and what schema.yaml's `source_timezone` says they are.
+
+    `datetime.now()` is deliberately not used to find "now". Two independent
+    reasons, either of which is enough:
+
+    1. It returns the HOST's local time. This machine is Eastern and the demo
+       tenant trades in Central, so every offer would be labelled an hour later
+       than it happened -- and the blind-spot grid is an hour-of-week analysis.
+
+    2. On Windows it is actively wrong here. `main()` sets `TZ` for the
+       ingester (which reads it through ZoneInfo and is fine), but the C
+       runtime also consults `TZ` and cannot parse an IANA name like
+       "America/Chicago". It falls back to a garbage offset, and
+       `datetime.now()` starts returning a clock several hours out. Observed:
+       offers stored five hours in the FUTURE, which made the demo's newest
+       job postdate the moment it was seeded.
+
+    Asking ZoneInfo for the company's own zone is correct on every platform and
+    cannot be affected by either.
+    """
     distances = _road_distances()
 
-    now = datetime.now().replace(microsecond=0)
+    now = datetime.now(ZoneInfo(timezone_name)).replace(tzinfo=None, microsecond=0)
     # Whole weeks, ending at the most recent midnight, plus today so far. The
     # blind-spot grid is an hour-of-week analysis: a window that is not a whole
     # number of weeks gives some cells one more sample than their neighbours,
@@ -671,6 +696,14 @@ def main() -> int:
         "--generate-only", action="store_true",
         help="write the archive but do not ingest or compute metrics",
     )
+    parser.add_argument(
+        "--reset", action="store_true",
+        help=(
+            "delete every row belonging to the demo company first. Use when "
+            "re-seeding a database that already holds a demo, so the new window "
+            "replaces the old one instead of being laid on top of it."
+        ),
+    )
     args = parser.parse_args()
 
     for name, value in (
@@ -740,7 +773,7 @@ def main() -> int:
 
     rng = random.Random(RANDOM_SEED)
     print(f"Generating {args.weeks} whole weeks for {COMPANY_ID} ...")
-    records, start, end = _generate(rng, args.weeks)
+    records, start, end = _generate(rng, args.weeks, timezone_name)
     print(f"  {len(records):,} offers from {start:%Y-%m-%d} to {end:%Y-%m-%d %H:%M}")
 
     ensure_dirs()
@@ -757,6 +790,9 @@ def main() -> int:
 
     init_db()
     _stamp_alembic(os.environ["DATABASE_URL"])
+
+    if args.reset:
+        _reset_company_rows()
 
     run_id = f"demo-seed-{end:%Y%m%d%H%M%S}"
     print(f"\nIngesting through the real ingester (run {run_id}) ...")
@@ -831,6 +867,47 @@ def _ensure_demo_account() -> None:
         f"  role     : {user.role} (not operator)\n"
         f"  scope    : {user.company_scope}"
     )
+
+
+def _reset_company_rows() -> None:
+    """Delete every row belonging to the demo company, in every table.
+
+    Scoped to `company_id == COMPANY_ID` rather than dropping tables, because
+    the same database also holds `dashboard_users` -- and dropping the demo
+    login on every refresh is the failure `_ensure_demo_account` exists to
+    prevent. Tables without a company_id column are left alone entirely.
+
+    This is deliberately a delete and not an upsert-over-the-top. The generated
+    window ends at `now`, so a later seed covers a shifted range with a fresh
+    id sequence; laying that over the previous run would leave the old window's
+    offers behind it and quietly double the volume the board reports.
+    """
+    from sqlalchemy import delete
+
+    from towbook_agent.core.db import get_session
+    from towbook_agent.core.models import Base
+
+    deleted: dict[str, int] = {}
+    with get_session() as session:
+        # Children first is not required -- there are no cross-table foreign
+        # keys between these -- but reversed(sorted_tables) is the order
+        # SQLAlchemy guarantees is safe if that ever changes.
+        for table in reversed(Base.metadata.sorted_tables):
+            if "company_id" not in table.c:
+                continue
+            result = session.execute(
+                delete(table).where(table.c.company_id == COMPANY_ID)
+            )
+            if result.rowcount:
+                deleted[table.name] = int(result.rowcount)
+
+    if deleted:
+        total = sum(deleted.values())
+        print(f"  --reset: removed {total:,} existing rows for {COMPANY_ID}")
+        for name, count in sorted(deleted.items()):
+            print(f"    {name:24} {count:>7,}")
+    else:
+        print(f"  --reset: nothing stored for {COMPANY_ID} yet")
 
 
 def _assert_database_is_in_the_demo_root(url: str) -> None:
