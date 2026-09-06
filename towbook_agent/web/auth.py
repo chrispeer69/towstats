@@ -129,7 +129,7 @@ PASSWORD_CHANGE_PATH: Final[str] = "/account/password"
 
 #: Paths served without a session.
 _EXEMPT_PATHS: Final[frozenset[str]] = frozenset({"/healthz", "/login", "/favicon.ico"})
-_EXEMPT_PREFIXES: Final[tuple[str, ...]] = ("/static/",)
+_EXEMPT_PREFIXES: Final[tuple[str, ...]] = ("/static/", "/sso/")
 
 #: Paths a signed-in user may reach while ``must_change_password`` is set.
 #: Everything else redirects to the change form -- an account still on the

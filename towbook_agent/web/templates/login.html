@@ -66,6 +66,13 @@
       <button type="submit" class="btn btn-primary">Sign in</button>
     </form>
 
+    {% if sso_enabled %}
+    <div class="sso-block" style="margin-top:1rem;text-align:center;">
+      {% if sso_error %}<p class="error" style="color:#a83c38;font-size:0.9rem;">{{ sso_error }}</p>{% endif %}
+      <a href="/sso/login{% if next and next != '/' %}?next={{ next | urlencode }}{% endif %}" class="btn" style="display:inline-block;background:#dfeaf8;color:#0f2f5f;border:1px solid #b9cfec;">Sign in with Roadside SSO</a>
+    </div>
+    {% endif %}
+
     {#- ===================================================================
         THE BANNER.
 

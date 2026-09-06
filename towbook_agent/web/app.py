@@ -95,6 +95,7 @@ from . import accounts
 from . import auth
 from . import queries as q
 from . import rules_admin
+from . import sso
 from .auth import PasswordGateMiddleware
 from .rules_admin import RulesWriteError
 
@@ -674,6 +675,8 @@ def _login_context(request: HTTPRequest, **extra: Any) -> dict[str, Any]:
         "APP_VERSION": __version__,
         "error": None,
         "username": "",
+        "sso_enabled": sso.enabled(),
+        "sso_error": (request.query_params.get("sso_error") or "").strip(),
         **extra,
     }
 
@@ -690,6 +693,18 @@ def view_login(request: HTTPRequest) -> HTMLResponse:
             url=auth.safe_next(request.query_params.get("next")), status_code=303
         )
     return _render(request, "login.html", _login_context(request))
+
+
+@app.get("/sso/login")
+def sso_login(request: HTTPRequest) -> Any:
+    """Roadside SSO: send the browser to the identity portal (exempt from the gate)."""
+    return sso.start(request)
+
+
+@app.get("/sso/callback")
+def sso_callback(request: HTTPRequest) -> Any:
+    """Roadside SSO: finish sign-in and mint the dashboard session cookie."""
+    return sso.callback(request)
 
 
 @app.post("/login")
