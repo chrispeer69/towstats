@@ -94,6 +94,7 @@ from ..core.paths import STATIC_DIR, TEMPLATES_DIR, ensure_dirs
 from . import auth
 from . import queries as q
 from . import rules_admin
+from . import sso
 from .auth import PasswordGateMiddleware
 from .rules_admin import RulesWriteError
 
@@ -395,6 +396,8 @@ def create_app() -> FastAPI:
             "RESPONSE_WINDOW": q.RESPONSE_WINDOW,
             "next_dir": _next_dir,
             "qs": _query_string,
+            # The header names the person when they signed in with US Tow.
+            "sso_user": sso.session_user,
         }
     )
     application.state.templates = templates
@@ -619,6 +622,7 @@ def _login_context(request: HTTPRequest, **extra: Any) -> dict[str, Any]:
         "default_password": auth.DEFAULT_PASSWORD,
         "session_days": auth.session_max_age() // 86400,
         "session_secret_is_ephemeral": not (os.environ.get("SESSION_SECRET") or "").strip(),
+        "sso_enabled": sso.is_configured(),
         "APP_VERSION": __version__,
         "error": None,
         **extra,
@@ -666,11 +670,74 @@ def submit_login(
     return auth.set_session_cookie(response, request)
 
 
+def _sign_out(request: HTTPRequest) -> RedirectResponse:
+    """Drop every session cookie; an SSO session also ends at the SSO.
+
+    The end-session redirect carries ``post_logout_redirect_uri`` (the site
+    root) and ``id_token_hint``, so US Tow signs the person out everywhere and
+    sends them straight back here.
+    """
+    target = sso.end_session_url(request) if sso.session_user(request) else "/login"
+    response = RedirectResponse(url=target, status_code=303)
+    auth.clear_session_cookie(response, request)
+    sso.clear_session_cookies(response, request)
+    return response
+
+
 @app.post("/logout")
 def submit_logout(request: HTTPRequest) -> RedirectResponse:
     """Drop the session cookie. POST only, so a prefetched link cannot do it."""
-    response = RedirectResponse(url="/login", status_code=303)
-    return auth.clear_session_cookie(response, request)
+    return _sign_out(request)
+
+
+# ==========================================================================
+# Sign in with US Tow -- see towbook_agent/web/sso.py for the flow
+# ==========================================================================
+
+
+@app.get("/auth/login")
+def sso_login(request: HTTPRequest) -> Any:
+    """Start the OpenID Connect code flow at US Tow SSO."""
+    target = auth.safe_next(request.query_params.get("next"))
+    if auth.is_authenticated(request):
+        return RedirectResponse(url=target, status_code=303)
+    if not sso.is_configured():
+        return _render(
+            request,
+            "login.html",
+            _login_context(
+                request,
+                error="Sign in with US Tow is not configured on this deployment "
+                "(SSO_CLIENT_SECRET is unset). Use the board password instead.",
+                next=target,
+            ),
+            status_code=503,
+        )
+    return sso.start_login(request, target)
+
+
+@app.get("/auth/callback")
+def sso_callback(request: HTTPRequest) -> Any:
+    """The registered redirect URI: exchange the code and open a session."""
+    if sso.FLOW_COOKIE not in request.cookies and auth.is_authenticated(request):
+        # No flow in progress and already signed in: a stale bookmark or a
+        # double-submitted callback. Nothing to do but go home.
+        return RedirectResponse(url="/", status_code=303)
+    try:
+        return sso.finish_login(request)
+    except sso.SSOError as exc:
+        return _render(
+            request,
+            "login.html",
+            _login_context(request, error=str(exc)),
+            status_code=exc.status_code,
+        )
+
+
+@app.api_route("/auth/logout", methods=["GET", "POST"])
+def sso_logout(request: HTTPRequest) -> RedirectResponse:
+    """Same as ``POST /logout``; the path the SSO reference client documents."""
+    return _sign_out(request)
 
 
 # ==========================================================================

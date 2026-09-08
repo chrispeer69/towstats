@@ -39,6 +39,17 @@
     </div>
     {% endif %}
 
+    {#- Sign in with US Tow: the central SSO. Shown only once SSO_CLIENT_SECRET
+        is set, so a deployment that has not been registered is not offered a
+        button that cannot work. The password form below it keeps working. -#}
+    {% if sso_enabled %}
+    <a class="btn btn-primary btn-ustow"
+       href="/auth/login{% if next and next != '/' %}?next={{ next|urlencode }}{% endif %}">
+      Sign in with US Tow
+    </a>
+    <div class="login-or">or use the board password</div>
+    {% endif %}
+
     <form method="post" action="/login" class="login-form">
       <input type="hidden" name="next" value="{{ next }}">
       <label for="password">Password</label>

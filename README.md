@@ -231,6 +231,29 @@ each other's cookies.
 > That is a larger change than this one and is deliberately not pretended to be
 > done.
 
+### Sign in with US Tow
+
+The login page also offers **Sign in with US Tow**: OpenID Connect against the
+central US Tow SSO (`towbook_agent/web/sso.py`, using `authlib`). It is added
+alongside the password, not instead of it. The button appears once
+`SSO_CLIENT_SECRET` is set.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SSO_ISSUER` | `https://us-tow-sso-production.up.railway.app` | The SSO. Endpoints come from its discovery document. |
+| `SSO_CLIENT_ID` | `ustowstats` | This app's id at the SSO; also the value the `apps` claim must contain. |
+| `SSO_CLIENT_SECRET` | unset | Issued by the SSO coordinator. **Required** for the button to show. |
+| `SSO_REDIRECT_URI` | `<scheme>://<host>/auth/callback` | Must equal the URI registered at the SSO: `https://www.ustowstats.com/auth/callback`. |
+
+Routes: `GET /auth/login` starts the code flow (PKCE S256, `state`, `nonce`),
+`GET /auth/callback` exchanges the code, verifies the RS256 ID token against
+the SSO's JWKS (`iss`, `aud`, `exp`, `nonce`) and refuses anyone whose `apps`
+claim does not list `ustowstats`. The session is a signed cookie (`tbk_sso`)
+carrying the identity, signed with the same `SESSION_SECRET` and lasting
+`DASHBOARD_SESSION_DAYS`; there is no users table to map to. Signing out of an
+SSO session also ends it at the SSO (`/oauth/logout`) and returns to the site
+root.
+
 ---
 
 ## Multiple companies
@@ -444,6 +467,7 @@ the ones with no usable default:
 | `TOWBOOK_PASS` | the portal password | |
 | `DASHBOARD_PASSWORD` | `1234` | The board's shared password. **Change it before sharing the URL** — see the warning below |
 | `SESSION_SECRET` | 64 random hex chars | Unset means a new secret per process, so every redeploy logs everyone out. `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `SSO_CLIENT_SECRET` | from the SSO coordinator | Enables **Sign in with US Tow**. `SSO_ISSUER`, `SSO_CLIENT_ID` and `SSO_REDIRECT_URI` have working defaults — see Dashboard → Sign in with US Tow |
 | `RUN_SCHEDULER` | `true` | Default. Set `false` only when the scheduler has its own service |
 | `ANTHROPIC_API_KEY` | optional | Without it the Analyst is skipped and the run is `partial`, not failed |
 
@@ -484,8 +508,9 @@ the database, the migration revision and whether the scheduler is running:
 ### 5. First login
 
 Open the Railway-provided domain (Settings → Networking → Generate Domain).
-You will get the login page; enter `DASHBOARD_PASSWORD`. The session cookie
-lasts `DASHBOARD_SESSION_DAYS` (30 by default).
+You will get the login page; enter `DASHBOARD_PASSWORD`, or use **Sign in with
+US Tow** if `SSO_CLIENT_SECRET` is set. The session cookie lasts
+`DASHBOARD_SESSION_DAYS` (30 by default).
 
 If the board looks empty, check `/health` — it distinguishes "no data has been
 collected yet" from "collection is failing".

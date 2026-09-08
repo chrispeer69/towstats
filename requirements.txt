@@ -66,6 +66,12 @@ tzdata>=2024.1
 # --- http ---
 httpx>=0.27
 
+# --- Sign in with US Tow (OpenID Connect) ---
+# authlib's OAuth2 client does the code exchange and its JOSE verifies the
+# RS256 ID token against the SSO's JWKS. See towbook_agent/web/sso.py.
+# <2 because authlib.jose is scheduled to move to joserfc at 2.0.
+authlib>=1.3,<2
+
 # --- the single LLM component: the Analyst ---
 anthropic>=0.34
 

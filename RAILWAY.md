@@ -35,6 +35,8 @@ Service → **Variables**:
 | `TOWBOOK_PASS` | your Towbook password | Required |
 | `DASHBOARD_PASSWORD` | `1234` | Password for the board |
 | `SESSION_SECRET` | any long random string | Keeps you logged in across restarts |
+| `SSO_CLIENT_SECRET` | from the SSO coordinator | Turns on **Sign in with US Tow** on the login page |
+| `SSO_REDIRECT_URI` | `https://www.ustowstats.com/auth/callback` | Must match the URI registered at the SSO |
 | `TZ` | `America/Detroit` | Your local time — every window depends on it |
 | `LOG_LEVEL` | `INFO` | |
 | `BOOTSTRAP_DAYS` | `30` | Days to load on a cold database |
@@ -57,7 +59,9 @@ Watch **Deploy Logs**; you will see `bootstrap complete: 31 of 31 days loaded`.
 ## 5. Open it
 
 Service → **Settings** → **Networking** → **Generate Domain**. That gives you a
-`*.up.railway.app` URL. Open it, log in with `DASHBOARD_PASSWORD`.
+`*.up.railway.app` URL. Open it, log in with `DASHBOARD_PASSWORD` or with
+**Sign in with US Tow** (only on the registered domain, `www.ustowstats.com`;
+the SSO refuses any other redirect URI).
 
 ---
 
@@ -99,4 +103,7 @@ once, then roughly one call an hour. Well inside Railway's smallest paid tier.
 no audit trail. That is fine for one owner checking his own numbers. It is
 **not** adequate once several towing companies' customer data sits behind it —
 addresses, vehicles and job values are commercially sensitive. Before sharing
-this with other US Tow Alliance members, give each company its own credentials.
+this with other US Tow Alliance members, give each company its own credentials
+— which is what **Sign in with US Tow** provides: set `SSO_CLIENT_SECRET` and
+each person signs in with their own US Tow account, and only people whose US
+Tow dashboard includes this app get in.

@@ -1140,6 +1140,23 @@ table.data tbody tr.dim-row td { opacity: 0.45; }
 }
 .login-form button { justify-self: start; padding: 8px 20px; }
 
+/* "Sign in with US Tow" sits above the password form and is the prominent
+   option; the password is the fallback for a deployment without SSO. */
+.btn-ustow {
+  display: block;
+  text-align: center;
+  padding: 11px 20px;
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+.login-or {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 14px;
+}
+.who { color: var(--text-2); font-size: 12px; }
+
 /* The banner is the point of the page when the password is still the default,
    so it is allowed to be long and it is allowed to be loud. */
 .login-warning { align-items: flex-start; }
