@@ -85,6 +85,10 @@
       <button type="button" class="icon-btn" id="print-btn"
               title="Print this page, or save it as a PDF">&#128424; Print</button>
       <button type="button" class="icon-btn" id="theme-toggle">&#9728; Light</button>
+      {%- set sso_who = sso_user(request) %}
+      {% if sso_who %}
+      <span class="who" title="Signed in with US Tow{% if sso_who.org_name %} &middot; {{ sso_who.org_name }}{% endif %}">{{ sso_who.name or sso_who.email }}</span>
+      {% endif %}
       <form method="post" action="/logout" style="display:inline">
         <button type="submit" class="icon-btn" title="End this session">Sign out</button>
       </form>

@@ -93,8 +93,11 @@ DEFAULT_SESSION_DAYS: Final[int] = 30
 #: and neither is a liveness signal. ``/login`` obviously cannot require a
 #: login. ``/static`` carries the stylesheet and the two vendored libraries and
 #: no data at all.
+#: ``/auth/`` is the "Sign in with US Tow" flow (:mod:`towbook_agent.web.sso`):
+#: the redirect out to the SSO and the callback back from it happen before
+#: there is a session to check.
 _EXEMPT_PATHS: Final[frozenset[str]] = frozenset({"/healthz", "/login", "/favicon.ico"})
-_EXEMPT_PREFIXES: Final[tuple[str, ...]] = ("/static/",)
+_EXEMPT_PREFIXES: Final[tuple[str, ...]] = ("/static/", "/auth/")
 
 #: Generated once per process when SESSION_SECRET is unset. Module level rather
 #: than per-request so every cookie in a process is signed with the same key.
@@ -233,7 +236,12 @@ def is_exempt(path: str) -> bool:
 
 
 def is_authenticated(request: Request) -> bool:
-    return token_is_valid(request.cookies.get(COOKIE_NAME))
+    """A valid password session *or* a valid US Tow SSO session."""
+    if token_is_valid(request.cookies.get(COOKIE_NAME)):
+        return True
+    from . import sso  # local: sso imports this module for the secret and cookie helpers
+
+    return sso.session_user(request) is not None
 
 
 def request_is_https(request: Request) -> bool:

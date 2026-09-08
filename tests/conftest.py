@@ -188,6 +188,12 @@ _ENV_KEYS = (
     "DASHBOARD_PASSWORD",
     "DASHBOARD_SESSION_DAYS",
     "SESSION_SECRET",
+    # Sign in with US Tow. Cleared so the button is absent unless a test opts
+    # in, and so a real client secret never reaches the suite.
+    "SSO_ISSUER",
+    "SSO_CLIENT_ID",
+    "SSO_CLIENT_SECRET",
+    "SSO_REDIRECT_URI",
     "SQL_ECHO",
 )
 
